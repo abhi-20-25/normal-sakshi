@@ -1,4 +1,4 @@
-# new13.py (Complete and Integrated with Security Monitor)
+# edit-004.py (People Counter, Queue Detection, and Generic Detection)
 
 import cv2
 import torch
@@ -11,8 +11,9 @@ from collections import defaultdict
 import os
 import requests
 import imageio
-from flask import Flask, Response, render_template, jsonify, url_for, request, stream_with_context
+from flask import Flask, Response, render_template, jsonify, url_for, request, stream_with_context, session, redirect
 from flask_socketio import SocketIO
+from functools import wraps
 from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, text, UniqueConstraint
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
@@ -28,8 +29,6 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 
 # --- Module Imports ---
-from shutter_monitor_processor006 import ShutterMonitorProcessor
-from security_monitor_1 import SecurityProcessor
 
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,50 +37,39 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:password@localhost:5432/cctv_dashboard"
+DATABASE_URL = "sqlite:///./cctv_dashboard.db"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
 TELEGRAM_BOT_TOKEN = "7843300957:AAGVv866cPiDPVD0Wrk_wwEEHDSD64Pgaqs"
 TELEGRAM_CHAT_ID = "-4835836048"
+
+# --- Authentication Configuration ---
+LOGIN_USERNAME = "user"
+LOGIN_PASSWORD = "Tneural123"
 os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER), exist_ok=True)
 os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'), exist_ok=True)
 
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Shoplifting': {'model_path': 'best_shoplift.pt', 'target_class_id': 1, 'confidence': 0.8, 'is_gif': True},
-    'QPOS': {'model_path': 'best_qpos.pt', 'target_class_id': 0, 'confidence': 0.87, 'is_gif': False},
     'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
     'PeopleCounter': {'model_path': 'yolov8n.pt'},
-    'Heatmap': {'model_path': 'yolov8n.pt'},
-    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.4},
-    'ShutterMonitor': {'model_path': 'shutter_model.pt' , 'confidence': 0.89 },
-    'Security': {}
+    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.4}
 }
 
-# --- QPOS PERSISTENCE CONFIGURATION ---
-QPOS_TIME_THRESHOLD_SEC = 5.0
-QPOS_DETECTION_THRESHOLD = 3
-
-# --- HEATMAP CONFIGURATION ---
-HEATMAP_GRID_SIZE = 30
-HEATMAP_TIME_THRESHOLD_SEC = 10.0
-HEATMAP_PEOPLE_THRESHOLD = 5
-HEATMAP_RADIUS = 20
-HEATMAP_BLUR_KERNEL = (91, 91)
 
 # --- QUEUE MONITOR CONFIGURATION ---
 # THIS IS NOW A FALLBACK if no ROI is in the database.
 QUEUE_MONITOR_ROI_CONFIG = {
     "Checkout Queue": {
-        "roi_points": [[0, 0], [305, 12], [321, 95], [1, 75]],
-        "secondary_roi_points": [[20, 129], [322, 139], [304, 286], [2, 286]],
+        "roi_points": [[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.761, 0.653]],
+        "secondary_roi_points": [[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
     }
 }
-QUEUE_DWELL_TIME_SEC = 3.0
+QUEUE_DWELL_TIME_SEC = 1.0
 QUEUE_ALERT_THRESHOLD = 2
-QUEUE_ALERT_COOLDOWN_SEC = 180
+QUEUE_ALERT_COOLDOWN_SEC = 60
 
 # --- Flask and SocketIO Setup ---
 app = Flask(__name__)
@@ -90,12 +78,6 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 # --- Global State Management ---
 stream_processors = {}
-heatmap_data = defaultdict(lambda: defaultdict(lambda: {'timestamps': []}))
-heatmap_lock = threading.Lock()
-heatmap_hotspots = defaultdict(list)
-heatmap_latest_frames = {}
-heatmap_frame_locks = defaultdict(threading.Lock)
-qpos_persistence_tracker = defaultdict(list)
 
 # --- Database Setup ---
 Base = declarative_base()
@@ -138,28 +120,7 @@ class QueueLog(Base):
     timestamp = Column(DateTime, default=lambda: datetime.now(IST), index=True)
     queue_count = Column(Integer)
 
-class ShutterLog(Base):
-    __tablename__ = "shutter_logs"
-    id = Column(Integer, primary_key=True, index=True)
-    channel_id = Column(String, index=True)
-    report_date = Column(Date, index=True)
-    first_open_time = Column(DateTime(timezone=True))
-    first_close_time = Column(DateTime(timezone=True))
-    total_open_duration_seconds = Column(Integer, default=0)
-    total_closed_duration_seconds = Column(Integer, default=0)
-    # --- MODIFIED: Added new columns for video paths ---
-    first_open_video_path = Column(String, nullable=True)
-    first_close_video_path = Column(String, nullable=True)
-    __table_args__ = (UniqueConstraint('channel_id', 'report_date', name='_shutter_channel_date_uc'),)
 
-class SecurityViolation(Base):
-    __tablename__ = "security_violations"
-    id = Column(Integer, primary_key=True, index=True)
-    channel_id = Column(String, index=True)
-    channel_name = Column(String)
-    timestamp = Column(DateTime, default=lambda: datetime.now(IST))
-    message = Column(String)
-    details = Column(String)
 
 class RoiConfig(Base):
     __tablename__ = "roi_configs"
@@ -171,6 +132,15 @@ class RoiConfig(Base):
 
 def get_stable_channel_id(link):
     return f"cam_{hashlib.md5(link.encode()).hexdigest()[:10]}"
+
+def login_required(f):
+    """Decorator to require login for protected routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect('/login')
+        return f(*args, **kwargs)
+    return decorated_function
 
 def initialize_database():
     global db_connected, engine, SessionLocal
@@ -254,37 +224,10 @@ class MultiModelProcessor(threading.Thread):
                 cap.release(); cap = cv2.VideoCapture(self.rtsp_url); continue
 
             current_time = time.time()
-            if 'Heatmap' in [t['app_name'] for t in self.tasks]:
-                with heatmap_frame_locks.get(self.channel_id, threading.Lock()):
-                    heatmap_latest_frames[self.channel_id] = frame.copy()
-                heatmap_model = next(t['model'] for t in self.tasks if t['app_name'] == 'Heatmap')
-                results = heatmap_model(frame, classes=[0], verbose=False, conf=0.6)
-                with heatmap_lock:
-                    for box in results[0].boxes.xyxy.cpu().numpy():
-                        x_center, y_bottom = (box[0] + box[2]) / 2, box[3]
-                        col, row = int(x_center // HEATMAP_GRID_SIZE), int(y_bottom // HEATMAP_GRID_SIZE)
-                        heatmap_data[self.channel_id][f"{col},{row}"]['timestamps'].append(time.time())
 
             for task in self.tasks:
                 app_name = task['app_name']
-                if app_name in ['Heatmap', 'PeopleCounter', 'QueueMonitor', 'ShutterMonitor', 'Security']: continue
-
-                if app_name == 'QPOS':
-                    results = task['model'](frame, conf=task['confidence'], classes=task['target_class_id'], verbose=False)
-                    qpos_persistence_tracker[self.channel_id] = [
-                        ts for ts in qpos_persistence_tracker[self.channel_id] if current_time - ts <= QPOS_TIME_THRESHOLD_SEC
-                    ]
-                    if results and len(results[0].boxes) > 0:
-                        qpos_persistence_tracker[self.channel_id].append(current_time)
-
-                    is_persistent = len(qpos_persistence_tracker[self.channel_id]) >= QPOS_DETECTION_THRESHOLD
-                    is_cooldown_over = current_time - self.last_detection_times[app_name] > self.cooldown
-
-                    if is_persistent and is_cooldown_over:
-                        self.last_detection_times[app_name] = current_time
-                        qpos_persistence_tracker[self.channel_id] = []
-                        annotated_frame = results[0].plot()
-                        self.detection_callback(app_name, self.channel_id, [annotated_frame], "QPOS Screen Off detected.", False)
+                if app_name in ['PeopleCounter', 'QueueMonitor']: continue
 
                 else:
                     if current_time - self.last_detection_times[app_name] > self.cooldown:
@@ -456,8 +399,12 @@ class QueueMonitorProcessor(threading.Thread):
 
     def _use_fallback_roi(self):
         fallback_config = QUEUE_MONITOR_ROI_CONFIG.get(self.channel_name, {})
-        self.roi_poly = Polygon(fallback_config.get("roi_points", []))
-        self.secondary_roi_poly = Polygon(fallback_config.get("secondary_roi_points", []))
+        # Store normalized coordinates for later conversion to pixels
+        self.normalized_main_roi = fallback_config.get("roi_points", [])
+        self.normalized_secondary_roi = fallback_config.get("secondary_roi_points", [])
+        # Initialize with empty polygons - will be converted to pixels in run() method
+        self.roi_poly = Polygon([])
+        self.secondary_roi_poly = Polygon([])
 
     def update_roi(self, new_roi_points):
         with self.lock:
@@ -495,8 +442,9 @@ class QueueMonitorProcessor(threading.Thread):
             
             if first_frame:
                 h, w, _ = frame.shape
-                if hasattr(self, 'normalized_main_roi'):
+                if hasattr(self, 'normalized_main_roi') and self.normalized_main_roi:
                     self.roi_poly = Polygon([(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi])
+                if hasattr(self, 'normalized_secondary_roi') and self.normalized_secondary_roi:
                     self.secondary_roi_poly = Polygon([(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi])
                 first_frame = False
 
@@ -524,55 +472,39 @@ class QueueMonitorProcessor(threading.Thread):
             self.current_queue_count = valid_queue_count
             socketio.emit('queue_update', {'channel_id': self.channel_id, 'count': self.current_queue_count})
 
-        if valid_queue_count > QUEUE_ALERT_THRESHOLD and people_in_secondary_roi <= 1 and (current_time - self.last_alert_time) > QUEUE_ALERT_COOLDOWN_SEC:
+        # Alert when cashier area is empty and queue has 2+ people (with cooldown)
+        should_alert = (
+            valid_queue_count >= 2 and
+            people_in_secondary_roi == 0 and
+            (current_time - self.last_alert_time) > QUEUE_ALERT_COOLDOWN_SEC
+        )
+
+        annotated_frame = results[0].plot() if results and results[0] else frame
+        
+        # Draw main ROI (queue area) - Yellow
+        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+            cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
+            logging.debug(f"Drawing main ROI with {len(self.roi_poly.exterior.coords)} points")
+        else:
+            logging.warning(f"Main ROI is invalid or empty. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
+        
+        # Draw secondary ROI (cashier area) - Cyan
+        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+            cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
+            logging.debug(f"Drawing secondary ROI with {len(self.secondary_roi_poly.exterior.coords)} points")
+        else:
+            logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
+        if should_alert:
             self.last_alert_time = current_time
             alert_message = f"Queue is full ({valid_queue_count} people), but the counter is free."
             logging.warning(f"QUEUE ALERT on {self.channel_name}: {alert_message}")
             send_telegram_notification(f"🚨 **Queue Alert: {self.channel_name}** 🚨\n{alert_message}")
-            handle_detection('QueueMonitor', self.channel_id, [frame], alert_message, is_gif=False)
-
-        annotated_frame = results[0].plot() if results and results[0] else frame
-        if self.roi_poly.is_valid: cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
-        if self.secondary_roi_poly.is_valid: cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
+            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], alert_message, is_gif=False)
 
         cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
         cv2.putText(annotated_frame, f"Counter Area: {people_in_secondary_roi}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         with self.lock: self.latest_frame = annotated_frame.copy()
 
-def create_heatmap_snapshot_frame(channel_id):
-    lock = heatmap_frame_locks.get(channel_id, threading.Lock())
-    with lock:
-        if channel_id not in heatmap_latest_frames: return None
-        frame = heatmap_latest_frames[channel_id].copy()
-    current_hotspots = heatmap_hotspots.get(channel_id, [])
-    if not current_hotspots: return frame
-    heatmap_canvas = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
-    for spot in current_hotspots:
-        col, row, heat_level = spot['col'], spot['row'], spot['heatLevel']
-        center_x, center_y = int((col + 0.5) * HEATMAP_GRID_SIZE), int((row + 0.5) * HEATMAP_GRID_SIZE)
-        intensity = min(heat_level * 50, 255)
-        cv2.circle(heatmap_canvas, (center_x, center_y), HEATMAP_RADIUS, int(intensity), -1)
-    blurred_heatmap = cv2.GaussianBlur(heatmap_canvas, HEATMAP_BLUR_KERNEL, 0)
-    colored_heatmap = cv2.applyColorMap(blurred_heatmap, cv2.COLORMAP_JET)
-    return cv2.addWeighted(frame, 0.6, colored_heatmap, 0.4, 0)
-
-def update_heatmap_logic():
-    while True:
-        current_time = time.time()
-        with heatmap_lock:
-            for channel_id, channel_data in heatmap_data.items():
-                hotspots = []
-                for key in list(channel_data.keys()):
-                    cell = channel_data[key]
-                    cell['timestamps'] = [ts for ts in cell['timestamps'] if current_time - ts <= HEATMAP_TIME_THRESHOLD_SEC]
-                    person_count = len(cell['timestamps'])
-                    if person_count >= HEATMAP_PEOPLE_THRESHOLD:
-                        heat_level = (person_count // HEATMAP_PEOPLE_THRESHOLD)
-                        col, row = map(int, key.split(','))
-                        hotspots.append({'col': col, 'row': row, 'heatLevel': heat_level})
-                    elif person_count == 0: del channel_data[key]
-                heatmap_hotspots[channel_id] = hotspots
-        time.sleep(1)
 
 def get_app_configs():
     app_configs = defaultdict(lambda: {'channels': [], 'online_count': 0})
@@ -616,30 +548,40 @@ def log_queue_counts():
         db.commit()
     logging.info("Scheduled job: Saved current queue counts to database.")
 
-def save_periodic_heatmap_snapshots():
-    logging.info("Scheduler running: Saving periodic heatmap snapshots...")
-    with app.app_context():
-        heatmap_channels = set()
-        if os.path.exists(RTSP_LINKS_FILE):
-            with open(RTSP_LINKS_FILE, 'r') as f:
-                for line in f:
-                    if line.strip() and not line.startswith('#') and 'Heatmap' in line:
-                        parts = [p.strip() for p in line.split(',')]
-                        if len(parts) > 1: heatmap_channels.add(get_stable_channel_id(parts[0]))
-        for channel_id in heatmap_channels:
-            if channel_id in heatmap_latest_frames:
-                logging.info(f"  - Creating snapshot for channel: {channel_id}")
-                heatmap_frame = create_heatmap_snapshot_frame(channel_id)
-                if heatmap_frame is not None:
-                    handle_detection('Heatmap', channel_id, [heatmap_frame], 'Periodic 5-hour snapshot.')
-            else:
-                logging.warning(f"  - Skipping snapshot for {channel_id}, no recent frame available.")
 
 @app.route('/')
-def landing_page(): return render_template('landing.html')
+def landing_page(): 
+    return render_template('landing.html')
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        # If already logged in, redirect to dashboard
+        if session.get('logged_in'):
+            return redirect('/dashboard')
+        return render_template('login.html')
+    
+    elif request.method == 'POST':
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        
+        if username == LOGIN_USERNAME and password == LOGIN_PASSWORD:
+            session['logged_in'] = True
+            session['username'] = username
+            return jsonify({'success': True, 'message': 'Login successful'})
+        else:
+            return jsonify({'success': False, 'message': 'Invalid username or password'}), 401
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/login')
 
 @app.route('/dashboard')
-def dashboard(): return render_template('dashboard.html', app_configs=get_app_configs())
+@login_required
+def dashboard(): 
+    return render_template('dashboard.html', app_configs=get_app_configs())
 
 def gen_video_feed(processor):
     while True:
@@ -647,6 +589,7 @@ def gen_video_feed(processor):
         yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + processor.get_frame() + b'\r\n\r\n')
 
 @app.route('/video_feed/<app_name>/<channel_id>')
+@login_required
 def video_feed(app_name, channel_id):
     processors = stream_processors.get(channel_id)
     if not processors: return ("Stream not found", 404)
@@ -659,17 +602,9 @@ def video_feed(app_name, channel_id):
     else:
         return (f"{app_name} stream not found or is not running for this channel", 404)
 
-@app.route('/video_feed/Security/<channel_id>')
-def security_video_feed(channel_id):
-    processors = stream_processors.get(channel_id)
-    if not processors: return ("Stream not found", 404)
-    target_processor = next((p for p in processors if isinstance(p, SecurityProcessor)), None)
-    if target_processor and target_processor.is_alive():
-        return Response(gen_video_feed(target_processor), mimetype='multipart/x-mixed-replace; boundary=frame')
-    else:
-        return ("Security stream not found or is not running for this channel", 404)
 
 @app.route('/history/<app_name>')
+@login_required
 def get_history(app_name):
     if not db_connected: return jsonify({"error": "Database not connected"}), 500
     try:
@@ -693,6 +628,7 @@ def get_history(app_name):
             return jsonify({"error": "Could not fetch history from database"}), 500
 
 @app.route('/api/set_roi', methods=['POST'])
+@login_required
 def set_roi():
     if not db_connected: return jsonify({"error": "Database not connected"}), 500
     data = request.json
@@ -725,7 +661,29 @@ def set_roi():
             logging.error(f"Error saving ROI: {e}")
             return jsonify({"error": "Could not save ROI to database"}), 500
 
+@app.route('/api/get_roi', methods=['GET'])
+@login_required
+def get_roi():
+    if not db_connected: return jsonify({"error": "Database not connected"}), 500
+    channel_id = request.args.get('channel_id')
+    app_name = request.args.get('app_name')
+    if not all([channel_id, app_name]):
+        return jsonify({"error": "Missing channel_id or app_name"}), 400
+    
+    with SessionLocal() as db:
+        try:
+            roi_record = db.query(RoiConfig).filter_by(channel_id=channel_id, app_name=app_name).first()
+            if roi_record and roi_record.roi_points:
+                roi_points = json.loads(roi_record.roi_points)
+                return jsonify({"success": True, "roi_points": roi_points})
+            else:
+                return jsonify({"success": False, "message": "No ROI configuration found"})
+        except Exception as e:
+            logging.error(f"Error fetching ROI: {e}")
+            return jsonify({"error": "Could not fetch ROI from database"}), 500
+
 @app.route('/report/<channel_id>/<date_str>')
+@login_required
 def get_report(channel_id, date_str):
     if not db_connected: return jsonify({"error": "DB not connected"}), 500
     try: report_date = datetime.strptime(date_str, '%Y-%m-%d').date()
@@ -750,6 +708,7 @@ def get_report(channel_id, date_str):
     return jsonify({'hourly_data': hourly_data})
 
 @app.route('/generate_report/<channel_id>')
+@login_required
 def generate_report(channel_id):
     if not db_connected: return jsonify({"error": "DB not connected"}), 500
     period, report_format = request.args.get('period', '7days'), request.args.get('format', 'json')
@@ -787,6 +746,7 @@ def generate_report(channel_id):
             return jsonify({"labels": list(daily_totals.keys()), "data": list(daily_totals.values()), "summary": summary})
 
 @app.route('/queue_report/<channel_id>')
+@login_required
 def get_queue_report(channel_id):
     if not db_connected: return jsonify({"error": "DB not connected"}), 500
     period, start_date_str, end_date_str = request.args.get('period'), request.args.get('start_date'), request.args.get('end_date')
@@ -811,45 +771,7 @@ def get_queue_report(channel_id):
         summary = { 'max_queue_length': max_queue, 'avg_queue_length': avg_queue, 'peak_hour': peak_hour }
         return jsonify({'labels': labels, 'data': data, 'summary': summary})
 
-@app.route('/shutter_report/<channel_id>')
-def get_shutter_report(channel_id):
-    if not db_connected: return jsonify({"error": "Database not connected"}), 500
-    start_date_str, end_date_str = request.args.get('start_date'), request.args.get('end_date')
-    if not start_date_str or not end_date_str: return jsonify({"error": "Please provide both start_date and end_date parameters."}), 400
-    try: start_date, end_date = datetime.strptime(start_date_str, '%Y-%m-%d').date(), datetime.strptime(end_date_str, '%Y-%m-%d').date()
-    except ValueError: return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
-    with SessionLocal() as db:
-        try:
-            records = db.query(ShutterLog).filter(ShutterLog.channel_id == channel_id, ShutterLog.report_date.between(start_date, end_date)).order_by(ShutterLog.report_date).all()
-            
-            # --- MODIFIED: Build response directly from ShutterLog records ---
-            report_data = []
-            for r in records:
-                report_data.append({
-                    'date': r.report_date.strftime('%Y-%m-%d'),
-                    'first_open_time': r.first_open_time.astimezone(IST).strftime('%I:%M %p') if r.first_open_time else 'N/A',
-                    'first_close_time': r.first_close_time.astimezone(IST).strftime('%I:%M %p') if r.first_close_time else 'N/A',
-                    'total_open_hours': round(r.total_open_duration_seconds / 3600, 2),
-                    'total_closed_hours': round(r.total_closed_duration_seconds / 3600, 2),
-                    'first_open_video_url': url_for('static', filename=r.first_open_video_path) if r.first_open_video_path else None,
-                    'first_close_video_url': url_for('static', filename=r.first_close_video_path) if r.first_close_video_path else None
-                })
 
-            return jsonify({'report_data': report_data})
-        except Exception as e:
-            logging.error(f"Error fetching shutter report: {e}")
-            return jsonify({"error": "Could not fetch shutter report from database"}), 500
-
-@app.route('/reports/security/<channel_id>')
-def get_security_reports(channel_id):
-    if not db_connected: return jsonify({"error": "Database not connected"}), 500
-    with SessionLocal() as db:
-        try:
-            violations = db.query(SecurityViolation).filter_by(channel_id=channel_id).order_by(SecurityViolation.timestamp.desc()).limit(15).all()
-            return jsonify([{'timestamp': v.timestamp.strftime("%Y-%m-%d %H:%M:%S"), 'message': v.message, 'details': v.details} for v in violations])
-        except Exception as e:
-            logging.error(f"Error fetching security reports: {e}")
-            return jsonify({"error": "Could not fetch reports"}), 500
 
 @socketio.on('connect')
 def handle_connect(): logging.info('Frontend client connected')
@@ -896,18 +818,6 @@ def start_streams():
                 stream_processors[channel_id].append(qm_processor); qm_processor.start()
                 logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
                 atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
-        if 'ShutterMonitor' in active_app_names:
-            model_obj = load_model(APP_TASKS_CONFIG['ShutterMonitor']['model_path'])
-            if model_obj:
-                sm_processor = ShutterMonitorProcessor(link, channel_id, channel_name, model_obj, socketio, send_telegram_notification, SessionLocal)
-                stream_processors[channel_id].append(sm_processor); sm_processor.start()
-                logging.info(f"Started ShutterMonitor for {channel_id} ({channel_name}).")
-                atexit.register(sm_processor.shutdown); active_app_names.remove('ShutterMonitor')
-        if 'Security' in active_app_names:
-            sec_processor = SecurityProcessor(link, channel_id, channel_name, SessionLocal, socketio, SecurityViolation)
-            stream_processors[channel_id].append(sec_processor); sec_processor.start()
-            logging.info(f"Started Security for {channel_id} ({channel_name}).")
-            atexit.register(sec_processor.shutdown); active_app_names.remove('Security')
         if active_app_names:
             tasks_for_multi_model = []
             for app_name in active_app_names:
@@ -926,12 +836,10 @@ def start_streams():
 if __name__ == "__main__":
     if initialize_database():
         scheduler = BackgroundScheduler(timezone=str(IST))
-        scheduler.add_job(save_periodic_heatmap_snapshots, 'cron', hour='*/5')
         scheduler.add_job(log_queue_counts, 'interval', minutes=5)
         scheduler.start()
         atexit.register(lambda: scheduler.shutdown())
-        threading.Thread(target=update_heatmap_logic, daemon=True).start()
         start_streams()
         logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5001, debug=False)
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
 

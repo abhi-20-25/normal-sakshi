@@ -84,7 +84,10 @@
             <svg style="width: 2rem; height: 2rem; color: var(--accent-color);" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 18.5C8.97 18.5 6.5 16.03 6.5 13H8.5C8.5 14.93 10.07 16.5 12 16.5C13.93 16.5 15.5 14.93 15.5 13C15.5 11.07 13.93 9.5 12 9.5C10.07 9.5 8.5 11.07 8.5 13H6.5C6.5 9.97 8.97 7.5 12 7.5C15.03 7.5 17.5 9.97 17.5 13C17.5 16.03 15.03 18.5 12 18.5Z" fill="currentColor"/></svg>
             <h1>Sakshi<span style="color: var(--accent-color);">.AI</span> Dashboard</h1>
         </div>
-        <a href="/" style="color: var(--text-secondary); font-size: 0.9em; text-decoration: none;">&larr; Back to Landing Page</a>
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <a href="/" style="color: var(--text-secondary); font-size: 0.9em; text-decoration: none;">&larr; Back to Landing Page</a>
+            <a href="/logout" style="background: #dc3545; color: white; padding: 8px 16px; border-radius: 6px; text-decoration: none; font-size: 0.9em; transition: background 0.3s ease;" onmouseover="this.style.background='#c82333'" onmouseout="this.style.background='#dc3545'">Logout</a>
+        </div>
     </div>
 </header>
 
@@ -224,13 +227,33 @@
     }
     function closeShutterReportModal() { shutterReportModal.style.display = 'none'; const tableBody = document.getElementById('shutterReportTableBody'); if (tableBody) tableBody.innerHTML = ''; }
 
-    function startRoiEdit(appName, channelId) {
+    async function loadExistingRoi(appName, channelId) {
+        try {
+            const response = await fetch(`/api/get_roi?app_name=${appName}&channel_id=${channelId}`);
+            const result = await response.json();
+            if (result.success && result.roi_points) {
+                const canvas = document.getElementById(`stream-box-${appName}-${channelId}`).querySelector('.roi-canvas');
+                return {
+                    main: result.roi_points.main.map(p => ({ x: p[0] * canvas.width, y: p[1] * canvas.height })),
+                    secondary: result.roi_points.secondary.map(p => ({ x: p[0] * canvas.width, y: p[1] * canvas.height }))
+                };
+            }
+        } catch (error) {
+            console.log('No existing ROI found, starting fresh');
+        }
+        return { main: [], secondary: [] };
+    }
+
+    async function startRoiEdit(appName, channelId) {
         const streamBox = document.getElementById(`stream-box-${appName}-${channelId}`);
         const canvas = streamBox.querySelector('.roi-canvas');
         const controls = streamBox.querySelector('.roi-controls');
         canvas.style.display = 'block';
         controls.classList.add('active');
-        roiDrawingState[channelId] = { points: { main: [], secondary: [] }, currentPoly: 'main' };
+        
+        // Load existing ROI points
+        const existingPoints = await loadExistingRoi(appName, channelId);
+        roiDrawingState[channelId] = { points: existingPoints, currentPoly: 'main' };
         redrawRoiCanvas(appName, channelId);
     }
 
@@ -410,18 +433,11 @@
         });
     }
 
-    async function fetchSecurityViolations(channelId) {
-        const tbody = document.getElementById(`security-tbody-${channelId}`); if (!tbody) return;
-        const response = await fetch(`/reports/security/${channelId}`); const violations = await response.json();
-        tbody.innerHTML = ''; if (violations.error) { tbody.innerHTML = `<tr><td colspan="3" style="color:#f87171;">${violations.error}</td></tr>`; return; }
-        if (violations.length === 0) { tbody.innerHTML = '<tr><td colspan="3">No violations recorded yet.</td></tr>'; return; }
-        violations.forEach(v => { tbody.innerHTML += `<tr><td>${v.timestamp}</td><td>${v.message}</td><td>${v.details}</td></tr>`; });
-    }
     function formatDuration(totalSeconds) { if (totalSeconds < 0) totalSeconds = 0; const hours = Math.floor(totalSeconds / 3600); const minutes = Math.floor((totalSeconds % 3600) / 60); return `${hours}h ${minutes}m`; }
     
     function generateDashboard() {
         const savedOrder = JSON.parse(localStorage.getItem('dashboardLayout'));
-        let sortedAppNames = Object.keys(appConfigs).sort((a,b) => { const order = {'PeopleCounter': 1, 'ShutterMonitor': 2, 'QueueMonitor': 3, 'Security': 4, 'Heatmap': 5, 'Shoplifting': 6, 'QPOS': 7, 'Generic': 8}; return (order[a] || 99) - (order[b] || 99); });
+        let sortedAppNames = Object.keys(appConfigs).sort((a,b) => { const order = {'PeopleCounter': 1, 'QueueMonitor': 2, 'Generic': 3}; return (order[a] || 99) - (order[b] || 99); });
         
         if (savedOrder) {
             sortedAppNames.sort((a, b) => {
@@ -442,19 +458,9 @@
                 const channel = config.channels[0]; const today = new Date().toISOString().split('T')[0];
                 contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name}</div><img src="/video_feed/PeopleCounter/${channel.id}" alt="Live feed"><div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Daily Footfall</h3><input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)"><table><thead><tr><th>Hour</th><th>In</th><th>Out</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table><button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button></div></div>`;
                 setTimeout(() => fetchPCReport(channel.id, today), 100);
-            } else if (appName === 'ShutterMonitor') {
-                const channel = config.channels[0];
-                contentHTML = `<div class="summary-cards" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
-                    <div class="summary-card"><h4>Current Status</h4><p id="shutter-status-${channel.id}">--</p><small id="shutter-status-time-${channel.id}" style="color: var(--text-secondary);">Waiting for data...</small></div>
-                    <div class="summary-card"><h4>First Opening Today</h4><p id="shutter-first-open-${channel.id}">--</p></div>
-                    <div class="summary-card"><h4>First Closing Today</h4><p id="shutter-first-close-${channel.id}">--</p></div>
-                    <div class="summary-card hidden"><h4>Total Time Open Today</h4><p id="shutter-total-open-${channel.id}">--</p></div>
-                    <div class="summary-card hidden"><h4>Total Time Closed Today</h4><p id="shutter-total-closed-${channel.id}">--</p></div>
-                </div>
-                <button class="btn btn-primary" style="width: 100%; margin-top: 20px;" onclick="openShutterReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button>`;
             } else if (appName === 'QueueMonitor') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box" id="stream-box-QueueMonitor-${channel.id}"><div class="stream-header">${channel.name}</div><img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed"><canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas><div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Queue Analytics</h3><button class="btn" onclick="startRoiEdit('QueueMonitor', '${channel.id}')">Edit ROI</button><div class="roi-controls"><button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'main'">Draw Main (Yellow)</button><button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'secondary'">Draw Secondary (Cyan)</button><button class="btn" onclick="resetRoi('QueueMonitor', '${channel.id}')">Reset Current</button><div style="margin-left:auto; display:flex; gap:10px;"><button class="btn" onclick="cancelRoiEdit('QueueMonitor', '${channel.id}')">Cancel</button><button class="btn btn-primary" onclick="saveRoi('QueueMonitor', '${channel.id}')">Save ROI</button></div></div><div class="report-controls" style="flex-wrap: wrap; margin-top: 20px;"><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'today' })">Today</button><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'yesterday' })">Yesterday</button><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'last7days' })">Last 7 Days</button></div><div id="queue-error-${channel.id}" style="color: #f87171; margin-bottom: 15px;"></div><div class="summary-cards"><div class="summary-card"><h4>Max Queue Length</h4><p id="summary-max-queue-${channel.id}">--</p></div><div class="summary-card"><h4>Avg. Queue Length</h4><p id="summary-avg-queue-${channel.id}">--</p></div><div class="summary-card"><h4>Peak Hour</h4><p id="summary-peak-hour-${channel.id}">--</p></div></div><div style="height: 250px;"><canvas id="queue-chart-${channel.id}"></canvas></div></div></div><div style="margin-top:20px;"><h3>Detection History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-QueueMonitor-${channel.id}"><label>To:</label><input type="date" id="end-date-QueueMonitor-${channel.id}"><button class="btn" onclick="applyDateFilter('QueueMonitor', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-QueueMonitor-${channel.id}"></div><div class="pagination" id="pagination-QueueMonitor-${channel.id}"></div></div>`;
+                contentHTML = `<div class="layout-grid"><div class="stream-box" id="stream-box-QueueMonitor-${channel.id}"><div class="stream-header">${channel.name}</div><img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed"><canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas><div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Queue Analytics</h3><button class="btn" onclick="startRoiEdit('QueueMonitor', '${channel.id}')">Edit ROI</button><div class="roi-controls"><button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'main'">Draw Queue Area (Yellow)</button><button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'secondary'">Draw Cashier Area (Cyan)</button><button class="btn" onclick="resetRoi('QueueMonitor', '${channel.id}')">Reset Current</button><div style="margin-left:auto; display:flex; gap:10px;"><button class="btn" onclick="cancelRoiEdit('QueueMonitor', '${channel.id}')">Cancel</button><button class="btn btn-primary" onclick="saveRoi('QueueMonitor', '${channel.id}')">Save ROI</button></div></div><div class="report-controls" style="flex-wrap: wrap; margin-top: 20px;"><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'today' })">Today</button><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'yesterday' })">Yesterday</button><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'last7days' })">Last 7 Days</button></div><div id="queue-error-${channel.id}" style="color: #f87171; margin-bottom: 15px;"></div><div class="summary-cards"><div class="summary-card"><h4>Max Queue Length</h4><p id="summary-max-queue-${channel.id}">--</p></div><div class="summary-card"><h4>Avg. Queue Length</h4><p id="summary-avg-queue-${channel.id}">--</p></div><div class="summary-card"><h4>Peak Hour</h4><p id="summary-peak-hour-${channel.id}">--</p></div></div><div style="height: 250px;"><canvas id="queue-chart-${channel.id}"></canvas></div></div></div><div style="margin-top:20px;"><h3>Detection History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-QueueMonitor-${channel.id}"><label>To:</label><input type="date" id="end-date-QueueMonitor-${channel.id}"><button class="btn" onclick="applyDateFilter('QueueMonitor', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-QueueMonitor-${channel.id}"></div><div class="pagination" id="pagination-QueueMonitor-${channel.id}"></div></div>`;
                 setTimeout(() => {
                     const canvas = document.getElementById(`stream-box-QueueMonitor-${channel.id}`).querySelector('.roi-canvas');
                     const img = document.getElementById(`stream-box-QueueMonitor-${channel.id}`).querySelector('img');
@@ -462,10 +468,6 @@
                     if(img.complete) { canvas.width = img.clientWidth; canvas.height = img.clientHeight; }
                 }, 500);
                 setTimeout(() => generateQueueReport(channel.id), 200); setTimeout(() => fetchHistory('QueueMonitor', 1, channel.id), 300);
-            } else if (appName === 'Security') {
-                const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name} - Live Feed</div><img src="/video_feed/Security/${channel.id}" alt="Live security feed"></div><div class="report-section"><h3>Recent Violations</h3><table id="security-table-${channel.id}"><thead><tr><th>Timestamp</th><th>Violation</th><th>Details</th></tr></thead><tbody id="security-tbody-${channel.id}"><tr><td colspan="3">Loading violations...</td></tr></tbody></table></div></div>`;
-                setTimeout(() => fetchSecurityViolations(channel.id), 500);
             } else {
                 let tabsNav = '<div class="tab-nav">'; let tabsContent = '';
                 config.channels.forEach((channel, index) => {

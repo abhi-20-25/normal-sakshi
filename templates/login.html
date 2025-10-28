@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - Sakshi.AI Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { 
+            background-color: #0D1117; 
+            color: #C9D1D9; 
+            font-family: 'Inter', sans-serif; 
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .glass-container { 
+            background: rgba(22, 27, 34, 0.8); 
+            backdrop-filter: blur(10px); 
+            -webkit-backdrop-filter: blur(10px); 
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.3);
+        }
+        .btn-primary { 
+            background: #238636; 
+            transition: all 0.3s ease; 
+            box-shadow: 0 0 15px rgba(35, 134, 54, 0.4); 
+        }
+        .btn-primary:hover { 
+            background: #2ea043; 
+            box-shadow: 0 0 25px rgba(46, 160, 67, 0.6); 
+            transform: translateY(-2px); 
+        }
+        .input-field {
+            background: #161B22;
+            border: 1px solid #30363D;
+            color: #C9D1D9;
+            transition: all 0.3s ease;
+        }
+        .input-field:focus {
+            outline: none;
+            border-color: #238636;
+            box-shadow: 0 0 0 3px rgba(35, 134, 54, 0.1);
+        }
+        .error-message {
+            background: rgba(248, 81, 73, 0.1);
+            border: 1px solid #f85149;
+            color: #f85149;
+        }
+        .spinner {
+            border: 2px solid #30363D;
+            border-top: 2px solid #238636;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .hero-glow { 
+            background: radial-gradient(ellipse 50% 50% at 50% 50%, rgba(35, 134, 54, 0.15), rgba(13, 17, 23, 0)); 
+        }
+    </style>
+</head>
+<body class="hero-glow">
+    <div class="glass-container w-full max-w-md mx-4 p-8">
+        <!-- Header with Logo -->
+        <div class="text-center mb-8">
+            <div class="flex items-center justify-center space-x-3 mb-4">
+                <svg class="w-10 h-10 text-green-500" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 18.5C8.97 18.5 6.5 16.03 6.5 13H8.5C8.5 14.93 10.07 16.5 12 16.5C13.93 16.5 15.5 14.93 15.5 13C15.5 11.07 13.93 9.5 12 9.5C10.07 9.5 8.5 11.07 8.5 13H6.5C6.5 9.97 8.97 7.5 12 7.5C15.03 7.5 17.5 9.97 17.5 13C17.5 16.03 15.03 18.5 12 18.5Z" fill="currentColor"/>
+                </svg>
+                <h1 class="text-3xl font-black text-white">Sakshi<span class="text-green-500">.AI</span></h1>
+            </div>
+            <h2 class="text-xl font-semibold text-gray-300 mb-2">Dashboard Access</h2>
+            <p class="text-sm text-gray-400">Enter your credentials to access the CCTV monitoring system</p>
+        </div>
+
+        <!-- Error Message -->
+        <div class="error-message rounded-lg p-3 mb-6 text-center text-sm hidden" id="errorMessage"></div>
+
+        <!-- Login Form -->
+        <form id="loginForm" class="space-y-6">
+            <div>
+                <label for="username" class="block text-sm font-medium text-gray-300 mb-2">Username</label>
+                <input type="text" id="username" name="username" required autocomplete="username" 
+                       class="input-field w-full px-4 py-3 rounded-lg text-sm focus:ring-2 focus:ring-green-500">
+            </div>
+
+            <div>
+                <label for="password" class="block text-sm font-medium text-gray-300 mb-2">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password" 
+                       class="input-field w-full px-4 py-3 rounded-lg text-sm focus:ring-2 focus:ring-green-500">
+            </div>
+
+            <button type="submit" class="btn-primary w-full py-3 px-4 rounded-lg font-semibold text-white" id="loginBtn">
+                <span id="btnText">Access Dashboard</span>
+                <div class="hidden" id="loading">
+                    <div class="spinner"></div>
+                    <div class="text-sm">Authenticating...</div>
+                </div>
+            </button>
+        </form>
+
+        <!-- Back Link -->
+        <div class="text-center mt-6">
+            <a href="/" class="text-sm text-gray-400 hover:text-green-500 transition-colors duration-200">
+                ← Back to Landing Page
+            </a>
+        </div>
+
+        <!-- Footer -->
+        <div class="text-center mt-8 pt-6 border-t border-gray-700">
+            <p class="text-xs text-gray-500">Powered by ThinkNeural.AI</p>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const errorMessage = document.getElementById('errorMessage');
+            const loginBtn = document.getElementById('loginBtn');
+            const btnText = document.getElementById('btnText');
+            const loading = document.getElementById('loading');
+            
+            // Show loading state
+            btnText.classList.add('hidden');
+            loading.classList.remove('hidden');
+            loginBtn.disabled = true;
+            errorMessage.classList.add('hidden');
+            
+            try {
+                const response = await fetch('/login', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ username, password })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Redirect to dashboard on successful login
+                    window.location.href = '/dashboard';
+                } else {
+                    // Show error message
+                    errorMessage.textContent = result.message || 'Invalid credentials';
+                    errorMessage.classList.remove('hidden');
+                }
+            } catch (error) {
+                errorMessage.textContent = 'Login failed. Please try again.';
+                errorMessage.classList.remove('hidden');
+            } finally {
+                // Reset button state
+                btnText.classList.remove('hidden');
+                loading.classList.add('hidden');
+                loginBtn.disabled = false;
+            }
+        });
+
+        // Clear error message when user starts typing
+        document.getElementById('username').addEventListener('input', function() {
+            document.getElementById('errorMessage').classList.add('hidden');
+        });
+        
+        document.getElementById('password').addEventListener('input', function() {
+            document.getElementById('errorMessage').classList.add('hidden');
+        });
+    </script>
+</body>
+</html>
