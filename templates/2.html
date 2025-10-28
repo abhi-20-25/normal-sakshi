@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sakshi.AI - Dashboard</title>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root { --bg-primary: #0D1117; --bg-secondary: #161B22; --border-color: #30363D; --text-primary: #C9D1D9; --text-secondary: #8B949E; --accent-color: #238636; --accent-hover: #2ea043; }
+        body { font-family: 'Inter', sans-serif; margin: 0; background-color: var(--bg-primary); color: var(--text-primary); }
+        .header { padding: 15px 30px; display: flex; align-items: center; justify-content: space-between; background: rgba(13, 17, 23, 0.6); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border-color); }
+        .container { padding: 20px; max-width: 1400px; margin: 0 auto; }
+        .app-section { background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 25px; }
+        .app-header { padding: 15px 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
+        .app-header h2 { margin: 0; font-size: 1.2em; }
+        .app-header .status .online-dot { display: inline-block; width: 8px; height: 8px; background-color: var(--accent-color); border-radius: 50%; margin-right: 6px; }
+        .app-content { padding: 20px; }
+        .btn { padding: 8px 16px; cursor: pointer; border: 1px solid var(--border-color); background-color: #21262d; color: var(--text-primary); border-radius: 6px; }
+        .btn:hover { background-color: var(--border-color); }
+        .btn-primary { background-color: var(--accent-color); border-color: var(--accent-color); color: #fff; }
+        .history-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 10px; min-height: 150px; }
+        .history-item { border: 1px solid var(--border-color); border-radius: 5px; overflow: hidden; background-color: var(--bg-primary); cursor: pointer; }
+        .history-item:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .history-item img { width: 100%; aspect-ratio: 4/3; object-fit: cover; background: #000; }
+        .history-item-info { padding: 10px; font-size: 0.8em; }
+        .layout-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .stream-box img { width: 100%; display: block; background-color: #000; border-radius: 6px; }
+        .stream-footer { padding: 10px; font-weight: bold; text-align: center; }
+        .tab-nav { display: flex; border-bottom: 1px solid var(--border-color); flex-wrap: wrap; }
+        .tab-button { padding: 10px 15px; cursor: pointer; background: transparent; color: var(--text-secondary); border: none; border-bottom: 3px solid transparent; font-size: 0.9em; }
+        .tab-button.active { border-bottom: 3px solid var(--accent-color); font-weight: bold; color: var(--text-primary); }
+        .tab-content { display: none; padding-top: 15px; }
+        .tab-content.active { display: block; }
+        .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.8); }
+        .modal-content { background-color: var(--bg-secondary); margin: 5% auto; padding: 25px; border: 1px solid var(--border-color); width: 90%; max-width: 900px; border-radius: 8px; }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 15px; margin-bottom: 20px; border-bottom: 1px solid var(--border-color); }
+        .close-btn { font-size: 28px; font-weight: bold; cursor: pointer; }
+        .report-controls { display: flex; gap: 10px; align-items: center; margin-bottom: 20px; flex-wrap: wrap; }
+        .summary-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; }
+        .summary-card { background-color: var(--bg-primary); padding: 20px; border-radius: 6px; border: 1px solid var(--border-color); }
+        .summary-card h4 { margin: 0 0 5px 0; color: var(--text-secondary); font-size: 0.9em; }
+        .summary-card p { margin: 0; font-size: 1.5em; }
+        .lightbox { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.9); justify-content: center; align-items: center; }
+        .lightbox img { max-width: 90%; max-height: 90%; }
+        .lightbox-close { position: absolute; top: 20px; right: 35px; color: #fff; font-size: 40px; cursor: pointer; }
+        .filter-controls { display: flex; align-items: center; gap: 10px; padding: 10px; background-color: var(--bg-primary); border-radius: 6px; margin-bottom:10px;}
+        @media (max-width: 768px) { .layout-grid { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<header class="header sticky top-0 z-50"><a href="/dashboard" style="text-decoration:none;color:inherit;"><h1>Sakshi<span style="color: var(--accent-color);">.AI</span></h1></a><a href="/" style="color: var(--text-secondary);">&larr; Back to Landing</a></header>
+<div class="container" id="dashboard-container"></div>
+<div id="reportModal" class="modal"><div class="modal-content"><div class="modal-header"><h2 id="reportModalTitle"></h2><span class="close-btn" onclick="closeReportModal()">&times;</span></div><div class="report-controls"><button class="btn" onclick="generateReport('7days')">7 Days</button><button class="btn" onclick="generateReport('30days')">30 Days</button></div><div id="reportError" style="color: #f87171;"></div><canvas id="reportChart"></canvas></div></div>
+<div id="shutterReportModal" class="modal"><div class="modal-content"><div class="modal-header"><h2 id="shutterReportModalTitle"></h2><span class="close-btn" onclick="closeShutterReportModal()">&times;</span></div><div class="report-controls"><label>From:</label><input type="date" id="shutter-report-start"><label>To:</label><input type="date" id="shutter-report-end"><button class="btn btn-primary" onclick="generateShutterReport()">Generate</button></div><div id="shutterReportError" style="color: #f87171;"></div><canvas id="shutterReportChart"></canvas></div></div>
+<div id="lightbox" class="lightbox" onclick="closeLightbox()"><span class="lightbox-close">&times;</span><img id="lightbox-img" src=""></div>
+
+<script>
+    const appConfigs = {{ app_configs|tojson }};
+    const socket = io();
+    let reportChart, shutterReportChart, activeReportChannel, activeShutterChannel = null;
+
+    function openLightbox(src) { document.getElementById('lightbox-img').src = src; document.getElementById('lightbox').style.display = 'flex'; }
+    function closeLightbox() { document.getElementById('lightbox').style.display = 'none'; }
+    function openReportModal(id, name) { document.getElementById('reportModalTitle').textContent = `Footfall Report: ${name}`; activeReportChannel = id; document.getElementById('reportModal').style.display = 'block'; generateReport('7days'); }
+    function closeReportModal() { document.getElementById('reportModal').style.display = 'none'; if (reportChart) reportChart.destroy(); }
+    function openShutterReportModal(id, name) {
+        document.getElementById('shutterReportModalTitle').textContent = `Shutter Report: ${name}`; activeShutterChannel = id;
+        const today = new Date().toISOString().split('T')[0], sevenDaysAgo = new Date(Date.now() - 6*24*60*60*1000).toISOString().split('T')[0];
+        document.getElementById('shutter-report-start').value = sevenDaysAgo; document.getElementById('shutter-report-end').value = today;
+        document.getElementById('shutterReportModal').style.display = 'block'; generateShutterReport();
+    }
+    function closeShutterReportModal() { document.getElementById('shutterReportModal').style.display = 'none'; if (shutterReportChart) shutterReportChart.destroy(); }
+    async function generateReport(period) {
+        const errorEl = document.getElementById('reportError'); errorEl.textContent = 'Loading...';
+        const data = await (await fetch(`/generate_report/${activeReportChannel}?period=${period}`)).json();
+        if (data.error) { errorEl.textContent = data.error; if (reportChart) reportChart.destroy(); return; }
+        errorEl.textContent = ''; const ctx = document.getElementById('reportChart').getContext('2d'); if (reportChart) reportChart.destroy();
+        reportChart = new Chart(ctx, { type: 'bar', data: { labels: data.labels, datasets: [{ label: 'Total Visitors', data: data.data, backgroundColor: 'rgba(35, 134, 54, 0.5)' }] }, options: { scales: { y: { beginAtZero: true, grid: { color: 'rgba(255,255,255,0.1)' } }, x: { grid: { color: 'rgba(255,255,255,0.1)' } } } } });
+    }
+    async function generateShutterReport() {
+        const start = document.getElementById('shutter-report-start').value, end = document.getElementById('shutter-report-end').value, errorEl = document.getElementById('shutterReportError');
+        if (!start || !end) { errorEl.textContent = 'Please select dates.'; return; } errorEl.textContent = 'Loading...';
+        const data = await (await fetch(`/shutter_report/${activeShutterChannel}?start_date=${start}&end_date=${end}`)).json();
+        if (data.error) { errorEl.textContent = data.error; if (shutterReportChart) shutterReportChart.destroy(); return; }
+        errorEl.textContent = ''; const ctx = document.getElementById('shutterReportChart').getContext('2d'); if (shutterReportChart) shutterReportChart.destroy();
+        shutterReportChart = new Chart(ctx, { type: 'bar', data: { labels: data.labels, datasets: [{ label: 'Open (Hours)', data: data.open_data, backgroundColor: 'rgba(46, 160, 67, 0.6)' }, { label: 'Closed (Hours)', data: data.closed_data, backgroundColor: 'rgba(248, 81, 73, 0.6)' }] }, options: { scales: { x: { stacked: true, grid: { color: 'rgba(255,255,255,0.1)' } }, y: { stacked: true, title: { display: true, text: 'Hours' }, grid: { color: 'rgba(255,255,255,0.1)' } } } } });
+    }
+    async function fetchHistory(appName, page = 1, channelId = null, start = null, end = null) {
+        const grid = document.getElementById(`grid-${appName}-${channelId}`); if (!grid) return; grid.innerHTML = '<p>Loading...</p>';
+        const url = `/history/${appName}?page=${page}&limit=10${channelId ? '&channel_id='+channelId : ''}${start && end ? `&start_date=${start}&end_date=${end}` : ''}`;
+        const data = await (await fetch(url)).json();
+        if (data.error) { grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; return; }
+        grid.innerHTML = data.detections.length === 0 ? '<p>No detections found.</p>' : data.detections.map(d => `<div class="history-item" onclick="openLightbox('${d.media_url}')"><img src="${d.media_url}" alt="Detection"><div class="history-item-info"><p><strong>${d.timestamp}</strong></p><p>${d.message}</p></div></div>`).join('');
+        const pagination = document.getElementById(`pagination-${appName}-${channelId}`);
+        if(pagination){ pagination.innerHTML = (Math.ceil(data.total / data.limit) > 1) ? `<button class="btn" ${data.page === 1 ? 'disabled' : ''} onclick="fetchHistory('${appName}', ${data.page - 1}, '${channelId}', '${start}', '${end}')">Prev</button> <button class="btn" ${data.page >= Math.ceil(data.total / data.limit) ? 'disabled' : ''} onclick="fetchHistory('${appName}', ${data.page + 1}, '${channelId}', '${start}', '${end}')">Next</button>` : '';}
+    }
+    function applyDateFilter(appName, channelId) { const start = document.getElementById(`start-date-${appName}-${channelId}`).value, end = document.getElementById(`end-date-${appName}-${channelId}`).value; if (start && end) fetchHistory(appName, 1, channelId, start, end); }
+    function openTab(evt, appName) {
+        const parent = evt.currentTarget.closest('.app-content');
+        parent.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+        parent.querySelectorAll('.tab-button').forEach(tb => tb.classList.remove('active'));
+        const channelId = evt.currentTarget.dataset.channel;
+        parent.querySelector(`#tab-content-${appName}-${channelId}`).classList.add('active');
+        evt.currentTarget.classList.add('active');
+    }
+    
+    function generateDashboard() {
+        const container = document.getElementById('dashboard-container');
+        const sortedApps = Object.keys(appConfigs).sort((a,b) => ({'PeopleCounter':1, 'ShutterMonitor':2, 'QueueMonitor':3, 'Heatmap':4, 'Shoplifting':5, 'QPOS':6, 'Generic':7}[a]||99) - ({'PeopleCounter':1, 'ShutterMonitor':2, 'QueueMonitor':3, 'Heatmap':4, 'Shoplifting':5, 'QPOS':6, 'Generic':7}[b]||99));
+        for (const appName of sortedApps) {
+            const config = appConfigs[appName]; if (!config.channels || config.channels.length === 0) continue;
+            const section = document.createElement('div'); section.className = 'app-section'; let contentHTML = '';
+            
+            if (['PeopleCounter', 'ShutterMonitor', 'QueueMonitor'].includes(appName) && config.channels.length === 1) {
+                const ch = config.channels[0];
+                if (appName === 'PeopleCounter') {
+                    contentHTML = `<div class="layout-grid"><div class="stream-box"><img src="/video_feed/PeopleCounter/${ch.id}"><div class="stream-footer">IN: <span id="in-count-${ch.id}">...</span> | OUT: <span id="out-count-${ch.id}">...</span></div></div><div><button class="btn btn-primary" style="width:100%" onclick="openReportModal('${ch.id}', '${ch.name}')">Historical Report</button></div></div>`;
+                } else if (appName === 'ShutterMonitor') {
+                    contentHTML = `<div class="summary-cards" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+                        <div class="summary-card"><h4>Status</h4><p id="shutter-status-${ch.id}">--</p><small id="shutter-status-time-${ch.id}">...</small></div>
+                        <div class="summary-card"><h4>First Open</h4><p id="shutter-first-open-${ch.id}">--</p></div><div class="summary-card"><h4>First Close</h4><p id="shutter-first-close-${ch.id}">--</p></div>
+                        <div class="summary-card"><h4>Total Open</h4><p id="shutter-total-open-${ch.id}">--</p></div><div class="summary-card"><h4>Total Closed</h4><p id="shutter-total-closed-${ch.id}">--</p></div>
+                    </div><button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openShutterReportModal('${ch.id}', '${ch.name}')">Historical Report</button>`;
+                } else { // QueueMonitor
+                    contentHTML = `<div class="layout-grid">
+                        <div class="stream-box"><img src="/video_feed/QueueMonitor/${ch.id}"><div class="stream-footer">Current Queue: <span id="queue-count-${ch.id}">...</span></div></div>
+                        <div><h3>Detection History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-QueueMonitor-${ch.id}"><label>To:</label><input type="date" id="end-date-QueueMonitor-${ch.id}"><button class="btn" onclick="applyDateFilter('QueueMonitor', '${ch.id}')">Filter</button></div><div class="history-grid" id="grid-QueueMonitor-${ch.id}"></div><div class="pagination" id="pagination-QueueMonitor-${ch.id}"></div></div>
+                    </div>`;
+                    setTimeout(() => fetchHistory('QueueMonitor', 1, ch.id), 200);
+                }
+            } else { // Apps with multiple cameras (tabbed view)
+                let tabsNav = '<div class="tab-nav">'; let tabsContent = '';
+                config.channels.forEach((ch, idx) => {
+                    const active = idx === 0 ? 'active' : '';
+                    tabsNav += `<button class="tab-button ${active}" data-channel="${ch.id}" onclick="openTab(event, '${appName}')">${ch.name}</button>`;
+                    tabsContent += `<div id="tab-content-${appName}-${ch.id}" class="tab-content ${active}"><div class="filter-controls"><label>From:</label><input type="date" id="start-date-${appName}-${ch.id}"><label>To:</label><input type="date" id="end-date-${appName}-${ch.id}"><button class="btn" onclick="applyDateFilter('${appName}', '${ch.id}')">Filter</button></div><div class="history-grid" id="grid-${appName}-${ch.id}"></div><div class="pagination" id="pagination-${appName}-${ch.id}"></div></div>`;
+                });
+                contentHTML = tabsNav + '</div>' + tabsContent;
+                if (config.channels.length > 0) setTimeout(() => fetchHistory(appName, 1, config.channels[0].id), 100);
+            }
+            const onlineStatus = `<span class="status"><span class="online-dot"></span>${config.online_count} / ${config.channels.length} Online</span>`;
+            section.innerHTML = `<div class="app-header"><h2>${appName}</h2>${onlineStatus}</div><div class="app-content">${contentHTML}</div>`;
+            container.appendChild(section);
+        }
+    }
+
+    function formatDuration(seconds) { const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60); return `${h}h ${m}m`; }
+    socket.on('count_update', d => { const el = document.getElementById(`in-count-${d.channel_id}`); if(el){ el.textContent = d.in_count; document.getElementById(`out-count-${d.channel_id}`).textContent = d.out_count; } });
+    socket.on('queue_update', d => { const el = document.getElementById(`queue-count-${d.channel_id}`); if (el) el.textContent = d.count; });
+    socket.on('shutter_update', d => {
+        const el = document.getElementById(`shutter-status-${d.channel_id}`);
+        if(el) {
+            el.textContent = d.last_status.toUpperCase(); document.getElementById(`shutter-status-time-${d.channel_id}`).textContent = `Since ${new Date(d.last_status_time).toLocaleTimeString()}`;
+            document.getElementById(`shutter-first-open-${d.channel_id}`).textContent = d.first_open_time ? new Date(d.first_open_time).toLocaleTimeString() : '--';
+            document.getElementById(`shutter-first-close-${d.channel_id}`).textContent = d.first_close_time ? new Date(d.first_close_time).toLocaleTimeString() : '--';
+            document.getElementById(`shutter-total-open-${d.channel_id}`).textContent = formatDuration(d.total_open_duration_seconds);
+            document.getElementById(`shutter-total-closed-${d.channel_id}`).textContent = formatDuration(d.total_closed_duration_seconds);
+        }
+    });
+    socket.on('new_detection', d => {
+        const grid = document.getElementById(`grid-${d.app_name}-${d.channel_id}`);
+        if (grid && grid.closest('.tab-content.active')) { fetchHistory(d.app_name, 1, d.channel_id); }
+    });
+    generateDashboard();
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+# Format: rtsp_link,Camera_Name,App1,App2,...
+
+# Cameras for QPOS and Generic
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=23&subtype=1,Front Counter,QPOS,Generic
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=29&subtype=1,Aisle 4,QPOS,Generic
+
+# Cameras for Shoplifting and Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=15&subtype=1,High Value Aisle,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=26&subtype=1,Electronics,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=12&subtype=1,Toys area,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=9&subtype=1,Household Area,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=30&subtype=1,CAR,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=25&subtype=1,TOYS SECTION,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=18&subtype=1,KEYCHAIN AREA,Shoplifting,Heatmap
+rtsp://admin:admin@123@192.168.1.41:554/cam/realmonitor?channel=17&subtype=1,MIRROR AREA,Shoplifting,Heatmap
+
+# Camera for QueueMonitor
+rtsp://admin:admin@123@192.168.1.42:554/cam/realmonitor?channel=8&subtype=1,Checkout Queue,QueueMonitor
+
+# UPDATED: Camera for both PeopleCounter and ShutterMonitor
+rtsp://admin:admin@123@192.168.1.42:554/cam/realmonitor?channel=3&subtype=1,Main Entrance,PeopleCounter,ShutterMonitor,Security

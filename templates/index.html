@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Monitor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: #1a202c;
+            color: #e2e8f0;
+            font-family: 'Inter', sans-serif;
+        }
+        .header {
+            background-color: #2d3748;
+        }
+        .card {
+            background-color: #2d3748;
+            border: 1px solid #4a5568;
+        }
+        .report-item {
+            border-bottom: 1px solid #4a5568;
+        }
+        .report-item:last-child {
+            border-bottom: none;
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="antialiased">
+    <div class="header p-4 shadow-md">
+        <h1 class="text-2xl font-bold text-center text-white">Security Interaction Monitor</h1>
+    </div>
+
+    <div class="container mx-auto p-4 lg:p-6">
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Video Feed Column -->
+            <div class="lg:col-span-2 card rounded-lg shadow-lg overflow-hidden">
+                <div class="p-4 border-b border-gray-700">
+                    <h2 id="live-feed-title" class="text-xl font-semibold">Live Feed</h2>
+                    <p id="live-feed-description" class="text-sm text-gray-400">Monitoring outgoing individuals and their interaction with security.</p>
+                </div>
+                <div class="bg-black">
+                    <!-- The image tag will be updated by JavaScript -->
+                    <img id="video-feed" src="" alt="Attempting to load live feed..." class="w-full h-auto">
+                </div>
+            </div>
+
+            <!-- Reports Column -->
+            <div class="lg:col-span-1 card rounded-lg shadow-lg">
+                 <div class="p-4 border-b border-gray-700">
+                    <h2 class="text-xl font-semibold">Violation Reports</h2>
+                    <p class="text-sm text-gray-400">Showing the latest detected violations.</p>
+                </div>
+                <div id="reports-container" class="p-4 max-h-[600px] overflow-y-auto">
+                    <!-- Reports will be injected here by JavaScript -->
+                    <div id="loading-reports" class="text-center text-gray-400 py-8">
+                        <p>Loading reports...</p>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', async function() {
+            const videoFeed = document.getElementById('video-feed');
+            const reportsContainer = document.getElementById('reports-container');
+            const loadingIndicator = document.getElementById('loading-reports');
+            const liveFeedTitle = document.getElementById('live-feed-title');
+            const liveFeedDescription = document.getElementById('live-feed-description');
+
+            // Function to fetch available channels and set up the video feed
+            async function setupVideoFeed() {
+                try {
+                    const response = await fetch('/api/channels');
+                    if (!response.ok) throw new Error('Failed to fetch channels');
+                    const channels = await response.json();
+
+                    if (channels.length > 0) {
+                        // Use the first available channel
+                        const channel = channels[0];
+                        videoFeed.src = `/video_feed/${channel.id}`;
+                        videoFeed.alt = `Live feed from ${channel.name}`;
+                        liveFeedTitle.textContent = `Live Feed: ${channel.name}`;
+                        liveFeedDescription.textContent = `Monitoring camera: ${channel.id}`;
+                    } else {
+                        videoFeed.alt = "No camera streams are active. Please check your rtsp_links.txt file and restart the application.";
+                        liveFeedTitle.textContent = 'Live Feed: Offline';
+                        liveFeedDescription.textContent = 'No active streams found.';
+                    }
+                } catch (error) {
+                    console.error("Error setting up video feed:", error);
+                    videoFeed.alt = "Error loading video feed. Check the console and ensure the backend is running.";
+                    liveFeedTitle.textContent = 'Live Feed: Error';
+                    liveFeedDescription.textContent = 'Could not connect to the backend to get channel list.';
+                }
+            }
+            
+            // Function to fetch and render reports
+            async function fetchReports() {
+                try {
+                    const response = await fetch('/reports');
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    const reports = await response.json();
+                    
+                    if (loadingIndicator) loadingIndicator.style.display = 'none';
+                    reportsContainer.innerHTML = ''; // Clear previous reports
+
+                    if (reports.length === 0) {
+                        reportsContainer.innerHTML = '<p class="text-center text-gray-400 py-8">No violations reported yet.</p>';
+                        return;
+                    }
+
+                    reports.forEach(report => {
+                        const reportEl = document.createElement('div');
+                        reportEl.className = 'report-item p-3';
+                        reportEl.innerHTML = `
+                            <div class="flex justify-between items-center">
+                                <p class="font-semibold text-red-400">${report.message}</p>
+                                <p class="text-xs text-gray-400">${report.timestamp}</p>
+                            </div>
+                            <p class="text-sm text-gray-300 mt-1">${report.details}</p>
+                            <p class="text-xs text-gray-500 mt-1">Camera: ${report.channel_id}</p>
+                        `;
+                        reportsContainer.appendChild(reportEl);
+                    });
+
+                } catch (error) {
+                    console.error("Failed to fetch reports:", error);
+                    if (loadingIndicator) loadingIndicator.style.display = 'none';
+                    reportsContainer.innerHTML = '<p class="text-center text-red-400 py-8">Error loading reports. Check console.</p>';
+                }
+            }
+
+            // Initial setup
+            await setupVideoFeed();
+            fetchReports();
+            setInterval(fetchReports, 10000);
+        });
+    </script>
+</body>
+</html>
+
