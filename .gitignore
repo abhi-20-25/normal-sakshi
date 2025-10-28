@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+
+# OS / Editor
+.DS_Store
+*.swp
+
+# Model Files
+*.pt
+*.pth
+
+# Database
+*.db
+*.sqlite3
