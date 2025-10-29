@@ -372,17 +372,7 @@
         const tabButtons = evt.currentTarget.parentElement.querySelectorAll('.tab-button'); tabButtons.forEach(tb => tb.classList.remove('active'));
         document.getElementById(`tab-content-${appName}-${channelId}`).classList.add('active'); evt.currentTarget.classList.add('active'); fetchHistory(appName, 1, channelId);
     }
-    async function generateQueueReport(channelId, params = { period: 'today' }) {
-        const errorEl = document.getElementById(`queue-error-${channelId}`); const chartCanvas = document.getElementById(`queue-chart-${channelId}`); if (!errorEl || !chartCanvas) return;
-        let url = `/queue_report/${channelId}?`; const urlParams = new URLSearchParams(params); url += urlParams.toString(); errorEl.textContent = 'Loading report...'; const response = await fetch(url); const data = await response.json();
-        if (data.error) { errorEl.textContent = data.error; if (queueCharts[channelId]) { queueCharts[channelId].destroy(); delete queueCharts[channelId]; } document.getElementById(`summary-max-queue-${channelId}`).textContent = '--'; document.getElementById(`summary-avg-queue-${channelId}`).textContent = '--'; document.getElementById(`summary-peak-hour-${channelId}`).textContent = '--'; return; }
-        errorEl.textContent = ''; document.getElementById(`summary-max-queue-${channelId}`).textContent = data.summary.max_queue_length; document.getElementById(`summary-avg-queue-${channelId}`).textContent = data.summary.avg_queue_length; document.getElementById(`summary-peak-hour-${channelId}`).textContent = data.summary.peak_hour; renderQueueChart(channelId, chartCanvas.getContext('2d'), data);
-    }
-    function renderQueueChart(channelId, ctx, data) {
-        if (queueCharts[channelId]) { queueCharts[channelId].destroy(); }
-        queueCharts[channelId] = new Chart(ctx, { type: 'line', data: { labels: data.labels, datasets: [{ label: 'People in Queue', data: data.data, backgroundColor: 'rgba(35, 134, 54, 0.2)', borderColor: 'rgba(46, 160, 67, 1)', borderWidth: 2, tension: 0.1, fill: true, pointRadius: 2 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grid: { color: 'rgba(201, 209, 217, 0.1)' }, ticks: { color: 'var(--text-secondary)'} }, x: { grid: { color: 'rgba(201, 209, 217, 0.1)' }, ticks: { color: 'var(--text-secondary)', maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } } } } });
-    }
-    function applyQueueDateFilter(channelId) { const startDate = document.getElementById(`start-date-QueueMonitor-${channelId}`).value; const endDate = document.getElementById(`end-date-QueueMonitor-${channelId}`).value; if (startDate && endDate) { generateQueueReport(channelId, { start_date: startDate, end_date: endDate }); } else { alert("Please select both a start and end date."); } }
+    // Queue monitoring functions removed - simplified to show only current queue count and detection history
     
     async function generateShutterReport() {
         if (!activeShutterChannel) return;
@@ -460,14 +450,46 @@
                 setTimeout(() => fetchPCReport(channel.id, today), 100);
             } else if (appName === 'QueueMonitor') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box" id="stream-box-QueueMonitor-${channel.id}"><div class="stream-header">${channel.name}</div><img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed"><canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas><div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Queue Analytics</h3><button class="btn" onclick="startRoiEdit('QueueMonitor', '${channel.id}')">Edit ROI</button><div class="roi-controls"><button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'main'">Draw Queue Area (Yellow)</button><button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'secondary'">Draw Cashier Area (Cyan)</button><button class="btn" onclick="resetRoi('QueueMonitor', '${channel.id}')">Reset Current</button><div style="margin-left:auto; display:flex; gap:10px;"><button class="btn" onclick="cancelRoiEdit('QueueMonitor', '${channel.id}')">Cancel</button><button class="btn btn-primary" onclick="saveRoi('QueueMonitor', '${channel.id}')">Save ROI</button></div></div><div class="report-controls" style="flex-wrap: wrap; margin-top: 20px;"><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'today' })">Today</button><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'yesterday' })">Yesterday</button><button class="btn" onclick="generateQueueReport('${channel.id}', { period: 'last7days' })">Last 7 Days</button></div><div id="queue-error-${channel.id}" style="color: #f87171; margin-bottom: 15px;"></div><div class="summary-cards"><div class="summary-card"><h4>Max Queue Length</h4><p id="summary-max-queue-${channel.id}">--</p></div><div class="summary-card"><h4>Avg. Queue Length</h4><p id="summary-avg-queue-${channel.id}">--</p></div><div class="summary-card"><h4>Peak Hour</h4><p id="summary-peak-hour-${channel.id}">--</p></div></div><div style="height: 250px;"><canvas id="queue-chart-${channel.id}"></canvas></div></div></div><div style="margin-top:20px;"><h3>Detection History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-QueueMonitor-${channel.id}"><label>To:</label><input type="date" id="end-date-QueueMonitor-${channel.id}"><button class="btn" onclick="applyDateFilter('QueueMonitor', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-QueueMonitor-${channel.id}"></div><div class="pagination" id="pagination-QueueMonitor-${channel.id}"></div></div>`;
+                contentHTML = `<div class="layout-grid">
+                    <div class="stream-box" id="stream-box-QueueMonitor-${channel.id}">
+                        <div class="stream-header">${channel.name}</div>
+                        <img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed">
+                        <canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas>
+                        <div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div>
+                    </div>
+                    <div class="report-section">
+                        <h3>Detection History</h3>
+                        <div class="filter-controls">
+                            <label>From:</label>
+                            <input type="date" id="start-date-QueueMonitor-${channel.id}">
+                            <label>To:</label>
+                            <input type="date" id="end-date-QueueMonitor-${channel.id}">
+                            <button class="btn" onclick="applyDateFilter('QueueMonitor', '${channel.id}')">Filter</button>
+                        </div>
+                        <div class="history-grid" id="grid-QueueMonitor-${channel.id}"></div>
+                        <div class="pagination" id="pagination-QueueMonitor-${channel.id}"></div>
+
+                        <div style="margin-top: 16px;">
+                            <button class="btn" onclick="startRoiEdit('QueueMonitor', '${channel.id}')">Edit ROI</button>
+                            <div class="roi-controls">
+                                <button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'main'">Draw Queue Area (Yellow)</button>
+                                <button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'secondary'">Draw Cashier Area (Cyan)</button>
+                                <button class="btn" onclick="resetRoi('QueueMonitor', '${channel.id}')">Reset Current</button>
+                                <div style="margin-left:auto; display:flex; gap:10px;">
+                                    <button class="btn" onclick="cancelRoiEdit('QueueMonitor', '${channel.id}')">Cancel</button>
+                                    <button class="btn btn-primary" onclick="saveRoi('QueueMonitor', '${channel.id}')">Save ROI</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
                 setTimeout(() => {
                     const canvas = document.getElementById(`stream-box-QueueMonitor-${channel.id}`).querySelector('.roi-canvas');
                     const img = document.getElementById(`stream-box-QueueMonitor-${channel.id}`).querySelector('img');
                     img.onload = () => { canvas.width = img.clientWidth; canvas.height = img.clientHeight; };
                     if(img.complete) { canvas.width = img.clientWidth; canvas.height = img.clientHeight; }
                 }, 500);
-                setTimeout(() => generateQueueReport(channel.id), 200); setTimeout(() => fetchHistory('QueueMonitor', 1, channel.id), 300);
+                setTimeout(() => fetchHistory('QueueMonitor', 1, channel.id), 300);
             } else if (appName === 'KitchenCompliance') {
                 const channel = config.channels[0];
                 contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div><img src="/video_feed/KitchenCompliance/${channel.id}" alt="Live feed"><div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div></div><div class="report-section"><h3>Compliance Violations</h3><div class="summary-cards"><div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div><div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div><div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div></div></div></div><div style="margin-top:20px;"><h3>Violation History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-KitchenCompliance-${channel.id}"><label>To:</label><input type="date" id="end-date-KitchenCompliance-${channel.id}"><button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div><div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div></div>`;
@@ -493,7 +515,12 @@
         });
     }
     socket.on('count_update', data => { const inCount = document.getElementById(`in-count-${data.channel_id}`); const outCount = document.getElementById(`out-count-${data.channel_id}`); if (inCount) inCount.textContent = data.in_count; if (outCount) outCount.textContent = data.out_count; });
-    socket.on('queue_update', data => { const queueCount = document.getElementById(`queue-count-${data.channel_id}`); if (queueCount) queueCount.textContent = data.count; });
+    socket.on('queue_update', data => { 
+        const queueCount = document.getElementById(`queue-count-${data.channel_id}`); 
+        const currentQueue = document.getElementById(`current-queue-${data.channel_id}`);
+        if (queueCount) queueCount.textContent = data.count; 
+        if (currentQueue) currentQueue.textContent = data.count;
+    });
     socket.on('shutter_update', data => {
         const { channel_id, last_status, last_status_time, first_open_time, first_close_time, total_open_duration_seconds, total_closed_duration_seconds } = data;
         document.getElementById(`shutter-status-${channel_id}`).textContent = last_status.toUpperCase();
