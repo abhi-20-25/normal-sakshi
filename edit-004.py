@@ -29,6 +29,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 
 # --- Module Imports ---
+from kitchen_compliance_monitor import KitchenComplianceProcessor
 
 # --- Basic Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -54,8 +55,9 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
     'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
-    'PeopleCounter': {'model_path': 'yolov8n.pt'},
-    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.4}
+    'PeopleCounter': {'model_path': 'yolov8n.pt' , 'confidence': 0.2},
+    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.2},
+    'KitchenCompliance': {'model_path': 'yolov8n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5}
 }
 
 
@@ -129,6 +131,17 @@ class RoiConfig(Base):
     app_name = Column(String, index=True)
     roi_points = Column(Text) # Storing as JSON string
     __table_args__ = (UniqueConstraint('channel_id', 'app_name', name='_roi_uc'),)
+
+class KitchenViolation(Base):
+    __tablename__ = "kitchen_violations"
+    id = Column(Integer, primary_key=True, index=True)
+    channel_id = Column(String, index=True)
+    channel_name = Column(String)
+    timestamp = Column(DateTime, default=lambda: datetime.now(IST))
+    violation_type = Column(String)
+    details = Column(String)
+    media_path = Column(String)
+    __table_args__ = (UniqueConstraint('media_path', name='_kitchen_media_path_uc'),)
 
 def get_stable_channel_id(link):
     return f"cam_{hashlib.md5(link.encode()).hexdigest()[:10]}"
@@ -596,6 +609,7 @@ def video_feed(app_name, channel_id):
     target_processor, target_class = None, None
     if app_name == 'PeopleCounter': target_class = PeopleCounterProcessor
     elif app_name == 'QueueMonitor': target_class = QueueMonitorProcessor
+    elif app_name == 'KitchenCompliance': target_class = KitchenComplianceProcessor
     if target_class: target_processor = next((p for p in processors if isinstance(p, target_class)), None)
     if target_processor and target_processor.is_alive():
         return Response(gen_video_feed(target_processor), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -818,6 +832,21 @@ def start_streams():
                 stream_processors[channel_id].append(qm_processor); qm_processor.start()
                 logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
                 atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
+        if 'KitchenCompliance' in active_app_names:
+            config = APP_TASKS_CONFIG['KitchenCompliance']
+            general_model = load_model(config['model_path'])
+            apron_cap_model = load_model(config['apron_cap_model'])
+            gloves_model = load_model(config['gloves_model'])
+            if general_model and apron_cap_model and gloves_model:
+                kc_processor = KitchenComplianceProcessor(
+                    link, channel_id, channel_name, SessionLocal, socketio, 
+                    send_telegram_notification, handle_detection
+                )
+                stream_processors[channel_id].append(kc_processor)
+                kc_processor.start()
+                logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
+                atexit.register(kc_processor.shutdown)
+                active_app_names.remove('KitchenCompliance')
         if active_app_names:
             tasks_for_multi_model = []
             for app_name in active_app_names:
@@ -840,6 +869,6 @@ if __name__ == "__main__":
         scheduler.start()
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
-        logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
+        logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5004")
+        socketio.run(app, host='0.0.0.0', port=5006, debug=False, allow_unsafe_werkzeug=True)
 
