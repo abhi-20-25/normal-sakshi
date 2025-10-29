@@ -51,6 +51,7 @@ LOGIN_PASSWORD = "Tneural123"
 os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER), exist_ok=True)
 os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'), exist_ok=True)
 
+#server
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
