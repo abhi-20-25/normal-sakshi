@@ -441,6 +441,7 @@
         }
 
         for (const appName of sortedAppNames) {
+            if (appName === 'Generic') continue; // Skip Generic app from frontend display
             const config = appConfigs[appName]; if (!config.channels || config.channels.length === 0) continue;
             const section = document.createElement('div'); section.className = 'app-section'; section.dataset.appName = appName;
             let contentHTML = '';
