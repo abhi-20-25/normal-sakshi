@@ -366,8 +366,8 @@ class PeopleCounterProcessor(threading.Thread):
                     if len(history) > 2: history.pop(0)
                     if len(history) == 2:
                         prev_x, curr_x = history
-                        if prev_x < line_x and curr_x >= line_x: self.counts['out'] += 1; count_changed = True
-                        elif prev_x > line_x and curr_x <= line_x: self.counts['in'] += 1; count_changed = True
+                        if prev_x < line_x and curr_x >= line_x: self.counts['in'] += 1; count_changed = True   # Left to Right = IN
+                        elif prev_x > line_x and curr_x <= line_x: self.counts['out'] += 1; count_changed = True  # Right to Left = OUT
                 if count_changed: self._update_and_log_counts()
             annotated_frame = results[0].plot() if results else frame
             line_x = int(annotated_frame.shape[1] * 0.5)
@@ -885,6 +885,6 @@ if __name__ == "__main__":
         scheduler.start()
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
-        logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5004")
-        socketio.run(app, host='0.0.0.0', port=5006, debug=False, allow_unsafe_werkzeug=True)
+        logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
 
