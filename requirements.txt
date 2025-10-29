@@ -25,7 +25,9 @@ eventlet>=0.33.0
 
 # Database / ORM
 SQLAlchemy>=1.4.0
-psycopg2-binary>=2.9.0
+psycopg2-binary
+pandas>=1.5.0
+openpyxl>=3.0.0
 
 # Geometry, scheduling, utilities
 Shapely>=2.0.0

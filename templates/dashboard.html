@@ -617,18 +617,36 @@
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
-            <div class="modal-content">
+            <div class="modal-content" style="width: 90%; max-width: 1000px;">
                 <div class="modal-header">
                     <h3>Manage Schedule - ${channelName}</h3>
                     <span class="close" onclick="this.parentElement.parentElement.parentElement.remove()">&times;</span>
                 </div>
                 <div class="modal-body">
-                    <div id="schedule-grid-${channelId}">
-                        <p>Loading schedule...</p>
+                    <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+                        <h4>📁 Upload Schedule File</h4>
+                        <p style="margin: 10px 0; color: #666;">Upload a CSV or Excel file to set the occupancy schedule automatically.</p>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <input type="file" id="schedule-file-${channelId}" accept=".csv,.xlsx,.xls" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; flex: 1; min-width: 200px;">
+                            <button class="btn btn-primary" onclick="uploadSchedule('${channelId}')">Upload & Apply</button>
+                            <a href="/api/occupancy/schedule/template" class="btn" style="background: #28a745; color: white; text-decoration: none; padding: 8px 16px; border-radius: 4px;">Download Template</a>
+                        </div>
+                        <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                            <strong>Supported formats:</strong> CSV, Excel (.xlsx, .xls)<br>
+                            <strong>Template includes:</strong> Sample schedule with business hours (8 AM - 8 PM)
+                        </div>
                     </div>
-                    <div style="margin-top: 20px;">
-                        <button class="btn btn-primary" onclick="saveSchedule('${channelId}')">Save Schedule</button>
-                        <button class="btn" onclick="this.parentElement.parentElement.parentElement.remove()">Cancel</button>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <h4>📋 Current Schedule (Manual Edit)</h4>
+                        <div id="schedule-grid-${channelId}" style="max-height: 400px; overflow-y: auto;">
+                            <p>Loading schedule...</p>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 20px; text-align: center;">
+                        <button class="btn btn-primary" onclick="saveSchedule('${channelId}')">Save Manual Changes</button>
+                        <button class="btn" onclick="this.parentElement.parentElement.parentElement.remove()" style="margin-left: 10px;">Cancel</button>
                     </div>
                 </div>
             </div>
@@ -713,6 +731,59 @@
     function viewOccupancyLogs(channelId) {
         // Open occupancy logs in a new window or modal
         window.open(`/occupancy-logs/${channelId}`, '_blank');
+    }
+
+    function uploadSchedule(channelId) {
+        const fileInput = document.getElementById(`schedule-file-${channelId}`);
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            alert('Please select a file to upload');
+            return;
+        }
+        
+        // Validate file type
+        const allowedTypes = ['.csv', '.xlsx', '.xls'];
+        const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+        if (!allowedTypes.includes(fileExtension)) {
+            alert('Please select a CSV or Excel file (.csv, .xlsx, .xls)');
+            return;
+        }
+        
+        // Show loading state
+        const uploadBtn = fileInput.nextElementSibling;
+        const originalText = uploadBtn.textContent;
+        uploadBtn.textContent = 'Uploading...';
+        uploadBtn.disabled = true;
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch(`/api/occupancy/schedule/upload/${channelId}`, {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✅ ${data.message}`);
+                // Reload the schedule display
+                loadSchedule(channelId);
+            } else {
+                alert(`❌ Error uploading schedule: ${data.error}`);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('❌ Error uploading schedule. Please try again.');
+        })
+        .finally(() => {
+            // Reset button state
+            uploadBtn.textContent = originalText;
+            uploadBtn.disabled = false;
+            // Clear file input
+            fileInput.value = '';
+        });
     }
 
     // Socket.IO handlers for OccupancyMonitor

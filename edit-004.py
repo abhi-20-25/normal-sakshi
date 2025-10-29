@@ -27,6 +27,7 @@ import csv
 import hashlib
 from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
+import pandas as pd
 
 # --- Module Imports ---
 from kitchen_compliance_monitor import KitchenComplianceProcessor
@@ -1328,6 +1329,108 @@ def get_occupancy_logs(channel_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/occupancy/schedule/template')
+@login_required
+def download_schedule_template():
+    """Download CSV template for schedule upload"""
+    try:
+        # Create template data
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        hours = [f"{i:02d}:00" for i in range(24)]
+        
+        # Create template with sample data
+        template_data = []
+        for day in days:
+            row = [day]
+            for hour in hours:
+                if 8 <= int(hour.split(':')[0]) <= 20:  # Business hours
+                    if day in ['Saturday', 'Sunday']:
+                        row.append(1)  # Weekend: 1 person
+                    else:
+                        row.append(2)  # Weekday: 2 people
+                else:
+                    row.append(0)  # Off hours: 0 people
+            template_data.append(row)
+        
+        # Create CSV
+        df = pd.DataFrame(template_data, columns=['Day'] + hours)
+        csv_buffer = io.StringIO()
+        df.to_csv(csv_buffer, index=False)
+        csv_content = csv_buffer.getvalue()
+        
+        return Response(
+            csv_content,
+            mimetype='text/csv',
+            headers={'Content-Disposition': 'attachment; filename=occupancy_schedule_template.csv'}
+        )
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/occupancy/schedule/upload/<channel_id>', methods=['POST'])
+@login_required
+def upload_schedule_file(channel_id):
+    """Upload and process schedule file (CSV/Excel)"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        if 'file' not in request.files:
+            return jsonify({"error": "No file provided"}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({"error": "No file selected"}), 400
+        
+        # Read file based on extension
+        if file.filename.endswith('.csv'):
+            df = pd.read_csv(io.StringIO(file.read().decode('utf-8')))
+        elif file.filename.endswith(('.xlsx', '.xls')):
+            df = pd.read_excel(io.BytesIO(file.read()))
+        else:
+            return jsonify({"error": "Unsupported file format. Use CSV or Excel files."}), 400
+        
+        # Validate format
+        if 'Day' not in df.columns:
+            return jsonify({"error": "CSV must have 'Day' column"}), 400
+        
+        # Process schedule data
+        schedule = {}
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+        
+        for _, row in df.iterrows():
+            day = row['Day']
+            if day not in days:
+                continue
+                
+            for col in df.columns:
+                if col != 'Day' and ':' in col:  # Time column
+                    time_slot = col
+                    required_count = int(row[col]) if pd.notna(row[col]) else 0
+                    
+                    if time_slot not in schedule:
+                        schedule[time_slot] = {}
+                    schedule[time_slot][day] = required_count
+        
+        # Find the OccupancyMonitor processor for this channel
+        processors = stream_processors.get(channel_id, [])
+        om_processor = next((p for p in processors if isinstance(p, OccupancyMonitorProcessor)), None)
+        
+        if om_processor:
+            success = om_processor.update_schedule(schedule)
+            if success:
+                return jsonify({
+                    "success": True, 
+                    "message": f"Schedule uploaded successfully for {len(schedule)} time slots",
+                    "schedule": schedule
+                })
+            else:
+                return jsonify({"success": False, "error": "Failed to update schedule"}), 500
+        else:
+            return jsonify({"success": False, "error": "OccupancyMonitor processor not found"}), 404
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @socketio.on('connect')
 def handle_connect(): logging.info('Frontend client connected')
 
@@ -1423,5 +1526,5 @@ if __name__ == "__main__":
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
         logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5002, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
 
