@@ -38,7 +38,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "sqlite:///./cctv_dashboard.db"
+DATABASE_URL = "postgresql://postgres:Tneural01@localhost:5432/sakshi"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
@@ -55,8 +55,8 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
     'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
-    'PeopleCounter': {'model_path': 'yolov8n.pt' , 'confidence': 0.2},
-    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.2},
+    'PeopleCounter': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
+    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
     'KitchenCompliance': {'model_path': 'yolov8n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5}
 }
 
@@ -65,13 +65,14 @@ APP_TASKS_CONFIG = {
 # THIS IS NOW A FALLBACK if no ROI is in the database.
 QUEUE_MONITOR_ROI_CONFIG = {
     "Checkout Queue": {
-        "roi_points": [[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.761, 0.653]],
-        "secondary_roi_points": [[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
+        "roi_points": [[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
+        "secondary_roi_points":[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
     }
 }
-QUEUE_DWELL_TIME_SEC = 1.0
-QUEUE_ALERT_THRESHOLD = 2
-QUEUE_ALERT_COOLDOWN_SEC = 60
+QUEUE_DWELL_TIME_SEC = 0.10        # How long a person must stay in queue to be counted (0.1 seconds)
+QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
+QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
+QUEUE_ALERT_COOLDOWN_SEC = 60      # 60-second cooldown between alerts
 
 # --- Flask and SocketIO Setup ---
 app = Flask(__name__)
@@ -390,6 +391,7 @@ class QueueMonitorProcessor(threading.Thread):
         self.queue_tracker = defaultdict(lambda: {'entry_time': 0})
         self.current_queue_count = 0
         self.last_alert_time = 0
+        self.last_overqueue_time = 0  # Track overqueue alerts separately
         self.roi_poly = Polygon([])
         self.secondary_roi_poly = Polygon([])
         self._load_roi_from_db()
@@ -487,9 +489,16 @@ class QueueMonitorProcessor(threading.Thread):
 
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
         should_alert = (
-            valid_queue_count >= 2 and
+            valid_queue_count >= QUEUE_ALERT_THRESHOLD and
             people_in_secondary_roi == 0 and
             (current_time - self.last_alert_time) > QUEUE_ALERT_COOLDOWN_SEC
+        )
+        
+        # Overqueue detection: when cashier is present and queue has 4+ people
+        should_overqueue_alert = (
+            valid_queue_count >= QUEUE_OVERQUEUE_THRESHOLD and
+            people_in_secondary_roi > 0 and
+            (current_time - self.last_overqueue_time) > QUEUE_ALERT_COOLDOWN_SEC
         )
 
         annotated_frame = results[0].plot() if results and results[0] else frame
@@ -513,6 +522,13 @@ class QueueMonitorProcessor(threading.Thread):
             logging.warning(f"QUEUE ALERT on {self.channel_name}: {alert_message}")
             send_telegram_notification(f"🚨 **Queue Alert: {self.channel_name}** 🚨\n{alert_message}")
             handle_detection('QueueMonitor', self.channel_id, [annotated_frame], alert_message, is_gif=False)
+        
+        if should_overqueue_alert:
+            self.last_overqueue_time = current_time
+            overqueue_message = f"OVERQUEUE: {valid_queue_count} people in queue with cashier present!"
+            logging.warning(f"OVERQUEUE ALERT on {self.channel_name}: {overqueue_message}")
+            send_telegram_notification(f"⚠️ **Overqueue Alert: {self.channel_name}** ⚠️\n{overqueue_message}")
+            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], overqueue_message, is_gif=False)
 
         cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
         cv2.putText(annotated_frame, f"Counter Area: {people_in_secondary_roi}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
