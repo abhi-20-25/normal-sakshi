@@ -38,7 +38,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:Tneural01@localhost:5432/sakshi"
+DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
@@ -878,7 +878,7 @@ def start_streams():
                 logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
                 atexit.register(multi_processor.shutdown)
 
-if __name__ == "__main__":
+'''if __name__ == "__main__":
     if initialize_database():
         scheduler = BackgroundScheduler(timezone=str(IST))
         scheduler.add_job(log_queue_counts, 'interval', minutes=5)
@@ -886,5 +886,23 @@ if __name__ == "__main__":
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
         logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)'''
+
+# --- Allow direct run (for testing locally) ---
+if not db_connected:
+    if initialize_database():
+        logging.info("Database initialized successfully on module import.")
+        logging.info("Running Flask-SocketIO directly (debug mode).")
+        scheduler = BackgroundScheduler(timezone=str(IST))
+        scheduler.add_job(log_queue_counts, 'interval', minutes=5)
+        scheduler.start()
+        atexit.register(lambda: scheduler.shutdown())
+        start_streams()
+    else:
+        logging.error("Failed to initialize database on import.")
+
+if __name__ == "__main__":
+    logging.info("Running Flask-SocketIO directly (debug mode).")
+    socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
+
 
