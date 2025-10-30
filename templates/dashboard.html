@@ -173,8 +173,11 @@
     <img id="lightbox-img" src="">
 </div>
 
+<!-- Provide app configs as JSON to avoid JS parse issues -->
+<script id="app-configs" type="application/json">{{ app_configs|tojson|safe }}</script>
+
 <script>
-    const appConfigs = {{ app_configs|tojson }};
+    const appConfigs = JSON.parse(document.getElementById('app-configs').textContent);
     const dashboardContainer = document.getElementById('dashboard-container');
     const socket = io();
     const reportModal = document.getElementById('reportModal');
@@ -346,18 +349,48 @@
         const grid = document.getElementById(`grid-${appName}-${channelId}`);
         const pagination = document.getElementById(`pagination-${appName}-${channelId}`);
         if (!grid) return;
-        let url = `/history/${appName}?page=${page}&limit=10`; if (channelId) url += `&channel_id=${channelId}`; if (startDate && endDate) url += `&start_date=${startDate}&end_date=${endDate}`;
+        let url = `/history/${appName}?page=${page}&limit=10`;
+        if (channelId) url += `&channel_id=${channelId}`;
+        if (startDate && endDate) url += `&start_date=${startDate}&end_date=${endDate}`;
         grid.innerHTML = '<p>Loading history...</p>';
-        const response = await fetch(url); const data = await response.json();
-        if (data.error) { grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; return; }
-        grid.innerHTML = ''; if (data.detections.length === 0) { grid.innerHTML = '<p>No detections found for the selected criteria.</p>'; }
-        else { data.detections.forEach(d => { const item = document.createElement('div'); item.className = 'history-item'; item.innerHTML = `<img src="${d.media_url}" alt="Detection image" onclick="openLightbox('${d.media_url}')"><div class="history-item-info"><p><strong>Message:</strong> ${d.message}</p><p><strong>Time:</strong> ${d.timestamp}</p></div>`; grid.appendChild(item); }); }
-        if (pagination) {
-            pagination.innerHTML = ''; const totalPages = Math.ceil(data.total / data.limit);
-            if (totalPages > 1) {
-                const prevBtn = document.createElement('button'); prevBtn.textContent = 'Previous'; prevBtn.disabled = data.page === 1; prevBtn.onclick = () => fetchHistory(appName, data.page - 1, channelId, startDate, endDate); pagination.appendChild(prevBtn);
-                const nextBtn = document.createElement('button'); nextBtn.textContent = 'Next'; nextBtn.disabled = data.page >= totalPages; nextBtn.onclick = () => fetchHistory(appName, data.page + 1, channelId, startDate, endDate); pagination.appendChild(nextBtn);
+        try {
+            const response = await fetch(url, { credentials: 'same-origin' });
+            if (!response.ok) {
+                grid.innerHTML = `<p style="color:#f87171;">HTTP ${response.status} while fetching history</p>`;
+                return;
             }
+            const data = await response.json();
+            if (data.error) { grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; return; }
+            grid.innerHTML = '';
+            if (data.detections.length === 0) {
+                grid.innerHTML = '<p>No detections found for the selected criteria.</p>';
+            } else {
+                data.detections.forEach(d => {
+                    const item = document.createElement('div');
+                    item.className = 'history-item';
+                    item.innerHTML = `<img src="${d.media_url}" alt="Detection image" onclick="openLightbox('${d.media_url}')"><div class="history-item-info"><p><strong>Message:</strong> ${d.message}</p><p><strong>Time:</strong> ${d.timestamp}</p></div>`;
+                    grid.appendChild(item);
+                });
+            }
+            if (pagination) {
+                pagination.innerHTML = '';
+                const totalPages = Math.ceil(data.total / data.limit);
+                if (totalPages > 1) {
+                    const prevBtn = document.createElement('button');
+                    prevBtn.textContent = 'Previous';
+                    prevBtn.disabled = data.page === 1;
+                    prevBtn.onclick = () => fetchHistory(appName, data.page - 1, channelId, startDate, endDate);
+                    pagination.appendChild(prevBtn);
+                    const nextBtn = document.createElement('button');
+                    nextBtn.textContent = 'Next';
+                    nextBtn.disabled = data.page >= totalPages;
+                    nextBtn.onclick = () => fetchHistory(appName, data.page + 1, channelId, startDate, endDate);
+                    pagination.appendChild(nextBtn);
+                }
+            }
+        } catch (err) {
+            console.error('History fetch error:', err);
+            grid.innerHTML = `<p style=\"color:#f87171;\">Failed to load history. Check login and network.</p>`;
         }
     }
     function applyDateFilter(appName, channelId) { const targetId = `${appName}-${channelId}`; const startDate = document.getElementById(`start-date-${targetId}`).value; const endDate = document.getElementById(`end-date-${targetId}`).value; if (startDate && endDate) { fetchHistory(appName, 1, channelId, startDate, endDate); } else { alert("Please select both a start and end date."); } }
@@ -548,7 +581,7 @@
                             </div>
                         </div>
                         <div style="margin-top: 16px;">
-                            <button class="btn" onclick="openScheduleModal('${channel.id}', '${channel.name}')">Manage Schedule</button>
+                            <button class="btn" onclick="promptScheduleUpload('${channel.id}', '${channel.name}')">Manage Schedule</button>
                             <button class="btn" onclick="viewOccupancyLogs('${channel.id}')">View Logs</button>
                         </div>
                     </div>
@@ -652,7 +685,44 @@
             </div>
         `;
         document.body.appendChild(modal);
+        modal.style.display = 'block';
         loadSchedule(channelId);
+    }
+
+    function promptScheduleUpload(channelId, channelName) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.csv,.xlsx,.xls';
+        input.onchange = () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!['.csv', '.xlsx', '.xls'].includes(ext)) {
+                alert('Please select a CSV or Excel file (.csv, .xlsx, .xls)');
+                return;
+            }
+            const formData = new FormData();
+            formData.append('file', file);
+            fetch(`/api/occupancy/schedule/upload/${channelId}`, {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`✅ ${data.message}`);
+                    openScheduleModal(channelId, channelName);
+                } else {
+                    alert(`❌ Error uploading schedule: ${data.error}`);
+                }
+            })
+            .catch(err => {
+                console.error(err);
+                alert('❌ Error uploading schedule. Please try again.');
+            });
+        };
+        input.click();
     }
 
     function loadSchedule(channelId) {

@@ -72,7 +72,7 @@ QUEUE_MONITOR_ROI_CONFIG = {
         "secondary_roi_points":[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
     }
 }
-QUEUE_DWELL_TIME_SEC = 0.10        # How long a person must stay in queue to be counted (0.1 seconds)
+QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
 QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
 QUEUE_ALERT_COOLDOWN_SEC = 60      # 60-second cooldown between alerts
@@ -235,6 +235,8 @@ def handle_detection(app_name, channel_id, frames, message, is_gif=False):
     with app.test_request_context():
         media_url = url_for('static', filename=media_path)
     socketio.emit('new_detection', {'app_name': app_name, 'channel_id': channel_id, 'timestamp': timestamp.strftime("%Y-%m-%d %H:%M:%S"), 'message': message, 'media_url': media_url})
+    # Return the relative media_path so callers (e.g., KitchenCompliance) can persist it
+    return media_path
 
 class MultiModelProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, tasks, detection_callback):
@@ -465,6 +467,17 @@ class QueueMonitorProcessor(threading.Thread):
                 _, jpeg = cv2.imencode('.jpg', placeholder); return jpeg.tobytes()
             _, jpeg = cv2.imencode('.jpg', self.latest_frame); return jpeg.tobytes()
 
+    # Non-blocking DB persistence to avoid adding latency in the frame loop
+    def _persist_queue_count(self, count: int) -> None:
+        if not db_connected:
+            return
+        try:
+            with SessionLocal() as db:
+                db.add(QueueLog(channel_id=self.channel_id, queue_count=count))
+                db.commit()
+        except Exception as e:
+            logging.error(f"Failed to save queue count to DB for {self.channel_name}: {e}")
+
     def run(self):
         cap = cv2.VideoCapture(self.rtsp_url)
         if not cap.isOpened():
@@ -492,12 +505,12 @@ class QueueMonitorProcessor(threading.Thread):
 
     def process_frame(self, frame):
         current_time = time.time()
-        results = self.model.track(frame, persist=True, classes=[0], verbose=False, conf=0.4)
+        results = self.model.track(frame, persist=True, classes=[0], verbose=False, conf=0.25)
         current_tracks_in_main_roi, people_in_secondary_roi = set(), 0
 
         if results and results[0].boxes.id is not None:
             for box, track_id in zip(results[0].boxes.xyxy.cpu(), results[0].boxes.id.int().cpu().tolist()):
-                person_point = Point(int((box[0] + box[2]) / 2), int(box[3]))
+                person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
                 if self.roi_poly.is_valid and self.roi_poly.contains(person_point):
                     current_tracks_in_main_roi.add(track_id)
                     tracker = self.queue_tracker[track_id]
@@ -509,6 +522,8 @@ class QueueMonitorProcessor(threading.Thread):
         if self.current_queue_count != valid_queue_count:
             self.current_queue_count = valid_queue_count
             socketio.emit('queue_update', {'channel_id': self.channel_id, 'count': self.current_queue_count})
+            # Instant, non-blocking save to DB (disabled)
+            # threading.Thread(target=self._persist_queue_count, args=(self.current_queue_count,), daemon=True).start()
 
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
         should_alert = (
@@ -1529,10 +1544,10 @@ def start_streams():
 if __name__ == "__main__":
     if initialize_database():
         scheduler = BackgroundScheduler(timezone=str(IST))
-        scheduler.add_job(log_queue_counts, 'interval', minutes=5)
+        # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
         scheduler.start()
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
         logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=5002, debug=False, allow_unsafe_werkzeug=True)
 
