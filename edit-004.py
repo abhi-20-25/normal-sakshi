@@ -29,6 +29,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 import pandas as pd
 
+# --- CUDA/Backend Tuning ---
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+if DEVICE == 'cuda':
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision('high')
+    except Exception:
+        pass
+
 # --- Module Imports ---
 from kitchen_compliance_monitor import KitchenComplianceProcessor
 
@@ -84,6 +93,45 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 
 # --- Global State Management ---
 stream_processors = {}
+
+# Shared RTSP frame provider per camera to minimize latency and duplicate decoding
+class FrameHub(threading.Thread):
+    def __init__(self, rtsp_url, name):
+        super().__init__(name=f"FrameHub-{name}", daemon=True)
+        self.rtsp_url = rtsp_url
+        self.latest = None
+        self.lock = threading.Lock()
+        self.is_running = True
+
+    def run(self):
+        cap = cv2.VideoCapture(self.rtsp_url)
+        if not cap.isOpened():
+            logging.error(f"FrameHub could not open stream: {self.rtsp_url}")
+            return
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FPS, 10)
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+        while self.is_running:
+            for _ in range(2):
+                cap.grab()
+            ret, frame = cap.retrieve()
+            if not ret:
+                time.sleep(1)
+                cap.release()
+                cap = cv2.VideoCapture(self.rtsp_url)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap.set(cv2.CAP_PROP_FPS, 10)
+                continue
+            with self.lock:
+                self.latest = frame
+        cap.release()
+
+    def get_latest(self):
+        with self.lock:
+            return None if self.latest is None else self.latest.copy()
+
+    def stop(self):
+        self.is_running = False
 
 # --- Database Setup ---
 Base = declarative_base()
@@ -252,15 +300,11 @@ class MultiModelProcessor(threading.Thread):
         self.is_running = False
 
     def run(self):
-        cap = cv2.VideoCapture(self.rtsp_url)
-        if not cap.isOpened():
-            logging.error(f"Could not open stream for {self.channel_id}: {self.rtsp_url}")
-            return
         while self.is_running:
-            ret, frame = cap.read()
-            if not ret:
-                logging.warning(f"Reconnecting to stream {self.channel_id}..."); time.sleep(5)
-                cap.release(); cap = cv2.VideoCapture(self.rtsp_url); continue
+            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+            if frame is None:
+                time.sleep(0.01)
+                continue
 
             current_time = time.time()
 
@@ -274,7 +318,13 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
-                        results = task['model'](frame, **model_args)
+                        with torch.inference_mode():
+                            results = task['model'](
+                                frame,
+                                device=DEVICE,
+                                half=(DEVICE == 'cuda'),
+                                **model_args
+                            )
 
                         if results and len(results[0].boxes) > 0:
                             self.last_detection_times[app_name] = current_time
@@ -290,7 +340,7 @@ class MultiModelProcessor(threading.Thread):
                             else:
                                 annotated_frame = results[0].plot()
                                 self.detection_callback(app_name, self.channel_id, [annotated_frame], f"{app_name} detected.", False)
-        cap.release()
+        # No cap to release when using FrameHub
 
 class PeopleCounterProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, model, detection_callback, socketio):
@@ -374,13 +424,23 @@ class PeopleCounterProcessor(threading.Thread):
                 self.last_saved_hour = datetime.now(IST).hour
 
     def run(self):
-        cap = cv2.VideoCapture(self.rtsp_url)
         while self.is_running:
             self._check_for_new_day()
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(5); cap.release(); cap = cv2.VideoCapture(self.rtsp_url); continue
-            results = self.model.track(frame, persist=True, classes=[0], conf=0.5, iou=0.5, verbose=False)
+            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+            if frame is None:
+                time.sleep(0.01)
+                continue
+            with torch.inference_mode():
+                results = self.model.track(
+                    frame,
+                    persist=True,
+                    classes=[0],
+                    conf=0.5,
+                    iou=0.5,
+                    verbose=False,
+                    device=DEVICE,
+                    half=(DEVICE == 'cuda')
+                )
             if results and results[0].boxes.id is not None:
                 boxes, track_ids = results[0].boxes.xywh.cpu(), results[0].boxes.id.int().cpu().tolist()
                 line_x, count_changed = int(frame.shape[1] * 0.5), False
@@ -401,7 +461,7 @@ class PeopleCounterProcessor(threading.Thread):
             cv2.putText(annotated_frame, f"OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             with self.lock: self.latest_frame = annotated_frame.copy()
             socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
-        cap.release()
+        # No cap to release when using FrameHub
 
 class QueueMonitorProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, model):
@@ -485,17 +545,12 @@ class QueueMonitorProcessor(threading.Thread):
             logging.error(f"Failed to save queue count to DB for {self.channel_name}: {e}")
 
     def run(self):
-        cap = cv2.VideoCapture(self.rtsp_url)
-        if not cap.isOpened():
-            logging.error(f"Could not open QueueMonitor stream for {self.channel_name}")
-            return
-
         first_frame = True
         while self.is_running:
-            ret, frame = cap.read()
-            if not ret:
-                logging.warning(f"Reconnecting to QueueMonitor stream {self.channel_name}..."); time.sleep(5)
-                cap.release(); cap = cv2.VideoCapture(self.rtsp_url); continue
+            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+            if frame is None:
+                time.sleep(0.01)
+                continue
             
             if first_frame:
                 h, w, _ = frame.shape
@@ -507,11 +562,20 @@ class QueueMonitorProcessor(threading.Thread):
 
             self.process_frame(frame.copy())
 
-        cap.release()
+        # No cap to release when using FrameHub
 
     def process_frame(self, frame):
         current_time = time.time()
-        results = self.model.track(frame, persist=True, classes=[0], verbose=False, conf=0.25)
+        with torch.inference_mode():
+            results = self.model.track(
+                frame,
+                persist=True,
+                classes=[0],
+                verbose=False,
+                conf=0.25,
+                device=DEVICE,
+                half=(DEVICE == 'cuda')
+            )
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         if results and results[0].boxes.id is not None:
@@ -724,18 +788,19 @@ class OccupancyMonitorProcessor(threading.Thread):
         """Enhanced YOLO detection with CUDA support and maximum accuracy"""
         try:
             # Enhanced detection with very low confidence for maximum recall
-            results = self.model(
-                frame, 
-                conf=0.15,           # VERY LOW threshold for maximum detection
-                iou=0.40,            # Lowered IOU for better NMS
-                classes=[0],         # Only detect person class
-                verbose=False,
-                device=self.device,  # Use CUDA if available
-                imgsz=640,           # Image size
-                max_det=100,         # Handle up to 100 people
-                agnostic_nms=True,   # Class-agnostic NMS
-                half=False           # Full precision for accuracy
-            )
+            with torch.inference_mode():
+                results = self.model(
+                    frame, 
+                    conf=0.15,
+                    iou=0.40,
+                    classes=[0],
+                    verbose=False,
+                    device=self.device,
+                    imgsz=640,
+                    max_det=100,
+                    agnostic_nms=True,
+                    half=(self.device == 'cuda')
+                )
             person_count = 0
             detections = []
             
@@ -883,25 +948,8 @@ class OccupancyMonitorProcessor(threading.Thread):
         logging.info(f"Starting Enhanced Occupancy Monitor for {self.channel_name}...")
         logging.info(f"Device: {self.device.upper()}, Confidence: 0.15, Mode: CONTINUOUS (Smooth streaming)")
         
-        cap = cv2.VideoCapture(self.rtsp_url)
-        if not cap.isOpened():
-            logging.error(f"Failed to open RTSP stream: {self.rtsp_url}")
-            return
-        
-        # Zero-lag settings
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
-        cap.set(cv2.CAP_PROP_FPS, 10)  # Ultra-low capture FPS
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # Use MJPEG for faster decode
-        
-        # Get stream FPS for smooth playback
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        if fps > 0 and fps < 120:
-            frame_delay = 1.0 / fps
-            logging.info(f"Video FPS: {fps:.1f}, Frame delay: {frame_delay:.3f}s")
-        else:
-            # RTSP stream - use minimal delay
-            frame_delay = 0.01  # 100 FPS max for RTSP (smooth streaming)
-            logging.info(f"RTSP stream detected, using minimal frame delay: {frame_delay}s")
+        # Use FrameHub for frames
+        frame_delay = 0.01
         
         reconnect_attempts = 0
         max_reconnect_attempts = 5
@@ -912,24 +960,9 @@ class OccupancyMonitorProcessor(threading.Thread):
         while self.is_running:
             frame_start_time = time.time()
             
-            # Aggressive frame skipping to get the absolute latest frame (zero lag)
-            for _ in range(3):
-                cap.grab()
-            
-            ret, frame = cap.retrieve()
-            
-            if not ret:
-                logging.warning(f"Failed to read frame from {self.channel_name}, attempting reconnect...")
-                cap.release()
-                time.sleep(2)
-                cap = cv2.VideoCapture(self.rtsp_url)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                cap.set(cv2.CAP_PROP_FPS, 15)
-                reconnect_attempts += 1
-                
-                if reconnect_attempts >= max_reconnect_attempts:
-                    logging.error(f"Max reconnection attempts reached for {self.channel_name}")
-                    break
+            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+            if frame is None:
+                time.sleep(0.01)
                 continue
             
             reconnect_attempts = 0
@@ -1037,7 +1070,6 @@ class OccupancyMonitorProcessor(threading.Thread):
             if sleep_time > 0:
                 time.sleep(sleep_time)
         
-        cap.release()
         logging.info(f"Occupancy Monitor stopped for {self.channel_name}")
     
     def stop(self):
@@ -1491,14 +1523,41 @@ def upload_schedule_file(channel_id):
 @socketio.on('connect')
 def handle_connect(): logging.info('Frontend client connected')
 
-def load_model(model_path):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    if not os.path.exists(model_path): logging.error(f"Model file not found: {model_path}"); return None
+_MODEL_CACHE = {}
+
+def load_model(model_path: str):
+    if model_path in _MODEL_CACHE:
+        return _MODEL_CACHE[model_path]
+    if not os.path.exists(model_path):
+        logging.error(f"Model file not found: {model_path}")
+        return None
     try:
-        model = YOLO(model_path); model.to(device)
-        logging.info(f"Successfully loaded model '{model_path}' on '{device}'")
+        model = YOLO(model_path)
+        model.to(DEVICE)
+        try:
+            model.fuse()
+        except Exception:
+            pass
+        if DEVICE == 'cuda':
+            try:
+                model.model.half()
+            except Exception:
+                pass
+        # Warmup to remove first-frame CUDA lag
+        try:
+            import numpy as _np
+            dummy = _np.zeros((640, 640, 3), dtype=_np.uint8)
+            with torch.inference_mode():
+                for _ in range(3):
+                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=DEVICE, verbose=False)
+        except Exception:
+            pass
+        logging.info(f"Loaded '{model_path}' on {DEVICE} (half={DEVICE=='cuda'})")
+        _MODEL_CACHE[model_path] = model
         return model
-    except Exception as e: logging.error(f"Failed to load model '{model_path}': {e}"); return None
+    except Exception as e:
+        logging.error(f"Failed to load model '{model_path}': {e}")
+        return None
 
 def start_streams():
     if not os.path.exists(RTSP_LINKS_FILE):
@@ -1519,10 +1578,15 @@ def start_streams():
         channel_id, channel_name, app_names = assignment['id'], assignment['name'], list(assignment['apps'])
         if channel_id not in stream_processors: stream_processors[channel_id] = []
         active_app_names = app_names[:]
+        # Start a shared FrameHub per link
+        hub = FrameHub(link, channel_name)
+        hub.start()
+        atexit.register(hub.stop)
         if 'PeopleCounter' in active_app_names:
             model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
             if model_obj:
                 pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
+                pc_processor.frame_hub = hub
                 stream_processors[channel_id].append(pc_processor); pc_processor.start()
                 logging.info(f"Started PeopleCounter for {channel_id} ({channel_name}).")
                 atexit.register(pc_processor.shutdown); active_app_names.remove('PeopleCounter')
@@ -1530,6 +1594,7 @@ def start_streams():
             model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
             if model_obj:
                 qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj)
+                qm_processor.frame_hub = hub
                 stream_processors[channel_id].append(qm_processor); qm_processor.start()
                 logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
                 atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
@@ -1543,6 +1608,9 @@ def start_streams():
                     link, channel_id, channel_name, SessionLocal, socketio, 
                     send_telegram_notification, handle_detection
                 )
+                # KitchenComplianceProcessor should read frames from hub if implemented to do so.
+                if hasattr(kc_processor, 'frame_hub'):
+                    kc_processor.frame_hub = hub
                 stream_processors[channel_id].append(kc_processor)
                 kc_processor.start()
                 logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
@@ -1555,6 +1623,7 @@ def start_streams():
                     link, channel_id, channel_name, model_obj, socketio, 
                     SessionLocal, send_telegram_notification
                 )
+                om_processor.frame_hub = hub
                 stream_processors[channel_id].append(om_processor)
                 om_processor.start()
                 logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
@@ -1570,6 +1639,7 @@ def start_streams():
                     else: logging.warning(f"Skipping '{app_name}' for {channel_id}; model failed to load.")
             if tasks_for_multi_model:
                 multi_processor = MultiModelProcessor(link, channel_id, channel_name, tasks_for_multi_model, handle_detection)
+                multi_processor.frame_hub = hub
                 stream_processors[channel_id].append(multi_processor); multi_processor.start()
                 task_names = [t['app_name'] for t in tasks_for_multi_model]
                 logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
