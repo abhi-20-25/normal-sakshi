@@ -427,7 +427,7 @@
     
     function generateDashboard() {
         const savedOrder = JSON.parse(localStorage.getItem('dashboardLayout'));
-        let sortedAppNames = Object.keys(appConfigs).sort((a,b) => { const order = {'PeopleCounter': 1, 'QueueMonitor': 2, 'KitchenCompliance': 3, 'Generic': 4}; return (order[a] || 99) - (order[b] || 99); });
+        let sortedAppNames = Object.keys(appConfigs).sort((a,b) => { const order = {'PeopleCounter': 1, 'QueueMonitor': 2, 'KitchenCompliance': 3, 'OccupancyMonitor': 4, 'Generic': 5}; return (order[a] || 99) - (order[b] || 99); });
         
         if (savedOrder) {
             sortedAppNames.sort((a, b) => {
@@ -441,7 +441,6 @@
         }
 
         for (const appName of sortedAppNames) {
-            if (appName === 'Generic') continue; // Skip Generic app from frontend display
             const config = appConfigs[appName]; if (!config.channels || config.channels.length === 0) continue;
             const section = document.createElement('div'); section.className = 'app-section'; section.dataset.appName = appName;
             let contentHTML = '';
@@ -495,6 +494,69 @@
                 const channel = config.channels[0];
                 contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div><img src="/video_feed/KitchenCompliance/${channel.id}" alt="Live feed"><div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div></div><div class="report-section"><h3>Compliance Violations</h3><div class="summary-cards"><div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div><div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div><div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div></div></div></div><div style="margin-top:20px;"><h3>Violation History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-KitchenCompliance-${channel.id}"><label>To:</label><input type="date" id="end-date-KitchenCompliance-${channel.id}"><button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div><div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div></div>`;
                 setTimeout(() => fetchHistory('KitchenCompliance', 1, channel.id), 100);
+            } else if (appName === 'Generic') {
+                const channel = config.channels[0];
+                contentHTML = `<div class="report-section">
+                    <h3>Cash Detection History</h3>
+                    <div class="summary-cards">
+                        <div class="summary-card">
+                            <h4>Status</h4>
+                            <p style="color: #22c55e;">Active Monitoring</p>
+                        </div>
+                        <div class="summary-card">
+                            <h4>Detection Types</h4>
+                            <p>7 Object Classes</p>
+                        </div>
+                        <div class="summary-card">
+                            <h4>Format</h4>
+                            <p style="color: #3b82f6;">Animated GIF</p>
+                        </div>
+                    </div>
+                    <div class="filter-controls">
+                        <label>From:</label>
+                        <input type="date" id="start-date-Generic-${channel.id}">
+                        <label>To:</label>
+                        <input type="date" id="end-date-Generic-${channel.id}">
+                        <button class="btn" onclick="applyDateFilter('Generic', '${channel.id}')">Filter</button>
+                    </div>
+                    <div class="history-grid" id="grid-Generic-${channel.id}"></div>
+                    <div class="pagination" id="pagination-Generic-${channel.id}"></div>
+                </div>`;
+                setTimeout(() => fetchHistory('Generic', 1, channel.id), 100);
+            } else if (appName === 'OccupancyMonitor') {
+                const channel = config.channels[0];
+                contentHTML = `<div class="layout-grid">
+                    <div class="stream-box">
+                        <div class="stream-header">${channel.name} - Occupancy Monitor</div>
+                        <img src="/video_feed/OccupancyMonitor/${channel.id}" alt="Live feed">
+                        <div class="stream-footer">Live Count: <span id="live-count-${channel.id}">0</span> | Required: <span id="required-count-${channel.id}">0</span></div>
+                    </div>
+                    <div class="report-section">
+                        <h3>Occupancy Management</h3>
+                        <div class="summary-cards">
+                            <div class="summary-card">
+                                <h4>Current Status</h4>
+                                <p id="occupancy-status-${channel.id}" style="color: #22c55e;">Active Monitoring</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Time Slot</h4>
+                                <p id="time-slot-${channel.id}">No Schedule</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Device</h4>
+                                <p id="device-info-${channel.id}">CUDA/CPU</p>
+                            </div>
+                        </div>
+                        <div style="margin-top: 16px;">
+                            <button class="btn" onclick="openScheduleModal('${channel.id}', '${channel.name}')">Manage Schedule</button>
+                            <button class="btn" onclick="viewOccupancyLogs('${channel.id}')">View Logs</button>
+                        </div>
+                    </div>
+                </div>`;
+                setTimeout(() => {
+                    // Initialize occupancy monitoring
+                    initializeOccupancyMonitor(channel.id);
+                }, 100);
             } else {
                 let tabsNav = '<div class="tab-nav">'; let tabsContent = '';
                 config.channels.forEach((channel, index) => {
@@ -541,6 +603,217 @@
             newRow.innerHTML = `<td>${data.timestamp}</td><td>${data.message}</td><td>${data.details}</td>`;
             tbody.prepend(newRow);
             while (tbody.rows.length > 15) { tbody.deleteRow(-1); }
+        }
+    });
+
+    // Occupancy Monitor Functions
+    function initializeOccupancyMonitor(channelId) {
+        console.log(`Initializing Occupancy Monitor for channel ${channelId}`);
+        // This will be called when the OccupancyMonitor section is loaded
+    }
+
+    function openScheduleModal(channelId, channelName) {
+        // Create and show schedule management modal
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        modal.innerHTML = `
+            <div class="modal-content" style="width: 90%; max-width: 1000px;">
+                <div class="modal-header">
+                    <h3>Manage Schedule - ${channelName}</h3>
+                    <span class="close" onclick="this.parentElement.parentElement.parentElement.remove()">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
+                        <h4>📁 Upload Schedule File</h4>
+                        <p style="margin: 10px 0; color: #666;">Upload a CSV or Excel file to set the occupancy schedule automatically.</p>
+                        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                            <input type="file" id="schedule-file-${channelId}" accept=".csv,.xlsx,.xls" style="padding: 8px; border: 1px solid #ddd; border-radius: 4px; flex: 1; min-width: 200px;">
+                            <button class="btn btn-primary" onclick="uploadSchedule('${channelId}')">Upload & Apply</button>
+                            <a href="/api/occupancy/schedule/template" class="btn" style="background: #28a745; color: white; text-decoration: none; padding: 8px 16px; border-radius: 4px;">Download Template</a>
+                        </div>
+                        <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                            <strong>Supported formats:</strong> CSV, Excel (.xlsx, .xls)<br>
+                            <strong>Template includes:</strong> Sample schedule with business hours (8 AM - 8 PM)
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom: 20px;">
+                        <h4>📋 Current Schedule (Manual Edit)</h4>
+                        <div id="schedule-grid-${channelId}" style="max-height: 400px; overflow-y: auto;">
+                            <p>Loading schedule...</p>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-top: 20px; text-align: center;">
+                        <button class="btn btn-primary" onclick="saveSchedule('${channelId}')">Save Manual Changes</button>
+                        <button class="btn" onclick="this.parentElement.parentElement.parentElement.remove()" style="margin-left: 10px;">Cancel</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(modal);
+        loadSchedule(channelId);
+    }
+
+    function loadSchedule(channelId) {
+        // Load current schedule from server
+        fetch(`/api/occupancy/schedule/${channelId}`)
+            .then(response => response.json())
+            .then(data => {
+                displaySchedule(channelId, data);
+            })
+            .catch(error => {
+                console.error('Error loading schedule:', error);
+                document.getElementById(`schedule-grid-${channelId}`).innerHTML = '<p>Error loading schedule</p>';
+            });
+    }
+
+    function displaySchedule(channelId, schedule) {
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+        
+        let html = '<table class="schedule-table"><thead><tr><th>Day</th>';
+        hours.forEach(hour => {
+            html += `<th>${hour}</th>`;
+        });
+        html += '</tr></thead><tbody>';
+        
+        days.forEach(day => {
+            html += `<tr><td><strong>${day}</strong></td>`;
+            hours.forEach(hour => {
+                const value = schedule[hour] && schedule[hour][day] ? schedule[hour][day] : '';
+                html += `<td><input type="number" min="0" max="100" value="${value}" 
+                         id="schedule-${channelId}-${day}-${hour}" placeholder="0" style="width: 50px;"></td>`;
+            });
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        
+        document.getElementById(`schedule-grid-${channelId}`).innerHTML = html;
+    }
+
+    function saveSchedule(channelId) {
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+        
+        const schedule = {};
+        hours.forEach(hour => {
+            schedule[hour] = {};
+            days.forEach(day => {
+                const input = document.getElementById(`schedule-${channelId}-${day}-${hour}`);
+                const value = parseInt(input.value) || 0;
+                if (value > 0) {
+                    schedule[hour][day] = value;
+                }
+            });
+        });
+
+        fetch(`/api/occupancy/schedule/${channelId}`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(schedule)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('Schedule saved successfully!');
+                document.querySelector('.modal').remove();
+            } else {
+                alert('Error saving schedule: ' + data.error);
+            }
+        })
+        .catch(error => {
+            console.error('Error saving schedule:', error);
+            alert('Error saving schedule');
+        });
+    }
+
+    function viewOccupancyLogs(channelId) {
+        // Open occupancy logs in a new window or modal
+        window.open(`/occupancy-logs/${channelId}`, '_blank');
+    }
+
+    function uploadSchedule(channelId) {
+        const fileInput = document.getElementById(`schedule-file-${channelId}`);
+        const file = fileInput.files[0];
+        
+        if (!file) {
+            alert('Please select a file to upload');
+            return;
+        }
+        
+        // Validate file type
+        const allowedTypes = ['.csv', '.xlsx', '.xls'];
+        const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+        if (!allowedTypes.includes(fileExtension)) {
+            alert('Please select a CSV or Excel file (.csv, .xlsx, .xls)');
+            return;
+        }
+        
+        // Show loading state
+        const uploadBtn = fileInput.nextElementSibling;
+        const originalText = uploadBtn.textContent;
+        uploadBtn.textContent = 'Uploading...';
+        uploadBtn.disabled = true;
+        
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        fetch(`/api/occupancy/schedule/upload/${channelId}`, {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✅ ${data.message}`);
+                // Reload the schedule display
+                loadSchedule(channelId);
+            } else {
+                alert(`❌ Error uploading schedule: ${data.error}`);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('❌ Error uploading schedule. Please try again.');
+        })
+        .finally(() => {
+            // Reset button state
+            uploadBtn.textContent = originalText;
+            uploadBtn.disabled = false;
+            // Clear file input
+            fileInput.value = '';
+        });
+    }
+
+    // Socket.IO handlers for OccupancyMonitor
+    socket.on('occupancy_update', data => {
+        const liveCountEl = document.getElementById(`live-count-${data.channel_id}`);
+        const requiredCountEl = document.getElementById(`required-count-${data.channel_id}`);
+        const statusEl = document.getElementById(`occupancy-status-${data.channel_id}`);
+        const timeSlotEl = document.getElementById(`time-slot-${data.channel_id}`);
+        
+        if (liveCountEl) liveCountEl.textContent = data.live_count;
+        if (requiredCountEl) requiredCountEl.textContent = data.required_count;
+        if (timeSlotEl) timeSlotEl.textContent = data.time_slot;
+        
+        if (statusEl) {
+            statusEl.textContent = data.status;
+            switch(data.status) {
+                case 'OK':
+                    statusEl.style.color = '#22c55e';
+                    break;
+                case 'BELOW_REQUIREMENT':
+                    statusEl.style.color = '#ef4444';
+                    break;
+                case 'NO_SCHEDULE':
+                    statusEl.style.color = '#6b7280';
+                    break;
+                case 'PAUSED':
+                    statusEl.style.color = '#f59e0b';
+                    break;
+            }
         }
     });
 
