@@ -1653,5 +1653,5 @@ if __name__ == "__main__":
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
         logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5002, debug=False, allow_unsafe_werkzeug=True)
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
 
