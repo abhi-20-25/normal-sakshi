@@ -28,6 +28,7 @@ import hashlib
 from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 import pandas as pd
+from queue import Queue, Empty
 
 # --- CUDA/Backend Tuning ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -95,42 +96,67 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 stream_processors = {}
 
 # Shared RTSP frame provider per camera to minimize latency and duplicate decoding
+# Shared RTSP frame provider using a thread-safe queue
 class FrameHub(threading.Thread):
     def __init__(self, rtsp_url, name):
         super().__init__(name=f"FrameHub-{name}", daemon=True)
         self.rtsp_url = rtsp_url
-        self.latest = None
-        self.lock = threading.Lock()
+        
+        # A queue of size 1 is the perfect "latest frame" buffer
+        self.frame_queue = Queue(maxsize=1) 
         self.is_running = True
+        logging.info(f"FrameHub {self.name} initialized for {self.rtsp_url}")
 
     def run(self):
         cap = cv2.VideoCapture(self.rtsp_url)
         if not cap.isOpened():
-            logging.error(f"FrameHub could not open stream: {self.rtsp_url}")
+            logging.error(f"FrameHub {self.name} could not open stream: {self.rtsp_url}")
             return
+            
+        # We only set properties that are relevant.
+        # BUFFERSIZE is a good hint to OpenCV.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FPS, 10)
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+
         while self.is_running:
-            for _ in range(2):
-                cap.grab()
-            ret, frame = cap.retrieve()
+            # Use cap.read() which combines grab() and retrieve()
+            ret, frame = cap.read() 
+
             if not ret:
-                time.sleep(1)
+                logging.warning(f"FrameHub {self.name} disconnected. Reconnecting...")
                 cap.release()
+                time.sleep(5)  # Wait 5 seconds before retrying
                 cap = cv2.VideoCapture(self.rtsp_url)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                cap.set(cv2.CAP_PROP_FPS, 10)
                 continue
-            with self.lock:
-                self.latest = frame
+            
+            # --- This is the key logic ---
+            # If the queue is full (i.e., it has 1 frame), 
+            # we first clear it to make space for the new frame.
+            if not self.frame_queue.empty():
+                try:
+                    self.frame_queue.get_nowait()  # Discard the old frame
+                except Empty:
+                    pass # Should not happen, but safe to include
+            
+            # Put the new, latest frame into the queue
+            self.frame_queue.put(frame)
+            # --- End of key logic ---
+
         cap.release()
+        logging.info(f"FrameHub {self.name} stopped.")
 
     def get_latest(self):
-        with self.lock:
-            return None if self.latest is None else self.latest.copy()
+        """Gets the latest frame from the queue without blocking."""
+        try:
+            # Get frame from queue. copy() is good practice
+            # to prevent the processing thread from locking the frame.
+            return self.frame_queue.get_nowait().copy()
+        except Empty:
+            # If the queue is empty, just return None
+            return None
 
     def stop(self):
+        logging.info(f"Stopping FrameHub {self.name}...")
         self.is_running = False
 
 # --- Database Setup ---
