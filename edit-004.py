@@ -48,7 +48,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:Tneural01@localhost:5432/sakshi"
+DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
@@ -1645,7 +1645,7 @@ def start_streams():
                 logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
                 atexit.register(multi_processor.shutdown)
 
-if __name__ == "__main__":
+'''if __name__ == "__main__":
     if initialize_database():
         scheduler = BackgroundScheduler(timezone=str(IST))
         # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
