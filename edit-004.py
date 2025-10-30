@@ -95,7 +95,8 @@ QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
 # --- Flask and SocketIO Setup ---
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'a-very-secret-key-for-sakshi-ai'
-socketio = SocketIO(app, cors_allowed_origins="*")
+# Force threading async mode to avoid eventlet/gevent interfering with streaming responses
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # --- Global State Management ---
 stream_processors = {}
@@ -1252,8 +1253,12 @@ def dashboard():
 
 def gen_video_feed(processor):
     while True:
-        time.sleep(0.05)
-        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + processor.get_frame() + b'\r\n\r\n')
+        # ~30 FPS pacing, and tolerate None frames
+        time.sleep(0.03)
+        frame_bytes = processor.get_frame()
+        if not frame_bytes:
+            continue
+        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
 
 @app.route('/video_feed/<app_name>/<channel_id>')
 @login_required
