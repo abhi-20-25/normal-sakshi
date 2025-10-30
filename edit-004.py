@@ -208,7 +208,7 @@ def send_telegram_notification(message):
 
 def handle_detection(app_name, channel_id, frames, message, is_gif=False):
     timestamp = datetime.now(IST)
-    ts_string = timestamp.strftime("%Y%m%d_%H%M%S")
+    ts_string = timestamp.strftime("%Y%m%d_%H%M%S_%f")
     filename = f"{app_name}_{channel_id}_{ts_string}.{'gif' if is_gif else 'jpg'}"
     media_path = os.path.join(DETECTIONS_SUBFOLDER, filename)
     full_path = os.path.join(STATIC_FOLDER, media_path)

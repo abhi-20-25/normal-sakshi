@@ -120,6 +120,10 @@ class KitchenComplianceProcessor(threading.Thread):
     def _save_violation_to_db(self, violation_type, details, media_path):
         with self.SessionLocal() as db:
             try:
+                # Avoid duplicate unique media_path entries
+                existing = db.query(KitchenViolation).filter_by(media_path=media_path).first()
+                if existing:
+                    return
                 violation = KitchenViolation(
                     channel_id=self.channel_id, channel_name=self.channel_name,
                     violation_type=violation_type, details=details, media_path=media_path
