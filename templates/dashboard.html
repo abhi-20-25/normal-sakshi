@@ -173,8 +173,11 @@
     <img id="lightbox-img" src="">
 </div>
 
+<!-- Provide app configs as JSON to avoid JS parse issues -->
+<script id="app-configs" type="application/json">{{ app_configs|tojson|safe }}</script>
+
 <script>
-    const appConfigs = {{ app_configs|tojson }};
+    const appConfigs = JSON.parse(document.getElementById('app-configs').textContent);
     const dashboardContainer = document.getElementById('dashboard-container');
     const socket = io();
     const reportModal = document.getElementById('reportModal');
@@ -346,18 +349,48 @@
         const grid = document.getElementById(`grid-${appName}-${channelId}`);
         const pagination = document.getElementById(`pagination-${appName}-${channelId}`);
         if (!grid) return;
-        let url = `/history/${appName}?page=${page}&limit=10`; if (channelId) url += `&channel_id=${channelId}`; if (startDate && endDate) url += `&start_date=${startDate}&end_date=${endDate}`;
+        let url = `/history/${appName}?page=${page}&limit=10`;
+        if (channelId) url += `&channel_id=${channelId}`;
+        if (startDate && endDate) url += `&start_date=${startDate}&end_date=${endDate}`;
         grid.innerHTML = '<p>Loading history...</p>';
-        const response = await fetch(url); const data = await response.json();
-        if (data.error) { grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; return; }
-        grid.innerHTML = ''; if (data.detections.length === 0) { grid.innerHTML = '<p>No detections found for the selected criteria.</p>'; }
-        else { data.detections.forEach(d => { const item = document.createElement('div'); item.className = 'history-item'; item.innerHTML = `<img src="${d.media_url}" alt="Detection image" onclick="openLightbox('${d.media_url}')"><div class="history-item-info"><p><strong>Message:</strong> ${d.message}</p><p><strong>Time:</strong> ${d.timestamp}</p></div>`; grid.appendChild(item); }); }
-        if (pagination) {
-            pagination.innerHTML = ''; const totalPages = Math.ceil(data.total / data.limit);
-            if (totalPages > 1) {
-                const prevBtn = document.createElement('button'); prevBtn.textContent = 'Previous'; prevBtn.disabled = data.page === 1; prevBtn.onclick = () => fetchHistory(appName, data.page - 1, channelId, startDate, endDate); pagination.appendChild(prevBtn);
-                const nextBtn = document.createElement('button'); nextBtn.textContent = 'Next'; nextBtn.disabled = data.page >= totalPages; nextBtn.onclick = () => fetchHistory(appName, data.page + 1, channelId, startDate, endDate); pagination.appendChild(nextBtn);
+        try {
+            const response = await fetch(url, { credentials: 'same-origin' });
+            if (!response.ok) {
+                grid.innerHTML = `<p style="color:#f87171;">HTTP ${response.status} while fetching history</p>`;
+                return;
             }
+            const data = await response.json();
+            if (data.error) { grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; return; }
+            grid.innerHTML = '';
+            if (data.detections.length === 0) {
+                grid.innerHTML = '<p>No detections found for the selected criteria.</p>';
+            } else {
+                data.detections.forEach(d => {
+                    const item = document.createElement('div');
+                    item.className = 'history-item';
+                    item.innerHTML = `<img src="${d.media_url}" alt="Detection image" onclick="openLightbox('${d.media_url}')"><div class="history-item-info"><p><strong>Message:</strong> ${d.message}</p><p><strong>Time:</strong> ${d.timestamp}</p></div>`;
+                    grid.appendChild(item);
+                });
+            }
+            if (pagination) {
+                pagination.innerHTML = '';
+                const totalPages = Math.ceil(data.total / data.limit);
+                if (totalPages > 1) {
+                    const prevBtn = document.createElement('button');
+                    prevBtn.textContent = 'Previous';
+                    prevBtn.disabled = data.page === 1;
+                    prevBtn.onclick = () => fetchHistory(appName, data.page - 1, channelId, startDate, endDate);
+                    pagination.appendChild(prevBtn);
+                    const nextBtn = document.createElement('button');
+                    nextBtn.textContent = 'Next';
+                    nextBtn.disabled = data.page >= totalPages;
+                    nextBtn.onclick = () => fetchHistory(appName, data.page + 1, channelId, startDate, endDate);
+                    pagination.appendChild(nextBtn);
+                }
+            }
+        } catch (err) {
+            console.error('History fetch error:', err);
+            grid.innerHTML = `<p style=\"color:#f87171;\">Failed to load history. Check login and network.</p>`;
         }
     }
     function applyDateFilter(appName, channelId) { const targetId = `${appName}-${channelId}`; const startDate = document.getElementById(`start-date-${targetId}`).value; const endDate = document.getElementById(`end-date-${targetId}`).value; if (startDate && endDate) { fetchHistory(appName, 1, channelId, startDate, endDate); } else { alert("Please select both a start and end date."); } }
@@ -548,7 +581,7 @@
                             </div>
                         </div>
                         <div style="margin-top: 16px;">
-                            <button class="btn" onclick="openScheduleModal('${channel.id}', '${channel.name}')">Manage Schedule</button>
+                            <button class="btn" onclick="promptScheduleUpload('${channel.id}', '${channel.name}')">Manage Schedule</button>
                             <button class="btn" onclick="viewOccupancyLogs('${channel.id}')">View Logs</button>
                         </div>
                     </div>
@@ -579,10 +612,16 @@
     }
     socket.on('count_update', data => { const inCount = document.getElementById(`in-count-${data.channel_id}`); const outCount = document.getElementById(`out-count-${data.channel_id}`); if (inCount) inCount.textContent = data.in_count; if (outCount) outCount.textContent = data.out_count; });
     socket.on('queue_update', data => { 
+        const qVal = typeof data.queue === 'number' ? data.queue : data.count;
+        const cVal = typeof data.counter === 'number' ? data.counter : undefined;
         const queueCount = document.getElementById(`queue-count-${data.channel_id}`); 
         const currentQueue = document.getElementById(`current-queue-${data.channel_id}`);
-        if (queueCount) queueCount.textContent = data.count; 
-        if (currentQueue) currentQueue.textContent = data.count;
+        if (queueCount && typeof qVal === 'number') queueCount.textContent = qVal; 
+        if (currentQueue && typeof qVal === 'number') currentQueue.textContent = qVal;
+        const counterCount = document.getElementById(`counter-count-${data.channel_id}`);
+        const currentCounter = document.getElementById(`current-counter-${data.channel_id}`);
+        if (counterCount && typeof cVal === 'number') counterCount.textContent = cVal;
+        if (currentCounter && typeof cVal === 'number') currentCounter.textContent = cVal;
     });
     socket.on('shutter_update', data => {
         const { channel_id, last_status, last_status_time, first_open_time, first_close_time, total_open_duration_seconds, total_closed_duration_seconds } = data;
@@ -652,19 +691,60 @@
             </div>
         `;
         document.body.appendChild(modal);
+        modal.style.display = 'block';
         loadSchedule(channelId);
     }
 
+    function promptScheduleUpload(channelId, channelName) {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.csv,.xlsx,.xls';
+        input.onchange = () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            const ext = '.' + file.name.split('.').pop().toLowerCase();
+            if (!['.csv', '.xlsx', '.xls'].includes(ext)) {
+                alert('Please select a CSV or Excel file (.csv, .xlsx, .xls)');
+                return;
+            }
+            const formData = new FormData();
+            formData.append('file', file);
+            fetch(`/api/occupancy/schedule/upload/${channelId}`, {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin'
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    alert(`✅ ${data.message}`);
+                    openScheduleModal(channelId, channelName);
+                } else {
+                    alert(`❌ Error uploading schedule: ${data.error}`);
+                }
+            })
+            .catch(err => {
+                console.error(err);
+                alert('❌ Error uploading schedule. Please try again.');
+            });
+        };
+        input.click();
+    }
+
     function loadSchedule(channelId) {
-        // Load current schedule from server
-        fetch(`/api/occupancy/schedule/${channelId}`)
-            .then(response => response.json())
+        // Load current schedule from server (send cookies for login_required)
+        fetch(`/api/occupancy/schedule/${channelId}`, { credentials: 'same-origin' })
+            .then(response => {
+                if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
+                return response.json();
+            })
             .then(data => {
                 displaySchedule(channelId, data);
             })
             .catch(error => {
                 console.error('Error loading schedule:', error);
-                document.getElementById(`schedule-grid-${channelId}`).innerHTML = '<p>Error loading schedule</p>';
+                const el = document.getElementById(`schedule-grid-${channelId}`);
+                if (el) el.innerHTML = '<p>Error loading schedule</p>';
             });
     }
 
@@ -711,15 +791,16 @@
         fetch(`/api/occupancy/schedule/${channelId}`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(schedule)
+            body: JSON.stringify(schedule),
+            credentials: 'same-origin'
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
                 alert('Schedule saved successfully!');
-                document.querySelector('.modal').remove();
+                document.querySelector('.modal')?.remove();
             } else {
-                alert('Error saving schedule: ' + data.error);
+                alert('Error saving schedule: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
