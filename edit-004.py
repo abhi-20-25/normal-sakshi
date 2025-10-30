@@ -185,37 +185,7 @@ class FrameHub(threading.Thread):
         self.is_running = False
 
 # Simple passthrough processor: no detection, just relays frames from FrameHub
-class PassthroughProcessor(threading.Thread):
-    def __init__(self, channel_id, channel_name, frame_hub):
-        super().__init__(name=f"Passthrough-{channel_name}", daemon=True)
-        self.channel_id = channel_id
-        self.channel_name = channel_name
-        self.frame_hub = frame_hub
-        self.is_running = True
-        self.lock = threading.Lock()
-        self.latest_frame = None
-
-    def run(self):
-        while self.is_running:
-            frame = self.frame_hub.get_latest()
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            with self.lock:
-                self.latest_frame = frame
-
-    def get_frame(self):
-        with self.lock:
-            if self.latest_frame is None:
-                placeholder = np.full((TARGET_HEIGHT or 360, TARGET_WIDTH or 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, 'Connecting...', (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
-                _, jpeg = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                return jpeg.tobytes()
-            _, jpeg = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            return jpeg.tobytes()
-
-    def shutdown(self):
-        self.is_running = False
+## PassthroughProcessor removed; restoring detection processors
 
 # --- Database Setup ---
 Base = declarative_base()
@@ -1270,13 +1240,8 @@ def video_feed(app_name, channel_id):
     elif app_name == 'QueueMonitor': target_class = QueueMonitorProcessor
     elif app_name == 'KitchenCompliance': target_class = KitchenComplianceProcessor
     elif app_name == 'OccupancyMonitor': target_class = OccupancyMonitorProcessor
-    elif app_name == 'Display' or app_name == 'Passthrough':
-        target_class = PassthroughProcessor
     if target_class: target_processor = next((p for p in processors if isinstance(p, target_class)), None)
-    # Fallback to any available processor for display-only
-    if not target_processor and processors:
-        target_processor = processors[0]
-    if target_processor and getattr(target_processor, 'is_alive', lambda: True)():
+    if target_processor and target_processor.is_alive():
         return Response(gen_video_feed(target_processor), mimetype='multipart/x-mixed-replace; boundary=frame')
     else:
         return (f"{app_name} stream not found or is not running for this channel", 404)
@@ -1676,30 +1641,83 @@ def start_streams():
                 stream_assignments[link]['name'] = name
                 stream_assignments[link]['id'] = channel_id
     for link, assignment in stream_assignments.items():
-        channel_id, channel_name = assignment['id'], assignment['name']
-        if channel_id not in stream_processors:
-            stream_processors[channel_id] = []
+        channel_id, channel_name, app_names = assignment['id'], assignment['name'], list(assignment['apps'])
+        if channel_id not in stream_processors: stream_processors[channel_id] = []
+        active_app_names = app_names[:]
         # Start a shared FrameHub per link
         hub = FrameHub(link, channel_name)
         hub.start()
         atexit.register(hub.stop)
-        # Start a single passthrough processor (no detection)
-        pt = PassthroughProcessor(channel_id, channel_name, hub)
-        stream_processors[channel_id].append(pt)
-        pt.start()
-        logging.info(f"Started Passthrough (display-only) for {channel_id} ({channel_name}).")
-        atexit.register(pt.shutdown)
+        if 'PeopleCounter' in active_app_names:
+            model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
+            if model_obj:
+                pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
+                pc_processor.frame_hub = hub
+                stream_processors[channel_id].append(pc_processor); pc_processor.start()
+                logging.info(f"Started PeopleCounter for {channel_id} ({channel_name}).")
+                atexit.register(pc_processor.shutdown); active_app_names.remove('PeopleCounter')
+        if 'QueueMonitor' in active_app_names:
+            model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
+            if model_obj:
+                qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj)
+                qm_processor.frame_hub = hub
+                stream_processors[channel_id].append(qm_processor); qm_processor.start()
+                logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
+                atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
+        if 'KitchenCompliance' in active_app_names:
+            config = APP_TASKS_CONFIG['KitchenCompliance']
+            general_model = load_model(config['model_path'])
+            apron_cap_model = load_model(config['apron_cap_model'])
+            gloves_model = load_model(config['gloves_model'])
+            if general_model and apron_cap_model and gloves_model:
+                kc_processor = KitchenComplianceProcessor(
+                    link, channel_id, channel_name, SessionLocal, socketio, 
+                    send_telegram_notification, handle_detection
+                )
+                # KitchenComplianceProcessor should read frames from hub if implemented to do so.
+                if hasattr(kc_processor, 'frame_hub'):
+                    kc_processor.frame_hub = hub
+                stream_processors[channel_id].append(kc_processor)
+                kc_processor.start()
+                logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
+                atexit.register(kc_processor.shutdown)
+                active_app_names.remove('KitchenCompliance')
+        if 'OccupancyMonitor' in active_app_names:
+            model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'])
+            if model_obj:
+                om_processor = OccupancyMonitorProcessor(
+                    link, channel_id, channel_name, model_obj, socketio, 
+                    SessionLocal, send_telegram_notification
+                )
+                om_processor.frame_hub = hub
+                stream_processors[channel_id].append(om_processor)
+                om_processor.start()
+                logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
+                atexit.register(om_processor.shutdown)
+                active_app_names.remove('OccupancyMonitor')
+        if active_app_names:
+            tasks_for_multi_model = []
+            for app_name in active_app_names:
+                config = APP_TASKS_CONFIG.get(app_name)
+                if config and 'model_path' in config:
+                    model_obj = load_model(config['model_path'])
+                    if model_obj: tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
+                    else: logging.warning(f"Skipping '{app_name}' for {channel_id}; model failed to load.")
+            if tasks_for_multi_model:
+                multi_processor = MultiModelProcessor(link, channel_id, channel_name, tasks_for_multi_model, handle_detection)
+                multi_processor.frame_hub = hub
+                stream_processors[channel_id].append(multi_processor); multi_processor.start()
+                task_names = [t['app_name'] for t in tasks_for_multi_model]
+                logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
+                atexit.register(multi_processor.shutdown)
 
-
-initialize_database()
-start_streams()
 if __name__ == "__main__":
-    #if initialize_database():
-    #scheduler = BackgroundScheduler(timezone=str(IST))
-    # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
-    #scheduler.start()
-    #atexit.register(lambda: scheduler.shutdown())
-        
-    logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-    socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
+    if initialize_database():
+        scheduler = BackgroundScheduler(timezone=str(IST))
+        # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
+        scheduler.start()
+        atexit.register(lambda: scheduler.shutdown())
+        start_streams()
+        logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
+        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
 
