@@ -1212,6 +1212,14 @@ def log_queue_counts():
 def landing_page(): 
     return render_template('landing.html')
 
+@app.route('/display/<channel_id>')
+def display_feed(channel_id):
+    processors = stream_processors.get(channel_id)
+    if not processors:
+        return ("Stream not found", 404)
+    proc = processors[0]
+    return Response(gen_video_feed(proc), mimetype='multipart/x-mixed-replace; boundary=frame')
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'GET':

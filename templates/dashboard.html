@@ -479,14 +479,14 @@
             let contentHTML = '';
             if (appName === 'PeopleCounter') {
                 const channel = config.channels[0]; const today = new Date().toISOString().split('T')[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name}</div><img src="/video_feed/Display/${channel.id}" alt="Live feed"><div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Daily Footfall</h3><input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)"><table><thead><tr><th>Hour</th><th>In</th><th>Out</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table><button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button></div></div>`;
+                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name}</div><img src="/display/${channel.id}" alt="Live feed"><div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Daily Footfall</h3><input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)"><table><thead><tr><th>Hour</th><th>In</th><th>Out</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table><button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button></div></div>`;
                 setTimeout(() => fetchPCReport(channel.id, today), 100);
             } else if (appName === 'QueueMonitor') {
                 const channel = config.channels[0];
                 contentHTML = `<div class="layout-grid">
                     <div class="stream-box" id="stream-box-QueueMonitor-${channel.id}">
                         <div class="stream-header">${channel.name}</div>
-                        <img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed">
+                        <img src="/display/${channel.id}" alt="Live feed">
                         <canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas>
                         <div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div>
                     </div>
@@ -525,7 +525,7 @@
                 setTimeout(() => fetchHistory('QueueMonitor', 1, channel.id), 300);
             } else if (appName === 'KitchenCompliance') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div><img src="/video_feed/Display/${channel.id}" alt="Live feed"><div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div></div><div class="report-section"><h3>Compliance Violations</h3><div class="summary-cards"><div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div><div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div><div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div></div></div></div><div style="margin-top:20px;"><h3>Violation History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-KitchenCompliance-${channel.id}"><label>To:</label><input type="date" id="end-date-KitchenCompliance-${channel.id}"><button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div><div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div></div>`;
+                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div><img src="/display/${channel.id}" alt="Live feed"><div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div></div><div class="report-section"><h3>Compliance Violations</h3><div class="summary-cards"><div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div><div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div><div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div></div></div></div><div style="margin-top:20px;"><h3>Violation History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-KitchenCompliance-${channel.id}"><label>To:</label><input type="date" id="end-date-KitchenCompliance-${channel.id}"><button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div><div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div></div>`;
                 setTimeout(() => fetchHistory('KitchenCompliance', 1, channel.id), 100);
             } else if (appName === 'Generic') {
                 const channel = config.channels[0];
@@ -561,7 +561,7 @@
                 contentHTML = `<div class="layout-grid">
                     <div class="stream-box">
                         <div class="stream-header">${channel.name} - Occupancy Monitor</div>
-                        <img src="/video_feed/Display/${channel.id}" alt="Live feed">
+                        <img src="/display/${channel.id}" alt="Live feed">
                         <div class="stream-footer">Live Count: <span id="live-count-${channel.id}">0</span> | Required: <span id="required-count-${channel.id}">0</span></div>
                     </div>
                     <div class="report-section">
