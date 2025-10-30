@@ -415,6 +415,8 @@ class QueueMonitorProcessor(threading.Thread):
         self.latest_frame = None
         self.queue_tracker = defaultdict(lambda: {'entry_time': 0})
         self.current_queue_count = 0
+        self.secondary_queue_tracker = defaultdict(lambda: {'entry_time': 0})
+        self.current_secondary_count = 0
         self.last_alert_time = 0
         self.last_overqueue_time = 0  # Track overqueue alerts separately
         self.roi_poly = Polygon([])
@@ -506,7 +508,7 @@ class QueueMonitorProcessor(threading.Thread):
     def process_frame(self, frame):
         current_time = time.time()
         results = self.model.track(frame, persist=True, classes=[0], verbose=False, conf=0.25)
-        current_tracks_in_main_roi, people_in_secondary_roi = set(), 0
+        current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         if results and results[0].boxes.id is not None:
             for box, track_id in zip(results[0].boxes.xyxy.cpu(), results[0].boxes.id.int().cpu().tolist()):
@@ -516,7 +518,9 @@ class QueueMonitorProcessor(threading.Thread):
                     tracker = self.queue_tracker[track_id]
                     if tracker['entry_time'] == 0: tracker['entry_time'] = current_time
                 if self.secondary_roi_poly.is_valid and self.secondary_roi_poly.contains(person_point):
-                    people_in_secondary_roi += 1
+                    current_tracks_in_secondary_roi.add(track_id)
+                    sec_tracker = self.secondary_queue_tracker[track_id]
+                    if sec_tracker['entry_time'] == 0: sec_tracker['entry_time'] = current_time
 
         valid_queue_count = sum(1 for track_id in list(self.queue_tracker.keys()) if (track_id in current_tracks_in_main_roi and (current_time - self.queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC) or (self.queue_tracker.pop(track_id) and False))
         if self.current_queue_count != valid_queue_count:
@@ -525,17 +529,33 @@ class QueueMonitorProcessor(threading.Thread):
             # Instant, non-blocking save to DB (disabled)
             # threading.Thread(target=self._persist_queue_count, args=(self.current_queue_count,), daemon=True).start()
 
+        # Validate secondary (counter area) count with dwell
+        valid_secondary_count = sum(
+            1 for track_id in list(self.secondary_queue_tracker.keys())
+            if (
+                track_id in current_tracks_in_secondary_roi and
+                (current_time - self.secondary_queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC
+            ) or (self.secondary_queue_tracker.pop(track_id) and False)
+        )
+
+        if self.current_secondary_count != valid_secondary_count:
+            self.current_secondary_count = valid_secondary_count
+            # Optional: capture a screenshot when secondary area becomes occupied
+            if self.current_secondary_count > 0:
+                annotated_for_save = results[0].plot() if results and results[0] else frame
+                handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], f"Counter area presence: {self.current_secondary_count}", is_gif=False)
+
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
         should_alert = (
             valid_queue_count >= QUEUE_ALERT_THRESHOLD and
-            people_in_secondary_roi == 0 and
+            self.current_secondary_count == 0 and
             (current_time - self.last_alert_time) > QUEUE_ALERT_COOLDOWN_SEC
         )
         
         # Overqueue detection: when cashier is present and queue has 4+ people
         should_overqueue_alert = (
             valid_queue_count >= QUEUE_OVERQUEUE_THRESHOLD and
-            people_in_secondary_roi > 0 and
+            self.current_secondary_count > 0 and
             (current_time - self.last_overqueue_time) > QUEUE_ALERT_COOLDOWN_SEC
         )
 
@@ -569,7 +589,7 @@ class QueueMonitorProcessor(threading.Thread):
             handle_detection('QueueMonitor', self.channel_id, [annotated_frame], overqueue_message, is_gif=False)
 
         cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-        cv2.putText(annotated_frame, f"Counter Area: {people_in_secondary_roi}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        cv2.putText(annotated_frame, f"Counter Area: {self.current_secondary_count}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         with self.lock: self.latest_frame = annotated_frame.copy()
 
 
