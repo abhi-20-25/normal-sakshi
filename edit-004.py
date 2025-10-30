@@ -78,6 +78,33 @@ APP_TASKS_CONFIG = {
     'OccupancyMonitor': {'model_path': 'yolov8n.pt', 'confidence': 0.15}
 }
 
+# --- YOLO tracking helper (robust to tracker failures) ---
+def safe_track_persons(model, frame, conf=0.25, iou=0.5):
+    with torch.inference_mode():
+        try:
+            return model.track(
+                frame,
+                persist=True,
+                classes=[0],
+                conf=conf,
+                iou=iou,
+                verbose=False,
+                device=DEVICE,
+                half=(DEVICE == 'cuda'),
+                tracker='bytetrack.yaml'
+            )
+        except Exception as e:
+            logging.warning(f"track() failed, fallback to predict(): {e}")
+            return model.predict(
+                frame,
+                classes=[0],
+                conf=conf,
+                iou=iou,
+                verbose=False,
+                device=DEVICE,
+                half=(DEVICE == 'cuda')
+            )
+
 
 # --- QUEUE MONITOR CONFIGURATION ---
 # THIS IS NOW A FALLBACK if no ROI is in the database.
@@ -620,20 +647,12 @@ class QueueMonitorProcessor(threading.Thread):
 
     def process_frame(self, frame):
         current_time = time.time()
-        with torch.inference_mode():
-            results = self.model.track(
-                frame,
-                persist=True,
-                classes=[0],
-                verbose=False,
-                conf=0.25,
-                device=DEVICE,
-                half=(DEVICE == 'cuda')
-            )
+        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5)
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
-        if results and results[0].boxes.id is not None:
-            for box, track_id in zip(results[0].boxes.xyxy.cpu(), results[0].boxes.id.int().cpu().tolist()):
+        r0 = results[0] if (results and len(results) > 0) else None
+        if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
+            for box, track_id in zip(r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()):
                 # person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
                 person_point = Point(int((box[0] + box[2]) / 2), int(box[3]))
                 if self.roi_poly.is_valid and self.roi_poly.contains(person_point):
@@ -665,7 +684,7 @@ class QueueMonitorProcessor(threading.Thread):
             updated = True
             # Optional: capture a screenshot when secondary area becomes occupied
             if self.current_secondary_count > 0:
-                annotated_for_save = results[0].plot() if results and results[0] else frame
+                annotated_for_save = r0.plot() if r0 is not None else frame
                 handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], f"Counter area presence: {self.current_secondary_count}", is_gif=False)
 
         # Emit live counts (no DB persistence) if either changed
@@ -691,7 +710,7 @@ class QueueMonitorProcessor(threading.Thread):
             (current_time - self.last_overqueue_time) > QUEUE_ALERT_COOLDOWN_SEC
         )
 
-        annotated_frame = results[0].plot() if results and results[0] else frame
+        annotated_frame = r0.plot() if r0 is not None else frame
         
         # Draw main ROI (queue area) - Yellow
         if self.roi_poly.is_valid and not self.roi_poly.is_empty:
