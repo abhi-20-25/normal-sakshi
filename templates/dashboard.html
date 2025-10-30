@@ -612,10 +612,16 @@
     }
     socket.on('count_update', data => { const inCount = document.getElementById(`in-count-${data.channel_id}`); const outCount = document.getElementById(`out-count-${data.channel_id}`); if (inCount) inCount.textContent = data.in_count; if (outCount) outCount.textContent = data.out_count; });
     socket.on('queue_update', data => { 
+        const qVal = typeof data.queue === 'number' ? data.queue : data.count;
+        const cVal = typeof data.counter === 'number' ? data.counter : undefined;
         const queueCount = document.getElementById(`queue-count-${data.channel_id}`); 
         const currentQueue = document.getElementById(`current-queue-${data.channel_id}`);
-        if (queueCount) queueCount.textContent = data.count; 
-        if (currentQueue) currentQueue.textContent = data.count;
+        if (queueCount && typeof qVal === 'number') queueCount.textContent = qVal; 
+        if (currentQueue && typeof qVal === 'number') currentQueue.textContent = qVal;
+        const counterCount = document.getElementById(`counter-count-${data.channel_id}`);
+        const currentCounter = document.getElementById(`current-counter-${data.channel_id}`);
+        if (counterCount && typeof cVal === 'number') counterCount.textContent = cVal;
+        if (currentCounter && typeof cVal === 'number') currentCounter.textContent = cVal;
     });
     socket.on('shutter_update', data => {
         const { channel_id, last_status, last_status_time, first_open_time, first_close_time, total_open_duration_seconds, total_closed_duration_seconds } = data;

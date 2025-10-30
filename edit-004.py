@@ -68,14 +68,14 @@ APP_TASKS_CONFIG = {
 # THIS IS NOW A FALLBACK if no ROI is in the database.
 QUEUE_MONITOR_ROI_CONFIG = {
     "Checkout Queue": {
-        "roi_points": [[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
-        "secondary_roi_points":[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
+        "roi_points": [[0.391,0.206],[0.732,0.553],[0.356,0.668],[0.247,0.311]], #[[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
+        "secondary_roi_points":[[0.451,0.273],[0.598,0.214],[0.803,0.371],[0.635,0.508]],#[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
     }
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
 QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
-QUEUE_ALERT_COOLDOWN_SEC = 60      # 60-second cooldown between alerts
+QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
 
 # --- Flask and SocketIO Setup ---
 app = Flask(__name__)
@@ -423,21 +423,25 @@ class QueueMonitorProcessor(threading.Thread):
         self.secondary_roi_poly = Polygon([])
         self._load_roi_from_db()
 
+    # def _load_roi_from_db(self):
+    #     with SessionLocal() as db:
+    #         roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
+    #         if roi_record and roi_record.roi_points:
+    #             try:
+    #                 points = json.loads(roi_record.roi_points)
+    #                 self.roi_poly = Polygon(points.get("main", []))
+    #                 self.secondary_roi_poly = Polygon(points.get("secondary", []))
+    #                 logging.info(f"Loaded custom ROI for QueueMonitor {self.channel_name} from DB.")
+    #             except (json.JSONDecodeError, TypeError):
+    #                 logging.error("Failed to parse ROI JSON from DB. Using fallback.")
+    #                 self._use_fallback_roi()
+    #         else:
+    #             logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
+    #             self._use_fallback_roi()
+    # REPLACE IT WITH THIS
     def _load_roi_from_db(self):
-        with SessionLocal() as db:
-            roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
-            if roi_record and roi_record.roi_points:
-                try:
-                    points = json.loads(roi_record.roi_points)
-                    self.roi_poly = Polygon(points.get("main", []))
-                    self.secondary_roi_poly = Polygon(points.get("secondary", []))
-                    logging.info(f"Loaded custom ROI for QueueMonitor {self.channel_name} from DB.")
-                except (json.JSONDecodeError, TypeError):
-                    logging.error("Failed to parse ROI JSON from DB. Using fallback.")
-                    self._use_fallback_roi()
-            else:
-                logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
-                self._use_fallback_roi()
+        logging.info(f"BACKEND_FIX: Forcing use of hardcoded ROI for {self.channel_name}")
+        self._use_fallback_roi()
 
     def _use_fallback_roi(self):
         fallback_config = QUEUE_MONITOR_ROI_CONFIG.get(self.channel_name, {})
@@ -512,7 +516,8 @@ class QueueMonitorProcessor(threading.Thread):
 
         if results and results[0].boxes.id is not None:
             for box, track_id in zip(results[0].boxes.xyxy.cpu(), results[0].boxes.id.int().cpu().tolist()):
-                person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
+                # person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
+                person_point = Point(int((box[0] + box[2]) / 2), int(box[3]))
                 if self.roi_poly.is_valid and self.roi_poly.contains(person_point):
                     current_tracks_in_main_roi.add(track_id)
                     tracker = self.queue_tracker[track_id]
@@ -523,11 +528,10 @@ class QueueMonitorProcessor(threading.Thread):
                     if sec_tracker['entry_time'] == 0: sec_tracker['entry_time'] = current_time
 
         valid_queue_count = sum(1 for track_id in list(self.queue_tracker.keys()) if (track_id in current_tracks_in_main_roi and (current_time - self.queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC) or (self.queue_tracker.pop(track_id) and False))
+        updated = False
         if self.current_queue_count != valid_queue_count:
             self.current_queue_count = valid_queue_count
-            socketio.emit('queue_update', {'channel_id': self.channel_id, 'count': self.current_queue_count})
-            # Instant, non-blocking save to DB (disabled)
-            # threading.Thread(target=self._persist_queue_count, args=(self.current_queue_count,), daemon=True).start()
+            updated = True
 
         # Validate secondary (counter area) count with dwell
         valid_secondary_count = sum(
@@ -540,10 +544,20 @@ class QueueMonitorProcessor(threading.Thread):
 
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
+            updated = True
             # Optional: capture a screenshot when secondary area becomes occupied
             if self.current_secondary_count > 0:
                 annotated_for_save = results[0].plot() if results and results[0] else frame
                 handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], f"Counter area presence: {self.current_secondary_count}", is_gif=False)
+
+        # Emit live counts (no DB persistence) if either changed
+        if updated:
+            socketio.emit('queue_update', {
+                'channel_id': self.channel_id,
+                'queue': self.current_queue_count,
+                'counter': self.current_secondary_count,
+                'count': self.current_queue_count  # backward compat
+            })
 
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
         should_alert = (
