@@ -1336,7 +1336,8 @@ def download_schedule_template():
     try:
         # Create template data
         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        hours = [f"{i:02d}:00" for i in range(24)]
+        # Use non-padded hour keys to match processor expectations (H:00)
+        hours = [f"{i}:00" for i in range(24)]
         
         # Create template with sample data
         template_data = []
@@ -1396,17 +1397,24 @@ def upload_schedule_file(channel_id):
         # Process schedule data
         schedule = {}
         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+        # Helper to normalize timeslot keys to H:00 (e.g., '09:00' -> '9:00')
+        def _normalize_timeslot(ts):
+            try:
+                h, m = str(ts).split(':', 1)
+                return f"{int(h)}:{m}"
+            except Exception:
+                return str(ts)
         
         for _, row in df.iterrows():
             day = row['Day']
             if day not in days:
                 continue
-                
             for col in df.columns:
-                if col != 'Day' and ':' in col:  # Time column
-                    time_slot = col
-                    required_count = int(row[col]) if pd.notna(row[col]) else 0
-                    
+                if col != 'Day' and ':' in str(col):  # Time column
+                    time_slot = _normalize_timeslot(col)
+                    val = row[col]
+                    required_count = int(val) if (pd.notna(val) and str(val).strip() != '') else 0
                     if time_slot not in schedule:
                         schedule[time_slot] = {}
                     schedule[time_slot][day] = required_count

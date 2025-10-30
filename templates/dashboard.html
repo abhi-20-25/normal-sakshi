@@ -761,7 +761,8 @@
         
         fetch(`/api/occupancy/schedule/upload/${channelId}`, {
             method: 'POST',
-            body: formData
+            body: formData,
+            credentials: 'same-origin'
         })
         .then(response => response.json())
         .then(data => {
