@@ -656,15 +656,19 @@
     }
 
     function loadSchedule(channelId) {
-        // Load current schedule from server
-        fetch(`/api/occupancy/schedule/${channelId}`)
-            .then(response => response.json())
+        // Load current schedule from server (send cookies for login_required)
+        fetch(`/api/occupancy/schedule/${channelId}`, { credentials: 'same-origin' })
+            .then(response => {
+                if (!response.ok) { throw new Error(`HTTP ${response.status}`); }
+                return response.json();
+            })
             .then(data => {
                 displaySchedule(channelId, data);
             })
             .catch(error => {
                 console.error('Error loading schedule:', error);
-                document.getElementById(`schedule-grid-${channelId}`).innerHTML = '<p>Error loading schedule</p>';
+                const el = document.getElementById(`schedule-grid-${channelId}`);
+                if (el) el.innerHTML = '<p>Error loading schedule</p>';
             });
     }
 
@@ -711,15 +715,16 @@
         fetch(`/api/occupancy/schedule/${channelId}`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(schedule)
+            body: JSON.stringify(schedule),
+            credentials: 'same-origin'
         })
         .then(response => response.json())
         .then(data => {
             if (data.success) {
                 alert('Schedule saved successfully!');
-                document.querySelector('.modal').remove();
+                document.querySelector('.modal')?.remove();
             } else {
-                alert('Error saving schedule: ' + data.error);
+                alert('Error saving schedule: ' + (data.error || 'Unknown error'));
             }
         })
         .catch(error => {
