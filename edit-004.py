@@ -96,74 +96,64 @@ socketio = SocketIO(app, cors_allowed_origins="*")
 stream_processors = {}
 
 # Shared RTSP frame provider per camera to minimize latency and duplicate decoding
-# --- Helper function for GStreamer ---
-def create_gstreamer_pipeline(rtsp_url, latency=0):
-    """
-    Creates a GStreamer pipeline string for OpenCV.
-    This pipeline automatically drops old frames to ensure low latency.
-    """
-    # This pipeline assumes H.264, the most common RTSP codec
-    pipeline = [
-        f"rtspsrc location={rtsp_url} latency={latency} !",  # Source
-        "rtph264depay !",                                 # Depayload H.264
-        "h264parse !",                                    # Parse H.264
-        "avdec_h264 !",                                   # Decode H.264 (use 'nvv4l2decoder' for NVIDIA GPU)
-        "videoconvert !",                                 # Convert color space
-        "video/x-raw,format=BGR !",                       # Set format to BGR for OpenCV
-        # Key element: The appsink drops old buffers, only keeping the latest
-        "appsink drop=true max-buffers=1"
-    ]
-    return " ".join(pipeline)
-
-# ----------------------------------------
-
-# Shared RTSP frame provider using GStreamer
+# Shared RTSP frame provider using a thread-safe queue
 class FrameHub(threading.Thread):
     def __init__(self, rtsp_url, name):
         super().__init__(name=f"FrameHub-{name}", daemon=True)
         self.rtsp_url = rtsp_url
-        self.latest = None
-        self.lock = threading.Lock()
-        self.is_running = True
         
-        # Create the pipeline string
-        self.pipeline_str = create_gstreamer_pipeline(self.rtsp_url)
-        logging.info(f"FrameHub {self.name} initialized with pipeline: {self.pipeline_str}")
+        # A queue of size 1 is the perfect "latest frame" buffer
+        self.frame_queue = Queue(maxsize=1) 
+        self.is_running = True
+        logging.info(f"FrameHub {self.name} initialized for {self.rtsp_url}")
 
     def run(self):
-        cap = cv2.VideoCapture(self.pipeline_str, cv2.CAP_GSTREAMER)
-        
+        cap = cv2.VideoCapture(self.rtsp_url)
         if not cap.isOpened():
-            logging.error(f"FrameHub {self.name} could not open GStreamer pipeline.")
+            logging.error(f"FrameHub {self.name} could not open stream: {self.rtsp_url}")
             return
+            
+        # We only set properties that are relevant.
+        # BUFFERSIZE is a good hint to OpenCV.
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         while self.is_running:
-            # With GStreamer, just read(). No grab/retrieve loops needed.
-            # cap.read() will ALWAYS return the latest frame due to appsink.
-            ret, frame = cap.read()
+            # Use cap.read() which combines grab() and retrieve()
+            ret, frame = cap.read() 
 
             if not ret:
-                logging.warning(f"FrameHub {self.name} lost connection. Reconnecting...")
+                logging.warning(f"FrameHub {self.name} disconnected. Reconnecting...")
                 cap.release()
-                time.sleep(1) # Wait before reconnecting
-                cap = cv2.VideoCapture(self.pipeline_str, cv2.CAP_GSTREAMER)
-                if not cap.isOpened():
-                    logging.error(f"FrameHub {self.name} failed to reconnect. Stopping.")
-                    self.is_running = False # Stop the thread if reconnect fails
+                time.sleep(5)  # Wait 5 seconds before retrying
+                cap = cv2.VideoCapture(self.rtsp_url)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 continue
-                
-            # Store the latest frame using the lock
-            with self.lock:
-                self.latest = frame
-        
+            
+            # --- This is the key logic ---
+            # If the queue is full (i.e., it has 1 frame), 
+            # we first clear it to make space for the new frame.
+            if not self.frame_queue.empty():
+                try:
+                    self.frame_queue.get_nowait()  # Discard the old frame
+                except Empty:
+                    pass # Should not happen, but safe to include
+            
+            # Put the new, latest frame into the queue
+            self.frame_queue.put(frame)
+            # --- End of key logic ---
+
         cap.release()
         logging.info(f"FrameHub {self.name} stopped.")
 
     def get_latest(self):
-        """Gets a copy of the latest frame using the lock."""
-        with self.lock:
-            # Return a copy as in your original design
-            return None if self.latest is None else self.latest.copy()
+        """Gets the latest frame from the queue without blocking."""
+        try:
+            # Get frame from queue. copy() is good practice
+            # to prevent the processing thread from locking the frame.
+            return self.frame_queue.get_nowait().copy()
+        except Empty:
+            # If the queue is empty, just return None
+            return None
 
     def stop(self):
         logging.info(f"Stopping FrameHub {self.name}...")
