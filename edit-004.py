@@ -39,6 +39,11 @@ if DEVICE == 'cuda':
     except Exception:
         pass
 
+# --- Frame Downscale Settings ---
+# Reduce resolution early in the pipeline to speed up processing/streaming
+TARGET_WIDTH = 640
+TARGET_HEIGHT = 360
+
 # --- Module Imports ---
 from kitchen_compliance_monitor import KitchenComplianceProcessor
 
@@ -116,10 +121,18 @@ class FrameHub(threading.Thread):
         # We only set properties that are relevant.
         # BUFFERSIZE is a good hint to OpenCV.
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Best effort request for smaller frames (some RTSP servers ignore this)
+        try:
+            if TARGET_WIDTH:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, TARGET_WIDTH)
+            if TARGET_HEIGHT:
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_HEIGHT)
+        except Exception:
+            pass
 
         while self.is_running:
             # Use cap.read() which combines grab() and retrieve()
-            ret, frame = cap.read() 
+            ret, frame = cap.read()
 
             if not ret:
                 logging.warning(f"FrameHub {self.name} disconnected. Reconnecting...")
@@ -128,6 +141,17 @@ class FrameHub(threading.Thread):
                 cap = cv2.VideoCapture(self.rtsp_url)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 continue
+            
+            # Downscale the frame to speed up processing and streaming
+            try:
+                if TARGET_WIDTH and TARGET_HEIGHT:
+                    frame = cv2.resize(frame, (TARGET_WIDTH, TARGET_HEIGHT), interpolation=cv2.INTER_AREA)
+                elif TARGET_WIDTH:
+                    h, w = frame.shape[:2]
+                    new_h = int(h * (TARGET_WIDTH / float(w)))
+                    frame = cv2.resize(frame, (TARGET_WIDTH, new_h), interpolation=cv2.INTER_AREA)
+            except Exception:
+                pass
             
             # --- This is the key logic ---
             # If the queue is full (i.e., it has 1 frame), 
