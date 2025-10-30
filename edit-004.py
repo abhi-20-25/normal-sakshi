@@ -511,19 +511,11 @@ class PeopleCounterProcessor(threading.Thread):
             if frame is None:
                 time.sleep(0.01)
                 continue
-            with torch.inference_mode():
-                results = self.model.track(
-                    frame,
-                    persist=True,
-                    classes=[0],
-                    conf=0.5,
-                    iou=0.5,
-                    verbose=False,
-                    device=DEVICE,
-                    half=(DEVICE == 'cuda')
-                )
-            if results and results[0].boxes.id is not None:
-                boxes, track_ids = results[0].boxes.xywh.cpu(), results[0].boxes.id.int().cpu().tolist()
+            # Robust tracker call; falls back to predict on errors
+            results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5)
+            r0 = results[0] if (results and len(results) > 0) else None
+            if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
+                boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
                 line_x, count_changed = int(frame.shape[1] * 0.5), False
                 for box, track_id in zip(boxes, track_ids):
                     center_x = int(box[0])
@@ -535,7 +527,7 @@ class PeopleCounterProcessor(threading.Thread):
                         if prev_x < line_x and curr_x >= line_x: self.counts['in'] += 1; count_changed = True   # Left to Right = IN
                         elif prev_x > line_x and curr_x <= line_x: self.counts['out'] += 1; count_changed = True  # Right to Left = OUT
                 if count_changed: self._update_and_log_counts()
-            annotated_frame = results[0].plot() if results else frame
+            annotated_frame = r0.plot() if r0 is not None else frame
             line_x = int(annotated_frame.shape[1] * 0.5)
             cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
             cv2.putText(annotated_frame, f"IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
