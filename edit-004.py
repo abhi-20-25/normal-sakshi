@@ -670,9 +670,26 @@ class QueueMonitorProcessor(threading.Thread):
 
     def _use_fallback_roi(self):
         fallback_config = QUEUE_MONITOR_ROI_CONFIG.get(self.channel_name, {})
+        # If channel name doesn't match, try to use the first available config
+        if not fallback_config and QUEUE_MONITOR_ROI_CONFIG:
+            first_key = list(QUEUE_MONITOR_ROI_CONFIG.keys())[0]
+            fallback_config = QUEUE_MONITOR_ROI_CONFIG[first_key]
+            logging.info(f"No ROI config found for '{self.channel_name}', using first available config: '{first_key}'")
+        
         # Store normalized coordinates for later conversion to pixels
         self.normalized_main_roi = fallback_config.get("roi_points", [])
         self.normalized_secondary_roi = fallback_config.get("secondary_roi_points", [])
+        
+        # Log what we got
+        if self.normalized_main_roi:
+            logging.info(f"Loaded main ROI with {len(self.normalized_main_roi)} points for {self.channel_name}")
+        else:
+            logging.warning(f"No main ROI points found for {self.channel_name}")
+        if self.normalized_secondary_roi:
+            logging.info(f"Loaded secondary ROI with {len(self.normalized_secondary_roi)} points for {self.channel_name}")
+        else:
+            logging.warning(f"No secondary ROI points found for {self.channel_name}")
+        
         # Initialize with empty polygons - will be converted to pixels in run() method
         self.roi_poly = Polygon([])
         self.secondary_roi_poly = Polygon([])
@@ -683,6 +700,9 @@ class QueueMonitorProcessor(threading.Thread):
                 self.normalized_main_roi = new_roi_points.get("main", [])
                 self.normalized_secondary_roi = new_roi_points.get("secondary", [])
                 logging.info(f"QueueMonitor {self.channel_name} received new ROI config.")
+                # Reset the flag so ROI polygons will be updated on next frame
+                if hasattr(self, '_roi_logged_once'):
+                    delattr(self, '_roi_logged_once')
             except Exception as e:
                 logging.error(f"Error updating ROI for {self.channel_name}: {e}")
 
@@ -709,6 +729,35 @@ class QueueMonitorProcessor(threading.Thread):
         except Exception as e:
             logging.error(f"Failed to save queue count to DB for {self.channel_name}: {e}")
 
+    def _update_roi_polygons(self, frame):
+        """Update ROI polygons from normalized coordinates based on current frame dimensions"""
+        h, w = frame.shape[:2]
+        if hasattr(self, 'normalized_main_roi') and self.normalized_main_roi and len(self.normalized_main_roi) >= 3:
+            try:
+                pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi]
+                self.roi_poly = Polygon(pixel_coords)
+                if not self.roi_poly.is_valid:
+                    logging.warning(f"Main ROI polygon is invalid for {self.channel_name}. Coords: {pixel_coords}")
+                    self.roi_poly = self.roi_poly.buffer(0)  # Try to fix invalid polygon
+                logging.info(f"Updated main ROI for {self.channel_name}: {len(pixel_coords)} points, valid: {self.roi_poly.is_valid}, empty: {self.roi_poly.is_empty}")
+            except Exception as e:
+                logging.error(f"Error creating main ROI polygon for {self.channel_name}: {e}")
+        else:
+            logging.warning(f"No valid normalized_main_roi for {self.channel_name}")
+            
+        if hasattr(self, 'normalized_secondary_roi') and self.normalized_secondary_roi and len(self.normalized_secondary_roi) >= 3:
+            try:
+                pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi]
+                self.secondary_roi_poly = Polygon(pixel_coords)
+                if not self.secondary_roi_poly.is_valid:
+                    logging.warning(f"Secondary ROI polygon is invalid for {self.channel_name}. Coords: {pixel_coords}")
+                    self.secondary_roi_poly = self.secondary_roi_poly.buffer(0)  # Try to fix invalid polygon
+                logging.info(f"Updated secondary ROI for {self.channel_name}: {len(pixel_coords)} points, valid: {self.secondary_roi_poly.is_valid}, empty: {self.secondary_roi_poly.is_empty}")
+            except Exception as e:
+                logging.error(f"Error creating secondary ROI polygon for {self.channel_name}: {e}")
+        else:
+            logging.warning(f"No valid normalized_secondary_roi for {self.channel_name}")
+
     def run(self):
         first_frame = True
         while self.is_running:
@@ -717,12 +766,8 @@ class QueueMonitorProcessor(threading.Thread):
                 time.sleep(0.01)
                 continue
             
-            if first_frame:
-                h, w, _ = frame.shape
-                if hasattr(self, 'normalized_main_roi') and self.normalized_main_roi:
-                    self.roi_poly = Polygon([(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi])
-                if hasattr(self, 'normalized_secondary_roi') and self.normalized_secondary_roi:
-                    self.secondary_roi_poly = Polygon([(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi])
+            if first_frame or not self.roi_poly.is_valid or self.roi_poly.is_empty:
+                self._update_roi_polygons(frame)
                 first_frame = False
 
             self.process_frame(frame.copy())
@@ -735,18 +780,50 @@ class QueueMonitorProcessor(threading.Thread):
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results and len(results) > 0) else None
+        
+        # Debug: Log ROI status
+        if not hasattr(self, '_roi_logged_once'):
+            logging.info(f"ROI Status for {self.channel_name}: Main ROI valid={self.roi_poly.is_valid}, empty={self.roi_poly.is_empty}, "
+                        f"Secondary ROI valid={self.secondary_roi_poly.is_valid}, empty={self.secondary_roi_poly.is_empty}")
+            if hasattr(self, 'normalized_main_roi'):
+                logging.info(f"Normalized main ROI: {self.normalized_main_roi}")
+            if hasattr(self, 'normalized_secondary_roi'):
+                logging.info(f"Normalized secondary ROI: {self.normalized_secondary_roi}")
+            self._roi_logged_once = True
+        
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-            for box, track_id in zip(r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()):
+            boxes = r0.boxes.xyxy.cpu()
+            track_ids = r0.boxes.id.int().cpu().tolist()
+            
+            # Debug: Log number of detections
+            if len(boxes) > 0:
+                logging.debug(f"Detected {len(boxes)} persons in frame for {self.channel_name}")
+            
+            for box, track_id in zip(boxes, track_ids):
                 # person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
                 person_point = Point(int((box[0] + box[2]) / 2), int(box[3]))
-                if self.roi_poly.is_valid and self.roi_poly.contains(person_point):
-                    current_tracks_in_main_roi.add(track_id)
-                    tracker = self.queue_tracker[track_id]
-                    if tracker['entry_time'] == 0: tracker['entry_time'] = current_time
-                if self.secondary_roi_poly.is_valid and self.secondary_roi_poly.contains(person_point):
-                    current_tracks_in_secondary_roi.add(track_id)
-                    sec_tracker = self.secondary_queue_tracker[track_id]
-                    if sec_tracker['entry_time'] == 0: sec_tracker['entry_time'] = current_time
+                
+                # Check main ROI (queue area)
+                if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+                    if self.roi_poly.contains(person_point):
+                        current_tracks_in_main_roi.add(track_id)
+                        tracker = self.queue_tracker[track_id]
+                        if tracker['entry_time'] == 0: 
+                            tracker['entry_time'] = current_time
+                            logging.debug(f"Person {track_id} entered queue ROI at {current_time}")
+                else:
+                    logging.warning(f"Main ROI is invalid or empty - cannot check person {track_id}")
+                
+                # Check secondary ROI (counter area)
+                if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+                    if self.secondary_roi_poly.contains(person_point):
+                        current_tracks_in_secondary_roi.add(track_id)
+                        sec_tracker = self.secondary_queue_tracker[track_id]
+                        if sec_tracker['entry_time'] == 0: 
+                            sec_tracker['entry_time'] = current_time
+                            logging.debug(f"Person {track_id} entered counter ROI at {current_time}")
+                else:
+                    logging.warning(f"Secondary ROI is invalid or empty - cannot check person {track_id}")
 
         valid_queue_count = sum(1 for track_id in list(self.queue_tracker.keys()) if (track_id in current_tracks_in_main_roi and (current_time - self.queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC) or (self.queue_tracker.pop(track_id) and False))
         updated = False
