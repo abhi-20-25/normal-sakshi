@@ -929,40 +929,68 @@ class QueueMonitorProcessor(threading.Thread):
                 
                 # Check main ROI (queue area)
                 if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-                    if self.roi_poly.contains(person_point):
+                    contains_main = self.roi_poly.contains(person_point)
+                    if contains_main:
                         current_tracks_in_main_roi.add(track_id)
                         tracker = self.queue_tracker[track_id]
                         if tracker['entry_time'] == 0: 
                             tracker['entry_time'] = current_time
-                            logging.debug(f"Person {track_id} entered queue ROI at {current_time}")
+                            logging.info(f"Person {track_id} entered queue ROI at {current_time} - Point: ({person_point.x}, {person_point.y})")
+                    else:
+                        # Log when person is detected but not in ROI (for debugging)
+                        if track_id not in current_tracks_in_main_roi and len(current_tracks_in_main_roi) == 0:
+                            logging.debug(f"Person {track_id} at ({person_point.x}, {person_point.y}) NOT in queue ROI")
                 else:
-                    logging.warning(f"Main ROI is invalid or empty - cannot check person {track_id}")
+                    if not hasattr(self, '_roi_warning_logged'):
+                        logging.warning(f"Main ROI is invalid or empty for {self.channel_name} - cannot count persons. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
+                        self._roi_warning_logged = True
                 
                 # Check secondary ROI (counter area)
                 if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-                    if self.secondary_roi_poly.contains(person_point):
+                    contains_secondary = self.secondary_roi_poly.contains(person_point)
+                    if contains_secondary:
                         current_tracks_in_secondary_roi.add(track_id)
                         sec_tracker = self.secondary_queue_tracker[track_id]
                         if sec_tracker['entry_time'] == 0: 
                             sec_tracker['entry_time'] = current_time
-                            logging.debug(f"Person {track_id} entered counter ROI at {current_time}")
+                            logging.info(f"Person {track_id} entered counter ROI at {current_time} - Point: ({person_point.x}, {person_point.y})")
+                    else:
+                        # Log when person is detected but not in ROI (for debugging)
+                        if track_id not in current_tracks_in_secondary_roi and len(current_tracks_in_secondary_roi) == 0:
+                            logging.debug(f"Person {track_id} at ({person_point.x}, {person_point.y}) NOT in counter ROI")
                 else:
-                    logging.warning(f"Secondary ROI is invalid or empty - cannot check person {track_id}")
+                    if not hasattr(self, '_secondary_roi_warning_logged'):
+                        logging.warning(f"Secondary ROI is invalid or empty for {self.channel_name} - cannot count persons. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
+                        self._secondary_roi_warning_logged = True
 
-        valid_queue_count = sum(1 for track_id in list(self.queue_tracker.keys()) if (track_id in current_tracks_in_main_roi and (current_time - self.queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC) or (self.queue_tracker.pop(track_id) and False))
+        # Clean up trackers for persons who left the ROI
+        track_ids_to_remove = [tid for tid in list(self.queue_tracker.keys()) if tid not in current_tracks_in_main_roi]
+        for tid in track_ids_to_remove:
+            self.queue_tracker.pop(tid, None)
+        
+        track_ids_to_remove_sec = [tid for tid in list(self.secondary_queue_tracker.keys()) if tid not in current_tracks_in_secondary_roi]
+        for tid in track_ids_to_remove_sec:
+            self.secondary_queue_tracker.pop(tid, None)
+
+        # Count persons in queue ROI who have been there long enough
+        valid_queue_count = 0
+        for track_id in current_tracks_in_main_roi:
+            if track_id in self.queue_tracker:
+                entry_time = self.queue_tracker[track_id]['entry_time']
+                if entry_time > 0 and (current_time - entry_time) >= QUEUE_DWELL_TIME_SEC:
+                    valid_queue_count += 1
         updated = False
         if self.current_queue_count != valid_queue_count:
             self.current_queue_count = valid_queue_count
             updated = True
 
         # Validate secondary (counter area) count with dwell
-        valid_secondary_count = sum(
-            1 for track_id in list(self.secondary_queue_tracker.keys())
-            if (
-                track_id in current_tracks_in_secondary_roi and
-                (current_time - self.secondary_queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC
-            ) or (self.secondary_queue_tracker.pop(track_id) and False)
-        )
+        valid_secondary_count = 0
+        for track_id in current_tracks_in_secondary_roi:
+            if track_id in self.secondary_queue_tracker:
+                entry_time = self.secondary_queue_tracker[track_id]['entry_time']
+                if entry_time > 0 and (current_time - entry_time) >= QUEUE_DWELL_TIME_SEC:
+                    valid_secondary_count += 1
 
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
@@ -1035,16 +1063,30 @@ class QueueMonitorProcessor(threading.Thread):
         # Take screenshot if person in queue > 5 seconds with no counter
         if should_screenshot_5sec:
             self.last_screenshot_time = current_time
-            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Counter area is empty."
+            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Counter area is empty. Queue count: {valid_queue_count}"
             logging.warning(f"QUEUE SCREENSHOT TRIGGER on {self.channel_name}: {screenshot_message}")
-            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], screenshot_message, is_gif=False)
+            try:
+                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], screenshot_message, is_gif=False)
+                if media_path:
+                    logging.info(f"Screenshot saved successfully: {media_path}")
+                else:
+                    logging.error(f"Failed to save screenshot for {self.channel_name}")
+            except Exception as e:
+                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
         
         # Take screenshot if queue count > 3
         if should_screenshot_high_count:
             self.last_screenshot_time = current_time
-            high_count_message = f"High queue count: {valid_queue_count} people in queue"
+            high_count_message = f"High queue count: {valid_queue_count} people in queue. Counter: {valid_secondary_count}"
             logging.warning(f"HIGH QUEUE COUNT SCREENSHOT on {self.channel_name}: {high_count_message}")
-            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], high_count_message, is_gif=False)
+            try:
+                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], high_count_message, is_gif=False)
+                if media_path:
+                    logging.info(f"Screenshot saved successfully: {media_path}")
+                else:
+                    logging.error(f"Failed to save screenshot for {self.channel_name}")
+            except Exception as e:
+                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
         
         if should_alert:
             self.last_alert_time = current_time
@@ -1062,14 +1104,23 @@ class QueueMonitorProcessor(threading.Thread):
 
         # Display counts prominently on the frame with better visibility
         # Background rectangles for better text visibility
-        cv2.rectangle(annotated_frame, (45, 25), (250, 95), (0, 0, 0), -1)  # Black background
-        cv2.rectangle(annotated_frame, (45, 25), (250, 95), (255, 255, 255), 2)  # White border
+        cv2.rectangle(annotated_frame, (45, 25), (280, 95), (0, 0, 0), -1)  # Black background
+        cv2.rectangle(annotated_frame, (45, 25), (280, 95), (255, 255, 255), 2)  # White border
         
-        # Queue count with larger, more visible font
-        cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 55), 
+        # Queue count with larger, more visible font - use valid_queue_count for real-time display
+        queue_display_count = valid_queue_count  # Show actual current count
+        counter_display_count = valid_secondary_count  # Show actual current count
+        
+        cv2.putText(annotated_frame, f"Queue: {queue_display_count}", (50, 55), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Yellow, thicker
-        cv2.putText(annotated_frame, f"Counter: {self.current_secondary_count}", (50, 90), 
+        cv2.putText(annotated_frame, f"Counter: {counter_display_count}", (50, 90), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Cyan, thicker
+        
+        # Log count changes for debugging
+        if queue_display_count > 0 or counter_display_count > 0:
+            logging.info(f"QueueMonitor {self.channel_name}: Queue={queue_display_count}, Counter={counter_display_count}, "
+                       f"Tracks in main ROI: {len(current_tracks_in_main_roi)}, "
+                       f"Tracks in secondary ROI: {len(current_tracks_in_secondary_roi)}")
         
         with self.lock: self.latest_frame = annotated_frame.copy()
 
