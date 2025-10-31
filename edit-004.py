@@ -54,7 +54,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:Tneural01@localhost:5432/sakshi"
+DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
