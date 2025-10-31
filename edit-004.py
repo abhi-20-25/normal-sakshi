@@ -34,12 +34,48 @@ from queue import Queue, Empty
 
 # --- CUDA/Backend Tuning ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-if DEVICE == 'cuda':
-    torch.backends.cudnn.benchmark = True
+_cuda_error_count = 0
+_cuda_error_threshold = 5  # Fallback to CPU after 5 CUDA errors
+_force_cpu = False
+
+if DEVICE == 'cuda' and not _force_cpu:
     try:
-        torch.set_float32_matmul_precision('high')
-    except Exception:
-        pass
+        torch.backends.cudnn.benchmark = True
+        try:
+            torch.set_float32_matmul_precision('high')
+        except Exception:
+            pass
+    except Exception as e:
+        logging.error(f"CUDA initialization failed, falling back to CPU: {e}")
+        DEVICE = 'cpu'
+        _force_cpu = True
+
+# Model cache will be defined later
+_MODEL_CACHE = {}
+
+def handle_cuda_error():
+    """Handle CUDA errors and potentially fallback to CPU"""
+    global DEVICE, _cuda_error_count, _force_cpu
+    if DEVICE == 'cuda':
+        _cuda_error_count += 1
+        logging.error(f"CUDA error detected (count: {_cuda_error_count}/{_cuda_error_threshold})")
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        
+        if _cuda_error_count >= _cuda_error_threshold:
+            logging.error(f"CUDA errors exceeded threshold ({_cuda_error_threshold}). Falling back to CPU for stability.")
+            DEVICE = 'cpu'
+            _force_cpu = True
+            # Move all cached models to CPU
+            for model_path, model in _MODEL_CACHE.items():
+                try:
+                    model.to('cpu')
+                    logging.info(f"Moved model {model_path} to CPU")
+                except Exception:
+                    pass
 
 # --- Frame Downscale Settings ---
 # Reduce resolution early in the pipeline to speed up processing/streaming
@@ -102,12 +138,9 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                 torch.cuda.empty_cache()
             return result
         except RuntimeError as e:
-            if 'CUDA' in str(e):
-                logging.error(f"CUDA error in tracking, clearing cache and retrying: {e}")
-                if DEVICE == 'cuda':
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                # Fallback to predict without tracking
+            if 'CUDA' in str(e) or 'device-side assert' in str(e):
+                handle_cuda_error()
+                # Fallback to predict without tracking on CPU if CUDA failed
                 try:
                     return model.predict(
                         frame,
@@ -120,6 +153,21 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                     )
                 except Exception as e2:
                     logging.error(f"Predict also failed after CUDA error: {e2}")
+                    # Last resort: try on CPU
+                    if DEVICE == 'cuda':
+                        try:
+                            logging.info("Attempting inference on CPU as last resort")
+                            return model.predict(
+                                frame,
+                                classes=[0],
+                                conf=conf,
+                                iou=iou,
+                                verbose=False,
+                                device='cpu',
+                                half=False
+                            )
+                        except Exception as e3:
+                            logging.error(f"CPU inference also failed: {e3}")
                     return None
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
@@ -457,12 +505,27 @@ class MultiModelProcessor(threading.Thread):
                             if DEVICE == 'cuda':
                                 torch.cuda.empty_cache()
                         except RuntimeError as e:
-                            if 'CUDA' in str(e):
+                            if 'CUDA' in str(e) or 'device-side assert' in str(e):
+                                handle_cuda_error()
                                 logging.error(f"CUDA error in MultiModelProcessor for {app_name}: {e}")
-                                if DEVICE == 'cuda':
-                                    torch.cuda.empty_cache()
-                                    torch.cuda.synchronize()
-                                continue
+                                # Try one more time on CPU if CUDA failed and device switched
+                                global _force_cpu
+                                if DEVICE == 'cpu' or _force_cpu:
+                                    try:
+                                        logging.info(f"Retrying {app_name} on CPU after CUDA error")
+                                        with torch.inference_mode():
+                                            results = task['model'](
+                                                frame,
+                                                device='cpu',
+                                                half=False,
+                                                **model_args
+                                            )
+                                        # Continue with processing if successful
+                                    except Exception as e2:
+                                        logging.error(f"CPU retry also failed for {app_name}: {e2}")
+                                        continue
+                                else:
+                                    continue
                             else:
                                 logging.error(f"Model error for {app_name}: {e}")
                                 continue
@@ -1712,8 +1775,6 @@ def upload_schedule_file(channel_id):
 
 @socketio.on('connect')
 def handle_connect(): logging.info('Frontend client connected')
-
-_MODEL_CACHE = {}
 
 def load_model(model_path: str):
     if model_path in _MODEL_CACHE:
