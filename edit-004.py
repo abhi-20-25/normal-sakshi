@@ -80,6 +80,31 @@ APP_TASKS_CONFIG = {
 
 # --- YOLO tracking helper (robust to tracker failures) ---
 def safe_track_persons(model, frame, conf=0.25, iou=0.5):
+    # Validate frame before processing
+    if frame is None:
+        logging.warning("safe_track_persons: frame is None, returning empty result")
+        return []
+    
+    # Check if frame is a numpy array with valid shape
+    if not hasattr(frame, 'shape'):
+        logging.warning(f"safe_track_persons: frame has no shape attribute (type: {type(frame)}), returning empty result")
+        return []
+    
+    # Validate frame dimensions (must have height, width, and at least 1 channel)
+    if len(frame.shape) < 2:
+        logging.warning(f"safe_track_persons: invalid frame shape {frame.shape}, returning empty result")
+        return []
+    
+    h, w = frame.shape[:2]
+    if h <= 0 or w <= 0:
+        logging.warning(f"safe_track_persons: invalid frame dimensions (h={h}, w={w}), returning empty result")
+        return []
+    
+    # Minimum size check (frames should be at least 32x32 pixels)
+    if h < 32 or w < 32:
+        logging.warning(f"safe_track_persons: frame too small (h={h}, w={w}), returning empty result")
+        return []
+    
     with torch.inference_mode():
         try:
             return model.track(
@@ -93,17 +118,58 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                 half=(DEVICE == 'cuda'),
                 tracker='bytetrack.yaml'
             )
+        except RuntimeError as e:
+            # Handle CUDA errors specifically
+            error_msg = str(e)
+            if 'CUDA' in error_msg or 'cuda' in error_msg or 'index out of bounds' in error_msg.lower():
+                logging.error(f"CUDA error in safe_track_persons: {e}. Frame shape: {frame.shape}")
+                # Try to reset CUDA state and fallback to predict
+                if DEVICE == 'cuda':
+                    try:
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    except:
+                        pass
+                logging.warning("Falling back to predict() after CUDA error")
+                try:
+                    return model.predict(
+                        frame,
+                        classes=[0],
+                        conf=conf,
+                        iou=iou,
+                        verbose=False,
+                        device=DEVICE,
+                        half=(DEVICE == 'cuda')
+                    )
+                except Exception as predict_error:
+                    logging.error(f"predict() also failed after CUDA error: {predict_error}")
+                    return []
+            else:
+                logging.warning(f"track() failed with non-CUDA error, fallback to predict(): {e}")
+                return model.predict(
+                    frame,
+                    classes=[0],
+                    conf=conf,
+                    iou=iou,
+                    verbose=False,
+                    device=DEVICE,
+                    half=(DEVICE == 'cuda')
+                )
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
-            return model.predict(
-                frame,
-                classes=[0],
-                conf=conf,
-                iou=iou,
-                verbose=False,
-                device=DEVICE,
-                half=(DEVICE == 'cuda')
-            )
+            try:
+                return model.predict(
+                    frame,
+                    classes=[0],
+                    conf=conf,
+                    iou=iou,
+                    verbose=False,
+                    device=DEVICE,
+                    half=(DEVICE == 'cuda')
+                )
+            except Exception as predict_error:
+                logging.error(f"Both track() and predict() failed: {predict_error}")
+                return []
 
 
 # --- QUEUE MONITOR CONFIGURATION ---
