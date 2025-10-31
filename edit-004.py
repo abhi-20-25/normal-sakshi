@@ -1869,18 +1869,35 @@ def gen_video_feed(processor):
 @app.route('/video_feed/<app_name>/<channel_id>')
 @login_required
 def video_feed(app_name, channel_id):
+    """Video feed endpoint - works with both direct run and gunicorn"""
+    # Ensure initialization
+    _ensure_initialized()
+    
     processors = stream_processors.get(channel_id)
-    if not processors: return ("Stream not found", 404)
+    if not processors:
+        logging.warning(f"Video feed requested for channel {channel_id} but processors not found")
+        return (f"Stream not found for channel {channel_id}", 404)
+    
     target_processor, target_class = None, None
     if app_name == 'PeopleCounter': target_class = PeopleCounterProcessor
     elif app_name == 'QueueMonitor': target_class = QueueMonitorProcessor
     elif app_name == 'KitchenCompliance': target_class = KitchenComplianceProcessor
     elif app_name == 'OccupancyMonitor': target_class = OccupancyMonitorProcessor
-    if target_class: target_processor = next((p for p in processors if isinstance(p, target_class)), None)
-    if target_processor and target_processor.is_alive():
-        return Response(gen_video_feed(target_processor), mimetype='multipart/x-mixed-replace; boundary=frame')
+    
+    if target_class:
+        target_processor = next((p for p in processors if isinstance(p, target_class)), None)
+    
+    if target_processor:
+        if target_processor.is_alive():
+            logging.info(f"Streaming video feed for {app_name} on channel {channel_id}")
+            return Response(gen_video_feed(target_processor), mimetype='multipart/x-mixed-replace; boundary=frame')
+        else:
+            logging.warning(f"{app_name} processor for channel {channel_id} is not alive")
+            return (f"{app_name} processor is not running for this channel", 503)
     else:
-        return (f"{app_name} stream not found or is not running for this channel", 404)
+        logging.warning(f"{app_name} processor not found for channel {channel_id}")
+        available = [type(p).__name__ for p in processors]
+        return (f"{app_name} stream not found for channel {channel_id}. Available: {available}", 404)
 
 
 @app.route('/history/<app_name>')
@@ -2597,32 +2614,57 @@ def initialize_app():
     """Initialize the application (scheduler, processors, etc.)"""
     global _initialized
     if _initialized:
+        logging.info("Application already initialized, skipping...")
         return  # Already initialized
     
-    # Initialize database
-    initialize_database()
-    
-    # Start the scheduler if database is connected
-    if db_connected:
-        scheduler = BackgroundScheduler(timezone=str(IST))
-        # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
-        # Add periodic CUDA recovery check every 5 minutes
-        scheduler.add_job(periodic_cuda_recovery, 'interval', minutes=5, id='cuda_recovery')
-        scheduler.start()
-        atexit.register(lambda: scheduler.shutdown())
-        logging.info("CUDA recovery scheduler started - will attempt to re-enable CUDA every 5 minutes")
-    
-    # Start all stream processors
-    start_streams()
-    
-    _initialized = True
-    logging.info("Application initialized - processors and scheduler started")
-    logging.info("CUDA Reset API: POST /api/reset_cuda to reset all CUDA errors")
-    logging.info("CUDA Status API: GET /api/cuda_status to check CUDA status")
-    logging.info("CUDA Reset per processor: POST /api/reset_cuda/<processor_name> to reset specific processor")
+    try:
+        logging.info("Starting application initialization...")
+        
+        # Initialize database
+        initialize_database()
+        
+        # Start the scheduler if database is connected
+        if db_connected:
+            scheduler = BackgroundScheduler(timezone=str(IST))
+            # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
+            # Add periodic CUDA recovery check every 5 minutes
+            scheduler.add_job(periodic_cuda_recovery, 'interval', minutes=5, id='cuda_recovery')
+            scheduler.start()
+            atexit.register(lambda: scheduler.shutdown())
+            logging.info("CUDA recovery scheduler started - will attempt to re-enable CUDA every 5 minutes")
+        else:
+            logging.warning("Database not connected, scheduler not started")
+        
+        # Start all stream processors
+        start_streams()
+        
+        _initialized = True
+        logging.info("✓ Application initialized successfully - processors and scheduler started")
+        logging.info("CUDA Reset API: POST /api/reset_cuda to reset all CUDA errors")
+        logging.info("CUDA Status API: GET /api/cuda_status to check CUDA status")
+        logging.info("CUDA Reset per processor: POST /api/reset_cuda/<processor_name> to reset specific processor")
+        
+        # Log processor status
+        total_processors = sum(len(procs) for procs in stream_processors.values())
+        logging.info(f"Total processors started: {total_processors} across {len(stream_processors)} channels")
+        
+    except Exception as e:
+        logging.error(f"Error during application initialization: {e}", exc_info=True)
+        raise
 
 # Initialize when module is imported (for gunicorn)
-initialize_app()
+# Use threading lock to prevent multiple initializations in multi-worker setup
+_init_lock = threading.Lock()
+
+def _ensure_initialized():
+    """Ensure initialization happens, with locking for multi-worker safety"""
+    global _initialized
+    with _init_lock:
+        if not _initialized:
+            initialize_app()
+
+# Call on import
+_ensure_initialized()
 
 if __name__ == "__main__":
     logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
