@@ -147,15 +147,21 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
         logging.error(f"Frame validation failed: {validation_error}")
         return None
     
-    # Determine inference device
+    # Determine inference device - default to GPU (CUDA) if available
     if device is None:
-        inference_device = 'cpu' if _force_cpu else DEVICE
+        # Only use CPU if explicitly forced after errors
+        inference_device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
     else:
         inference_device = device
     
-    # Always use CPU if forced globally (after CUDA errors)
-    if _force_cpu and inference_device == 'cuda':
-        inference_device = 'cpu'
+    # Ensure model is on the correct device
+    try:
+        if inference_device == 'cuda' and torch.cuda.is_available():
+            model.to('cuda')
+        elif inference_device == 'cpu':
+            model.to('cpu')
+    except Exception:
+        pass
     
     inference_half = False  # Never use half precision to avoid issues
     
@@ -569,9 +575,15 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
-                        # Use CPU if forced after CUDA errors
-                        inference_device = 'cpu' if _force_cpu else DEVICE
+                        # Use GPU (CUDA) by default - only use CPU if forced after errors
+                        inference_device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
                         inference_half = False  # Disable half precision to avoid CUDA errors
+                        
+                        # Ensure model is on correct device
+                        try:
+                            task['model'].to(inference_device)
+                        except Exception:
+                            pass
                         
                         try:
                             with torch.inference_mode():
@@ -627,6 +639,10 @@ class PeopleCounterProcessor(threading.Thread):
         self.rtsp_url, self.channel_id, self.model, self.detection_callback = rtsp_url, channel_id, model, detection_callback
         self.channel_name, self.app_name = channel_name, "PeopleCounter"
         self.socketio = socketio
+        # Explicitly use GPU (CUDA) if available - only use CPU if forced
+        self.device = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+        self.model.to(self.device)
+        logging.info(f"PeopleCounter {channel_name}: Using device {self.device.upper()}")
         self.is_running, self.lock = True, threading.Lock()
         self.track_history = defaultdict(list)
         self.counts = {'in': 0, 'out': 0}
@@ -709,8 +725,9 @@ class PeopleCounterProcessor(threading.Thread):
             if frame is None:
                 time.sleep(0.01)
                 continue
-            # Robust tracker call; falls back to predict on errors
-            results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, device=DEVICE)
+            # Robust tracker call; falls back to predict on errors - use GPU (CUDA)
+            device_for_inference = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+            results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, device=device_for_inference)
             r0 = results[0] if (results is not None and len(results) > 0) else None
             if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
                 boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
@@ -741,6 +758,10 @@ class QueueMonitorProcessor(threading.Thread):
         self.channel_id = channel_id
         self.channel_name = channel_name
         self.model = model
+        # Explicitly use GPU (CUDA) if available - only use CPU if forced
+        self.device = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+        self.model.to(self.device)
+        logging.info(f"QueueMonitor {channel_name}: Using device {self.device.upper()}")
         self.is_running = True
         self.lock = threading.Lock()
         self.latest_frame = None
@@ -837,7 +858,9 @@ class QueueMonitorProcessor(threading.Thread):
 
     def process_frame(self, frame):
         current_time = time.time()
-        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5, device=DEVICE)
+        # Use GPU (CUDA) for QueueMonitor
+        device_for_inference = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5, device=device_for_inference)
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results is not None and len(results) > 0) else None
@@ -950,9 +973,10 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.send_notification = send_notification
         
         # Auto-detect device (CUDA if available, else CPU)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Explicitly use GPU (CUDA) if available - only use CPU if forced
+        self.device = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
         self.model.to(self.device)
-        logging.info(f"🎯 Using device: {self.device.upper()}")
+        logging.info(f"OccupancyMonitor {channel_name}: Using device {self.device.upper()}")
         
         self.is_running = True
         self.lock = threading.Lock()
@@ -1050,8 +1074,13 @@ class OccupancyMonitorProcessor(threading.Thread):
     def _detect_people(self, frame):
         """Enhanced YOLO detection with CUDA support and maximum accuracy"""
         try:
-            # Use CPU if forced after CUDA errors
-            inference_device = 'cpu' if _force_cpu else self.device
+            # Use GPU (CUDA) by default - only use CPU if forced after errors
+            inference_device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
+            # Ensure model is on correct device
+            try:
+                self.model.to(inference_device)
+            except Exception:
+                pass
             inference_half = False  # Disable half precision to avoid CUDA errors
             
             # Enhanced detection with very low confidence for maximum recall
@@ -1857,26 +1886,30 @@ def load_model(model_path: str):
         return None
     try:
         model = YOLO(model_path)
-        model.to(DEVICE)
+        # Explicitly use GPU (CUDA) if available - only use CPU if forced
+        device_for_model = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+        model.to(device_for_model)
+        logging.info(f"Loading model '{model_path}' on {device_for_model.upper()}")
         try:
             model.fuse()
         except Exception:
             pass
-        if DEVICE == 'cuda':
-            try:
-                model.model.half()
-            except Exception:
-                pass
+        # Don't use half precision - causes CUDA errors on T4
+        # if device_for_model == 'cuda':
+        #     try:
+        #         model.model.half()
+        #     except Exception:
+        #         pass
         # Warmup to remove first-frame CUDA lag
         try:
             import numpy as _np
             dummy = _np.zeros((640, 640, 3), dtype=_np.uint8)
             with torch.inference_mode():
                 for _ in range(3):
-                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=DEVICE, verbose=False)
+                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=device_for_model, verbose=False, half=False)
         except Exception:
             pass
-        logging.info(f"Loaded '{model_path}' on {DEVICE} (half={DEVICE=='cuda'})")
+        logging.info(f"Loaded '{model_path}' on {device_for_model.upper()} (half=False)")
         _MODEL_CACHE[model_path] = model
         return model
     except Exception as e:
