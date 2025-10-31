@@ -62,20 +62,40 @@ def handle_cuda_error():
         try:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            # Force clear CUDA context
+            torch.cuda.reset_peak_memory_stats()
         except Exception:
             pass
         
         if _cuda_error_count >= _cuda_error_threshold:
             logging.error(f"CUDA errors exceeded threshold ({_cuda_error_threshold}). Falling back to CPU for stability.")
-            DEVICE = 'cpu'
             _force_cpu = True
-            # Move all cached models to CPU
+            DEVICE = 'cpu'
+            
+            # Force move all cached models to CPU and clear CUDA
             for model_path, model in _MODEL_CACHE.items():
                 try:
+                    # Move model to CPU explicitly
                     model.to('cpu')
-                    logging.info(f"Moved model {model_path} to CPU")
-                except Exception:
-                    pass
+                    # Also try to move the underlying model if it exists
+                    if hasattr(model, 'model'):
+                        model.model.to('cpu')
+                    if hasattr(model, 'device'):
+                        model.device = 'cpu'
+                    # Clear any CUDA tensors
+                    torch.cuda.empty_cache()
+                    logging.info(f"Moved model {model_path} to CPU (fully migrated)")
+                except Exception as e:
+                    logging.warning(f"Error moving model {model_path} to CPU: {e}")
+            
+            # Final CUDA cleanup
+            try:
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            except Exception:
+                pass
+            
+            logging.info("All models moved to CPU. Inference will now use CPU.")
 
 # --- Frame Downscale Settings ---
 # Reduce resolution early in the pipeline to speed up processing/streaming
@@ -120,6 +140,12 @@ APP_TASKS_CONFIG = {
 USE_HALF_PRECISION = False  # Disable half precision to avoid CUDA device-side asserts on T4
 
 def safe_track_persons(model, frame, conf=0.25, iou=0.5):
+    """Track persons with automatic CUDA fallback to CPU"""
+    global DEVICE, _force_cpu
+    # Always use CPU if forced or if CUDA previously failed
+    inference_device = 'cpu' if _force_cpu else DEVICE
+    inference_half = False if _force_cpu else USE_HALF_PRECISION
+    
     with torch.inference_mode():
         try:
             result = model.track(
@@ -129,45 +155,34 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                 conf=conf,
                 iou=iou,
                 verbose=False,
-                device=DEVICE,
-                half=USE_HALF_PRECISION,
+                device=inference_device,
+                half=inference_half,
                 tracker='bytetrack.yaml'
             )
             # Clear CUDA cache after inference to prevent accumulation
-            if DEVICE == 'cuda':
+            if inference_device == 'cuda':
                 torch.cuda.empty_cache()
             return result
         except RuntimeError as e:
             if 'CUDA' in str(e) or 'device-side assert' in str(e):
                 handle_cuda_error()
-                # Fallback to predict without tracking on CPU if CUDA failed
+                # Force CPU after CUDA error
+                inference_device = 'cpu'
+                inference_half = False
+                # Fallback to predict without tracking on CPU
                 try:
+                    logging.info("Retrying inference on CPU after CUDA error")
                     return model.predict(
                         frame,
                         classes=[0],
                         conf=conf,
                         iou=iou,
                         verbose=False,
-                        device=DEVICE,
-                        half=USE_HALF_PRECISION
+                        device='cpu',
+                        half=False
                     )
                 except Exception as e2:
-                    logging.error(f"Predict also failed after CUDA error: {e2}")
-                    # Last resort: try on CPU
-                    if DEVICE == 'cuda':
-                        try:
-                            logging.info("Attempting inference on CPU as last resort")
-                            return model.predict(
-                                frame,
-                                classes=[0],
-                                conf=conf,
-                                iou=iou,
-                                verbose=False,
-                                device='cpu',
-                                half=False
-                            )
-                        except Exception as e3:
-                            logging.error(f"CPU inference also failed: {e3}")
+                    logging.error(f"CPU inference also failed: {e2}")
                     return None
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
@@ -178,11 +193,26 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                     conf=conf,
                     iou=iou,
                     verbose=False,
-                    device=DEVICE,
-                    half=USE_HALF_PRECISION
+                    device=inference_device,
+                    half=inference_half
                 )
             except Exception as e2:
                 logging.error(f"Predict fallback also failed: {e2}")
+                # Last resort: always try CPU if other device failed
+                if inference_device != 'cpu':
+                    try:
+                        logging.info("Final fallback: trying CPU inference")
+                        return model.predict(
+                            frame,
+                            classes=[0],
+                            conf=conf,
+                            iou=iou,
+                            verbose=False,
+                            device='cpu',
+                            half=False
+                        )
+                    except Exception as e3:
+                        logging.error(f"CPU inference also failed: {e3}")
                 return None
 
 
@@ -195,6 +225,7 @@ QUEUE_MONITOR_ROI_CONFIG = {
     }
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
+QUEUE_SCREENSHOT_DWELL_SEC = 5.0    # How long a person must stay in ROI before taking screenshot (5 seconds)
 QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
 QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
@@ -495,14 +526,19 @@ class MultiModelProcessor(threading.Thread):
                             model_args['classes'] = task['target_class_id']
 
                         try:
+                            # Use CPU if forced after CUDA errors
+                            global _force_cpu
+                            inference_device = 'cpu' if _force_cpu else DEVICE
+                            inference_half = False if _force_cpu else USE_HALF_PRECISION
+                            
                             with torch.inference_mode():
                                 results = task['model'](
                                     frame,
-                                    device=DEVICE,
-                                    half=USE_HALF_PRECISION,
+                                    device=inference_device,
+                                    half=inference_half,
                                     **model_args
                                 )
-                            if DEVICE == 'cuda':
+                            if inference_device == 'cuda':
                                 torch.cuda.empty_cache()
                         except RuntimeError as e:
                             if 'CUDA' in str(e) or 'device-side assert' in str(e):
@@ -672,9 +708,9 @@ class QueueMonitorProcessor(threading.Thread):
         self.is_running = True
         self.lock = threading.Lock()
         self.latest_frame = None
-        self.queue_tracker = defaultdict(lambda: {'entry_time': 0})
+        self.queue_tracker = defaultdict(lambda: {'entry_time': 0, 'screenshot_taken': False})
         self.current_queue_count = 0
-        self.secondary_queue_tracker = defaultdict(lambda: {'entry_time': 0})
+        self.secondary_queue_tracker = defaultdict(lambda: {'entry_time': 0, 'screenshot_taken': False})
         self.current_secondary_count = 0
         self.last_alert_time = 0
         self.last_overqueue_time = 0  # Track overqueue alerts separately
@@ -826,6 +862,13 @@ class QueueMonitorProcessor(threading.Thread):
                 dwell_time = current_time - self.queue_tracker[track_id]['entry_time']
                 if dwell_time >= QUEUE_DWELL_TIME_SEC:
                     valid_queue_count += 1
+                # Take screenshot if person is in queue ROI for 5+ seconds (once per person)
+                if dwell_time >= QUEUE_SCREENSHOT_DWELL_SEC and not self.queue_tracker[track_id]['screenshot_taken']:
+                    annotated_for_save = r0.plot() if r0 is not None else frame
+                    handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], 
+                                   f"Person in queue ROI for {int(dwell_time)} seconds", is_gif=False)
+                    self.queue_tracker[track_id]['screenshot_taken'] = True
+                    logging.info(f"QueueMonitor: Screenshot taken for person {track_id} in queue ROI (dwell: {dwell_time:.1f}s)")
                 elif logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.debug(f"QueueMonitor: Track {track_id} in main ROI but dwell time {dwell_time:.3f}s < {QUEUE_DWELL_TIME_SEC}s")
         
@@ -846,14 +889,17 @@ class QueueMonitorProcessor(threading.Thread):
                 dwell_time = current_time - self.secondary_queue_tracker[track_id]['entry_time']
                 if dwell_time >= QUEUE_DWELL_TIME_SEC:
                     valid_secondary_count += 1
+                # Take screenshot if person is in counter ROI for 5+ seconds (once per person)
+                if dwell_time >= QUEUE_SCREENSHOT_DWELL_SEC and not self.secondary_queue_tracker[track_id]['screenshot_taken']:
+                    annotated_for_save = r0.plot() if r0 is not None else frame
+                    handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], 
+                                   f"Person in counter ROI for {int(dwell_time)} seconds", is_gif=False)
+                    self.secondary_queue_tracker[track_id]['screenshot_taken'] = True
+                    logging.info(f"QueueMonitor: Screenshot taken for person {track_id} in counter ROI (dwell: {dwell_time:.1f}s)")
 
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
             updated = True
-            # Optional: capture a screenshot when secondary area becomes occupied
-            if self.current_secondary_count > 0:
-                annotated_for_save = r0.plot() if r0 is not None else frame
-                handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], f"Counter area presence: {self.current_secondary_count}", is_gif=False)
 
         # Emit live counts (no DB persistence) if either changed
         if updated:
@@ -893,6 +939,7 @@ class QueueMonitorProcessor(threading.Thread):
             logging.debug(f"Drawing secondary ROI with {len(self.secondary_roi_poly.exterior.coords)} points")
         else:
             logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
+        # Take screenshot only if queue has people AND counter is empty (alert condition)
         if should_alert:
             self.last_alert_time = current_time
             alert_message = f"Queue is full ({valid_queue_count} people), but the counter is free."
@@ -900,12 +947,13 @@ class QueueMonitorProcessor(threading.Thread):
             send_telegram_notification(f"🚨 **Queue Alert: {self.channel_name}** 🚨\n{alert_message}")
             handle_detection('QueueMonitor', self.channel_id, [annotated_frame], alert_message, is_gif=False)
         
+        # Overqueue alert - no screenshot, just log and notify
         if should_overqueue_alert:
             self.last_overqueue_time = current_time
             overqueue_message = f"OVERQUEUE: {valid_queue_count} people in queue with cashier present!"
             logging.warning(f"OVERQUEUE ALERT on {self.channel_name}: {overqueue_message}")
             send_telegram_notification(f"⚠️ **Overqueue Alert: {self.channel_name}** ⚠️\n{overqueue_message}")
-            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], overqueue_message, is_gif=False)
+            # No screenshot for overqueue alert per user requirements
 
         cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
         cv2.putText(annotated_frame, f"Counter Area: {self.current_secondary_count}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
@@ -927,10 +975,11 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.SessionLocal = SessionLocal
         self.send_notification = send_notification
         
-        # Auto-detect device (CUDA if available, else CPU)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Auto-detect device (CUDA if available, else CPU) - but respect CPU force after CUDA errors
+        global _force_cpu
+        self.device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
-        logging.info(f"🎯 Using device: {self.device.upper()}")
+        logging.info(f"🎯 Using device: {self.device.upper()} (force_cpu={_force_cpu})")
         
         self.is_running = True
         self.lock = threading.Lock()
@@ -1028,6 +1077,11 @@ class OccupancyMonitorProcessor(threading.Thread):
     def _detect_people(self, frame):
         """Enhanced YOLO detection with CUDA support and maximum accuracy"""
         try:
+            # Check if CPU is forced after CUDA errors
+            global _force_cpu
+            inference_device = 'cpu' if _force_cpu else self.device
+            inference_half = False if _force_cpu else USE_HALF_PRECISION
+            
             # Enhanced detection with very low confidence for maximum recall
             with torch.inference_mode():
                 results = self.model(
@@ -1036,11 +1090,11 @@ class OccupancyMonitorProcessor(threading.Thread):
                     iou=0.40,
                     classes=[0],
                     verbose=False,
-                    device=self.device,
+                    device=inference_device,
                     imgsz=640,
                     max_det=100,
                     agnostic_nms=True,
-                    half=USE_HALF_PRECISION
+                    half=inference_half
                 )
             person_count = 0
             detections = []
