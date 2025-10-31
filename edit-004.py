@@ -31,6 +31,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 import pandas as pd
 from queue import Queue, Empty
+import gc  # Garbage collection for memory management
 
 # --- CUDA/Backend Tuning ---
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -53,19 +54,34 @@ if DEVICE == 'cuda' and not _force_cpu:
 # Model cache will be defined later
 _MODEL_CACHE = {}
 
+def cleanup_cuda_memory():
+    """Aggressively clean up CUDA memory"""
+    if DEVICE == 'cuda' and torch.cuda.is_available():
+        try:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            gc.collect()  # Force Python garbage collection
+        except Exception:
+            pass
+
+def get_gpu_memory_usage():
+    """Get current GPU memory usage in MB"""
+    if DEVICE == 'cuda' and torch.cuda.is_available():
+        try:
+            allocated = torch.cuda.memory_allocated() / 1024**2  # MB
+            reserved = torch.cuda.memory_reserved() / 1024**2  # MB
+            return allocated, reserved
+        except Exception:
+            return None, None
+    return None, None
+
 def handle_cuda_error():
     """Handle CUDA errors and potentially fallback to CPU"""
     global DEVICE, _cuda_error_count, _force_cpu
     if DEVICE == 'cuda':
         _cuda_error_count += 1
         logging.error(f"CUDA error detected (count: {_cuda_error_count}/{_cuda_error_threshold})")
-        try:
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            # Force clear CUDA context
-            torch.cuda.reset_peak_memory_stats()
-        except Exception:
-            pass
+        cleanup_cuda_memory()  # Aggressive cleanup on error
         
         if _cuda_error_count >= _cuda_error_threshold:
             logging.error(f"CUDA errors exceeded threshold ({_cuda_error_threshold}). Falling back to CPU for stability.")
@@ -159,9 +175,8 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                 half=inference_half,
                 tracker='bytetrack.yaml'
             )
-            # Clear CUDA cache after inference to prevent accumulation
-            if inference_device == 'cuda':
-                torch.cuda.empty_cache()
+            # Aggressive memory cleanup after inference
+            cleanup_cuda_memory()
             return result
         except RuntimeError as e:
             if 'CUDA' in str(e) or 'device-side assert' in str(e):
@@ -172,7 +187,7 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                 # Fallback to predict without tracking on CPU
                 try:
                     logging.info("Retrying inference on CPU after CUDA error")
-                    return model.predict(
+                    result = model.predict(
                         frame,
                         classes=[0],
                         conf=conf,
@@ -181,13 +196,16 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                         device='cpu',
                         half=False
                     )
+                    cleanup_cuda_memory()  # Clean up even after CPU fallback
+                    return result
                 except Exception as e2:
                     logging.error(f"CPU inference also failed: {e2}")
+                    cleanup_cuda_memory()
                     return None
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
             try:
-                return model.predict(
+                result = model.predict(
                     frame,
                     classes=[0],
                     conf=conf,
@@ -196,13 +214,16 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                     device=inference_device,
                     half=inference_half
                 )
+                cleanup_cuda_memory()
+                return result
             except Exception as e2:
                 logging.error(f"Predict fallback also failed: {e2}")
+                cleanup_cuda_memory()
                 # Last resort: always try CPU if other device failed
                 if inference_device != 'cpu':
                     try:
                         logging.info("Final fallback: trying CPU inference")
-                        return model.predict(
+                        result = model.predict(
                             frame,
                             classes=[0],
                             conf=conf,
@@ -211,8 +232,11 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                             device='cpu',
                             half=False
                         )
+                        cleanup_cuda_memory()
+                        return result
                     except Exception as e3:
                         logging.error(f"CPU inference also failed: {e3}")
+                        cleanup_cuda_memory()
                 return None
 
 
@@ -249,6 +273,27 @@ def graceful_shutdown(signum, frame):
             elif hasattr(processor, 'stop'):
                 processor.stop()
     sys.exit(0)
+
+def periodic_memory_cleanup():
+    """Periodic GPU memory cleanup and monitoring (runs every 30 seconds)"""
+    global DEVICE
+    if DEVICE == 'cuda' and torch.cuda.is_available():
+        allocated, reserved = get_gpu_memory_usage()
+        if allocated is not None:
+            logging.info(f"GPU Memory: Allocated={allocated:.1f}MB, Reserved={reserved:.1f}MB")
+            
+            # If memory usage is high (>80%), do aggressive cleanup
+            if allocated > 12000:  # ~12GB on T4 (15GB total)
+                logging.warning(f"High GPU memory usage detected ({allocated:.1f}MB), performing aggressive cleanup...")
+                cleanup_cuda_memory()
+                
+                # Verify cleanup
+                allocated_after, _ = get_gpu_memory_usage()
+                if allocated_after is not None:
+                    freed = allocated - allocated_after
+                    logging.info(f"GPU Memory cleanup freed {freed:.1f}MB (now: {allocated_after:.1f}MB)")
+        else:
+            cleanup_cuda_memory()  # Still cleanup even if monitoring fails
 
 # Shared RTSP frame provider per camera to minimize latency and duplicate decoding
 # Shared RTSP frame provider using a thread-safe queue
@@ -538,8 +583,8 @@ class MultiModelProcessor(threading.Thread):
                                     half=inference_half,
                                     **model_args
                                 )
-                            if inference_device == 'cuda':
-                                torch.cuda.empty_cache()
+                            # Aggressive memory cleanup after inference
+                            cleanup_cuda_memory()
                         except RuntimeError as e:
                             if 'CUDA' in str(e) or 'device-side assert' in str(e):
                                 handle_cuda_error()
@@ -676,7 +721,11 @@ class PeopleCounterProcessor(threading.Thread):
             results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5)
             r0 = results[0] if (results and len(results) > 0) else None
             if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-                boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
+                # Move tensors to CPU and convert immediately, then cleanup
+                boxes = r0.boxes.xywh.cpu()
+                track_ids = r0.boxes.id.int().cpu().tolist()
+                cleanup_cuda_memory()  # Clean up after moving to CPU
+                
                 line_x, count_changed = int(frame.shape[1] * 0.5), False
                 for box, track_id in zip(boxes, track_ids):
                     center_x = int(box[0])
@@ -695,6 +744,16 @@ class PeopleCounterProcessor(threading.Thread):
             cv2.putText(annotated_frame, f"OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             with self.lock: self.latest_frame = annotated_frame.copy()
             socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
+            
+            # Clean up intermediate tensors and free GPU memory after processing
+            try:
+                if 'results' in locals():
+                    del results
+                if 'r0' in locals():
+                    del r0
+            except Exception:
+                pass
+            cleanup_cuda_memory()
         # No cap to release when using FrameHub
 
 class QueueMonitorProcessor(threading.Thread):
@@ -821,7 +880,12 @@ class QueueMonitorProcessor(threading.Thread):
 
         r0 = results[0] if (results and len(results) > 0) else None
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-            for box, track_id in zip(r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()):
+            # Move tensors to CPU and convert immediately, then cleanup
+            boxes_cpu = r0.boxes.xyxy.cpu()
+            track_ids_cpu = r0.boxes.id.int().cpu().tolist()
+            cleanup_cuda_memory()  # Clean up after moving to CPU
+            
+            for box, track_id in zip(boxes_cpu, track_ids_cpu):
                 # Use center point for better ROI detection
                 center_x = int((box[0] + box[2]) / 2)
                 center_y = int((box[1] + box[3]) / 2)
@@ -832,8 +896,11 @@ class QueueMonitorProcessor(threading.Thread):
                     if self.roi_poly.contains(person_point):
                         current_tracks_in_main_roi.add(track_id)
                         if track_id not in self.queue_tracker:
-                            self.queue_tracker[track_id] = {'entry_time': current_time}
+                            self.queue_tracker[track_id] = {'entry_time': current_time, 'screenshot_taken': False}
                             logging.debug(f"QueueMonitor: Person {track_id} entered main ROI")
+                        # Ensure screenshot_taken key exists
+                        if 'screenshot_taken' not in self.queue_tracker[track_id]:
+                            self.queue_tracker[track_id]['screenshot_taken'] = False
                         # Update entry time if not set
                         if self.queue_tracker[track_id]['entry_time'] == 0:
                             self.queue_tracker[track_id]['entry_time'] = current_time
@@ -843,8 +910,11 @@ class QueueMonitorProcessor(threading.Thread):
                     if self.secondary_roi_poly.contains(person_point):
                         current_tracks_in_secondary_roi.add(track_id)
                         if track_id not in self.secondary_queue_tracker:
-                            self.secondary_queue_tracker[track_id] = {'entry_time': current_time}
+                            self.secondary_queue_tracker[track_id] = {'entry_time': current_time, 'screenshot_taken': False}
                             logging.debug(f"QueueMonitor: Person {track_id} entered secondary ROI")
+                        # Ensure screenshot_taken key exists
+                        if 'screenshot_taken' not in self.secondary_queue_tracker[track_id]:
+                            self.secondary_queue_tracker[track_id]['screenshot_taken'] = False
                         # Update entry time if not set
                         if self.secondary_queue_tracker[track_id]['entry_time'] == 0:
                             self.secondary_queue_tracker[track_id]['entry_time'] = current_time
@@ -862,7 +932,7 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_DWELL_TIME_SEC:
                     valid_queue_count += 1
                 # Take screenshot if person is in queue ROI for 5+ seconds (once per person)
-                if dwell_time >= QUEUE_SCREENSHOT_DWELL_SEC and not self.queue_tracker[track_id]['screenshot_taken']:
+                if dwell_time >= QUEUE_SCREENSHOT_DWELL_SEC and not self.queue_tracker[track_id].get('screenshot_taken', False):
                     annotated_for_save = r0.plot() if r0 is not None else frame
                     handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], 
                                    f"Person in queue ROI for {int(dwell_time)} seconds", is_gif=False)
@@ -889,7 +959,7 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_DWELL_TIME_SEC:
                     valid_secondary_count += 1
                 # Take screenshot if person is in counter ROI for 5+ seconds (once per person)
-                if dwell_time >= QUEUE_SCREENSHOT_DWELL_SEC and not self.secondary_queue_tracker[track_id]['screenshot_taken']:
+                if dwell_time >= QUEUE_SCREENSHOT_DWELL_SEC and not self.secondary_queue_tracker[track_id].get('screenshot_taken', False):
                     annotated_for_save = r0.plot() if r0 is not None else frame
                     handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], 
                                    f"Person in counter ROI for {int(dwell_time)} seconds", is_gif=False)
@@ -957,6 +1027,16 @@ class QueueMonitorProcessor(threading.Thread):
         cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
         cv2.putText(annotated_frame, f"Counter Area: {self.current_secondary_count}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
         with self.lock: self.latest_frame = annotated_frame.copy()
+        
+        # Clean up intermediate tensors and free GPU memory after processing
+        try:
+            if 'results' in locals():
+                del results
+            if 'r0' in locals():
+                del r0
+        except Exception:
+            pass
+        cleanup_cuda_memory()
 
 
 class OccupancyMonitorProcessor(threading.Thread):
@@ -1095,6 +1175,9 @@ class OccupancyMonitorProcessor(threading.Thread):
                     agnostic_nms=True,
                     half=inference_half
                 )
+            # Aggressive memory cleanup after inference
+            cleanup_cuda_memory()
+            
             person_count = 0
             detections = []
             
@@ -1958,6 +2041,8 @@ if __name__ == "__main__":
     if initialize_database():
         scheduler = BackgroundScheduler(timezone=str(IST))
         # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
+        # Add periodic GPU memory cleanup every 30 seconds
+        scheduler.add_job(periodic_memory_cleanup, 'interval', seconds=30, id='periodic_memory_cleanup')
         scheduler.start()
         atexit.register(lambda: scheduler.shutdown())
         start_streams()
