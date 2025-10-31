@@ -1849,13 +1849,22 @@ def dashboard():
     return render_template('dashboard.html', app_configs=get_app_configs())
 
 def gen_video_feed(processor):
+    """Generator function for video feed - works with both direct run and gunicorn"""
     while True:
-        # ~30 FPS pacing, and tolerate None frames
-        time.sleep(0.03)
-        frame_bytes = processor.get_frame()
-        if not frame_bytes:
+        try:
+            # ~30 FPS pacing, and tolerate None frames
+            time.sleep(0.03)
+            frame_bytes = processor.get_frame()
+            if not frame_bytes:
+                continue
+            yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
+        except GeneratorExit:
+            # Client disconnected
+            break
+        except Exception as e:
+            logging.error(f"Error in video feed generator: {e}")
+            time.sleep(0.1)
             continue
-        yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n\r\n')
 
 @app.route('/video_feed/<app_name>/<channel_id>')
 @login_required
@@ -2581,9 +2590,18 @@ def periodic_cuda_recovery():
         if enable_cuda_for_processor(processor_name):
             logging.info(f"Periodic recovery: Re-enabled CUDA for {processor_name} after successful CPU operation")
 
-initialize_database()
+# Global flag to track if initialization has been done
+_initialized = False
 
-if __name__ == "__main__":
+def initialize_app():
+    """Initialize the application (scheduler, processors, etc.)"""
+    global _initialized
+    if _initialized:
+        return  # Already initialized
+    
+    # Initialize database
+    initialize_database()
+    
     # Start the scheduler if database is connected
     if db_connected:
         scheduler = BackgroundScheduler(timezone=str(IST))
@@ -2597,8 +2615,15 @@ if __name__ == "__main__":
     # Start all stream processors
     start_streams()
     
-    logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
+    _initialized = True
+    logging.info("Application initialized - processors and scheduler started")
     logging.info("CUDA Reset API: POST /api/reset_cuda to reset all CUDA errors")
     logging.info("CUDA Status API: GET /api/cuda_status to check CUDA status")
     logging.info("CUDA Reset per processor: POST /api/reset_cuda/<processor_name> to reset specific processor")
+
+# Initialize when module is imported (for gunicorn)
+initialize_app()
+
+if __name__ == "__main__":
+    logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
     socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
