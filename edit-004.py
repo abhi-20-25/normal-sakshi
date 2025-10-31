@@ -238,6 +238,16 @@ class FrameHub(threading.Thread):
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 continue
             
+            # Validate frame before processing
+            if frame is None or not hasattr(frame, 'shape') or len(frame.shape) < 2:
+                logging.warning(f"FrameHub {self.name}: Invalid frame received, skipping")
+                continue
+            
+            h, w = frame.shape[:2]
+            if h <= 0 or w <= 0:
+                logging.warning(f"FrameHub {self.name}: Invalid frame dimensions (h={h}, w={w}), skipping")
+                continue
+            
             # Downscale the frame to speed up processing and streaming
             try:
                 if TARGET_WIDTH and TARGET_HEIGHT:
@@ -246,8 +256,19 @@ class FrameHub(threading.Thread):
                     h, w = frame.shape[:2]
                     new_h = int(h * (TARGET_WIDTH / float(w)))
                     frame = cv2.resize(frame, (TARGET_WIDTH, new_h), interpolation=cv2.INTER_AREA)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"FrameHub {self.name}: Error resizing frame: {e}")
+                continue
+            
+            # Final validation after resize
+            if frame is None or not hasattr(frame, 'shape') or len(frame.shape) < 2:
+                logging.warning(f"FrameHub {self.name}: Frame became invalid after resize, skipping")
+                continue
+            
+            h, w = frame.shape[:2]
+            if h < 32 or w < 32:
+                logging.warning(f"FrameHub {self.name}: Frame too small after resize (h={h}, w={w}), skipping")
+                continue
             
             # --- This is the key logic ---
             # If the queue is full (i.e., it has 1 frame), 
@@ -258,8 +279,12 @@ class FrameHub(threading.Thread):
                 except Empty:
                     pass # Should not happen, but safe to include
             
-            # Put the new, latest frame into the queue
-            self.frame_queue.put(frame)
+            # Put the new, latest frame into the queue (non-blocking)
+            try:
+                self.frame_queue.put_nowait(frame)
+            except:
+                # Queue full (shouldn't happen as we clear it above, but handle it anyway)
+                pass
             # --- End of key logic ---
 
         cap.release()
@@ -442,16 +467,74 @@ class MultiModelProcessor(threading.Thread):
         self.is_running = True
         self.last_detection_times = {task['app_name']: 0 for task in self.tasks}
         self.cooldown, self.gif_duration_seconds, self.fps = 30, 3, 10
+        self.expected_frame_shape = None  # Track expected frame dimensions
+        self.consecutive_invalid_frames = 0  # Track consecutive invalid frames
 
     def stop(self): self.is_running = False
     def shutdown(self):
         logging.info(f"Shutting down MultiModel for {self.channel_name} ({self.channel_id})")
         self.is_running = False
 
+    def _validate_frame(self, frame):
+        """Validate frame before processing to prevent CUDA errors"""
+        if frame is None:
+            return False
+        
+        # Check if frame is a numpy array with valid shape
+        if not hasattr(frame, 'shape'):
+            self.consecutive_invalid_frames += 1
+            if self.consecutive_invalid_frames % 100 == 0:
+                logging.warning(f"MultiModel {self.channel_name}: Invalid frame type (no shape attribute)")
+            return False
+        
+        # Validate frame dimensions
+        if len(frame.shape) < 2:
+            self.consecutive_invalid_frames += 1
+            if self.consecutive_invalid_frames % 100 == 0:
+                logging.warning(f"MultiModel {self.channel_name}: Invalid frame shape {frame.shape}")
+            return False
+        
+        h, w = frame.shape[:2]
+        if h <= 0 or w <= 0:
+            self.consecutive_invalid_frames += 1
+            if self.consecutive_invalid_frames % 100 == 0:
+                logging.warning(f"MultiModel {self.channel_name}: Invalid frame dimensions (h={h}, w={w})")
+            return False
+        
+        # Minimum size check
+        if h < 32 or w < 32:
+            self.consecutive_invalid_frames += 1
+            if self.consecutive_invalid_frames % 100 == 0:
+                logging.warning(f"MultiModel {self.channel_name}: Frame too small (h={h}, w={w})")
+            return False
+        
+        # Check dimension consistency - detect if frame source changed
+        current_shape = (h, w)
+        if self.expected_frame_shape is None:
+            self.expected_frame_shape = current_shape
+            logging.info(f"MultiModel {self.channel_name}: Expected frame shape set to {current_shape}")
+        elif self.expected_frame_shape != current_shape:
+            # Frame dimensions changed - might be from different source
+            logging.warning(f"MultiModel {self.channel_name}: Frame dimension mismatch! Expected {self.expected_frame_shape}, got {current_shape}. "
+                         f"This might indicate feed overlap/mixing. Skipping frame.")
+            self.consecutive_invalid_frames += 1
+            return False
+        
+        # Reset invalid frame counter on valid frame
+        if self.consecutive_invalid_frames > 0:
+            self.consecutive_invalid_frames = 0
+        
+        return True
+
     def run(self):
         while self.is_running:
             frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
             if frame is None:
+                time.sleep(0.01)
+                continue
+
+            # Validate frame before processing
+            if not self._validate_frame(frame):
                 time.sleep(0.01)
                 continue
 
@@ -467,13 +550,39 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
-                        with torch.inference_mode():
-                            results = task['model'](
-                                frame,
-                                device=DEVICE,
-                                half=(DEVICE == 'cuda'),
-                                **model_args
-                            )
+                        try:
+                            with torch.inference_mode():
+                                results = task['model'](
+                                    frame,
+                                    device=DEVICE,
+                                    half=(DEVICE == 'cuda'),
+                                    **model_args
+                                )
+                        except RuntimeError as e:
+                            error_msg = str(e)
+                            if 'CUDA' in error_msg or 'cuda' in error_msg or 'index out of bounds' in error_msg.lower():
+                                logging.error(f"CUDA error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}")
+                                # Try to reset CUDA state
+                                if DEVICE == 'cuda':
+                                    try:
+                                        torch.cuda.empty_cache()
+                                        torch.cuda.synchronize()
+                                    except:
+                                        pass
+                                # Reset expected frame shape to force revalidation
+                                self.expected_frame_shape = None
+                                self.consecutive_invalid_frames = 0
+                                # Skip this frame and continue
+                                break
+                            else:
+                                logging.warning(f"Model inference error in MultiModel {self.channel_name} for {app_name}: {e}")
+                                break
+                        except Exception as e:
+                            logging.error(f"Unexpected error in MultiModel {self.channel_name} for {app_name}: {e}")
+                            break
+                        
+                        if not results:
+                            continue
 
                         if results and len(results[0].boxes) > 0:
                             self.last_detection_times[app_name] = current_time
@@ -486,6 +595,12 @@ class MultiModelProcessor(threading.Thread):
                                     frame_gif = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
                                     if frame_gif is None:
                                         break
+                                    
+                                    # Validate GIF frame before processing
+                                    if not self._validate_frame(frame_gif):
+                                        gif_frames.append(frame_gif.copy())  # Use frame even if invalid to maintain frame count
+                                        continue
+                                    
                                     # Run detection on this frame to get annotated version
                                     try:
                                         with torch.inference_mode():
@@ -498,6 +613,15 @@ class MultiModelProcessor(threading.Thread):
                                         if gif_results and len(gif_results[0].boxes) > 0:
                                             gif_frames.append(gif_results[0].plot())
                                         else:
+                                            gif_frames.append(frame_gif.copy())
+                                    except RuntimeError as e:
+                                        error_msg = str(e)
+                                        if 'CUDA' in error_msg or 'cuda' in error_msg:
+                                            logging.error(f"CUDA error processing GIF frame for {app_name}: {e}")
+                                            # Use frame without annotation
+                                            gif_frames.append(frame_gif.copy())
+                                        else:
+                                            logging.warning(f"Error processing GIF frame: {e}")
                                             gif_frames.append(frame_gif.copy())
                                     except Exception as e:
                                         logging.warning(f"Error processing GIF frame: {e}")
