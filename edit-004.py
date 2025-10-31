@@ -181,8 +181,10 @@ QUEUE_MONITOR_ROI_CONFIG = {
     }
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
+QUEUE_SCREENSHOT_DWELL_TIME_SEC = 5.0  # How long a person must stay in queue to trigger screenshot (5 seconds)
 QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
+QUEUE_HIGH_COUNT_THRESHOLD = 3     # Screenshot threshold: queue count > 3
 QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
 
 # --- Flask and SocketIO Setup ---
@@ -640,6 +642,8 @@ class QueueMonitorProcessor(threading.Thread):
         self.current_secondary_count = 0
         self.last_alert_time = 0
         self.last_overqueue_time = 0  # Track overqueue alerts separately
+        self.last_screenshot_time = 0  # Track screenshot alerts to avoid spam
+        self.screenshot_cooldown = 10  # 10 seconds cooldown between screenshots
         self.roi_poly = Polygon([])
         self.secondary_roi_poly = Polygon([])
         self._load_roi_from_db()
@@ -776,6 +780,27 @@ class QueueMonitorProcessor(threading.Thread):
                 'count': self.current_queue_count  # backward compat
             })
 
+        # Check for persons who have been in queue for more than 5 seconds with no one in counter area
+        persons_in_queue_5sec = []
+        for track_id in current_tracks_in_main_roi:
+            if track_id in self.queue_tracker:
+                dwell_time = current_time - self.queue_tracker[track_id]['entry_time']
+                if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
+                    persons_in_queue_5sec.append(track_id)
+        
+        # Screenshot trigger: person in queue > 5 seconds AND no one in counter area
+        should_screenshot_5sec = (
+            len(persons_in_queue_5sec) > 0 and
+            self.current_secondary_count == 0 and
+            (current_time - self.last_screenshot_time) > self.screenshot_cooldown
+        )
+        
+        # Screenshot trigger: queue count > 3
+        should_screenshot_high_count = (
+            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and
+            (current_time - self.last_screenshot_time) > self.screenshot_cooldown
+        )
+
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
         should_alert = (
             valid_queue_count >= QUEUE_ALERT_THRESHOLD and
@@ -805,6 +830,21 @@ class QueueMonitorProcessor(threading.Thread):
             logging.debug(f"Drawing secondary ROI with {len(self.secondary_roi_poly.exterior.coords)} points")
         else:
             logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
+        
+        # Take screenshot if person in queue > 5 seconds with no counter
+        if should_screenshot_5sec:
+            self.last_screenshot_time = current_time
+            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Counter area is empty."
+            logging.warning(f"QUEUE SCREENSHOT TRIGGER on {self.channel_name}: {screenshot_message}")
+            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], screenshot_message, is_gif=False)
+        
+        # Take screenshot if queue count > 3
+        if should_screenshot_high_count:
+            self.last_screenshot_time = current_time
+            high_count_message = f"High queue count: {valid_queue_count} people in queue"
+            logging.warning(f"HIGH QUEUE COUNT SCREENSHOT on {self.channel_name}: {high_count_message}")
+            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], high_count_message, is_gif=False)
+        
         if should_alert:
             self.last_alert_time = current_time
             alert_message = f"Queue is full ({valid_queue_count} people), but the counter is free."
@@ -819,8 +859,17 @@ class QueueMonitorProcessor(threading.Thread):
             send_telegram_notification(f"⚠️ **Overqueue Alert: {self.channel_name}** ⚠️\n{overqueue_message}")
             handle_detection('QueueMonitor', self.channel_id, [annotated_frame], overqueue_message, is_gif=False)
 
-        cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
-        cv2.putText(annotated_frame, f"Counter Area: {self.current_secondary_count}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+        # Display counts prominently on the frame with better visibility
+        # Background rectangles for better text visibility
+        cv2.rectangle(annotated_frame, (45, 25), (250, 95), (0, 0, 0), -1)  # Black background
+        cv2.rectangle(annotated_frame, (45, 25), (250, 95), (255, 255, 255), 2)  # White border
+        
+        # Queue count with larger, more visible font
+        cv2.putText(annotated_frame, f"Queue: {self.current_queue_count}", (50, 55), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Yellow, thicker
+        cv2.putText(annotated_frame, f"Counter: {self.current_secondary_count}", (50, 90), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Cyan, thicker
+        
         with self.lock: self.latest_frame = annotated_frame.copy()
 
 
