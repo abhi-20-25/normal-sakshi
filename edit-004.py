@@ -29,71 +29,15 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 import pandas as pd
 from queue import Queue, Empty
-import gc  # Garbage collection for memory management
 
 # --- CUDA/Backend Tuning ---
-# Set CUDA_LAUNCH_BLOCKING for better error reporting
-if 'CUDA_LAUNCH_BLOCKING' not in os.environ:
-    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
-
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-_cuda_error_count = 0
-_cuda_error_threshold = 3  # Fallback to CPU after 3 CUDA errors
-_force_cpu = False
-
-if DEVICE == 'cuda' and not _force_cpu:
+if DEVICE == 'cuda':
+    torch.backends.cudnn.benchmark = True
     try:
-        torch.backends.cudnn.benchmark = True
-        try:
-            torch.set_float32_matmul_precision('high')
-        except Exception:
-            pass
-    except Exception as e:
-        logging.error(f"CUDA initialization failed, falling back to CPU: {e}")
-        DEVICE = 'cpu'
-        _force_cpu = True
-
-def cleanup_cuda_memory():
-    """Aggressively clean up CUDA memory"""
-    if DEVICE == 'cuda' and torch.cuda.is_available():
-        try:
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            gc.collect()
-        except Exception:
-            pass
-
-def handle_cuda_error(error_msg=None):
-    """Handle CUDA errors and potentially fallback to CPU"""
-    global DEVICE, _cuda_error_count, _force_cpu
-    if DEVICE == 'cuda':
-        _cuda_error_count += 1
-        logging.error(f"CUDA error detected (count: {_cuda_error_count}/{_cuda_error_threshold}): {error_msg}")
-        cleanup_cuda_memory()
-        
-        if _cuda_error_count >= _cuda_error_threshold:
-            logging.error(f"CUDA errors exceeded threshold ({_cuda_error_threshold}). Falling back to CPU for stability.")
-            _force_cpu = True
-            DEVICE = 'cpu'
-
-def validate_frame_for_inference(frame):
-    """Validate frame before inference to prevent errors"""
-    if frame is None:
-        return False, "Frame is None"
-    if not isinstance(frame, np.ndarray):
-        return False, f"Frame is not a numpy array: {type(frame)}"
-    if len(frame.shape) != 3:
-        return False, f"Invalid frame shape: {frame.shape} (expected 3D array)"
-    h, w, c = frame.shape
-    if h <= 0 or w <= 0:
-        return False, f"Invalid frame dimensions: {h}x{w}"
-    if c not in [1, 3, 4]:
-        return False, f"Invalid number of channels: {c} (expected 1, 3, or 4)"
-    if frame.dtype != np.uint8:
-        return False, f"Invalid frame dtype: {frame.dtype} (expected uint8)"
-    if np.any(np.isnan(frame)) or np.any(np.isinf(frame)):
-        return False, "Frame contains NaN or Inf values"
-    return True, None
+        torch.set_float32_matmul_precision('high')
+    except Exception:
+        pass
 
 # --- Frame Downscale Settings ---
 # Reduce resolution early in the pipeline to speed up processing/streaming
@@ -134,168 +78,32 @@ APP_TASKS_CONFIG = {
     'OccupancyMonitor': {'model_path': 'yolov8n.pt', 'confidence': 0.15}
 }
 
-# --- YOLO tracking helper (robust to tracker failures + CUDA errors) ---
-USE_HALF_PRECISION = False  # Disable half precision to avoid CUDA device-side asserts on T4
-
-def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
-    """Track persons with automatic CUDA fallback to CPU and robust error handling"""
-    global DEVICE, _force_cpu
-    
-    # Validate frame before inference
-    is_valid, validation_error = validate_frame_for_inference(frame)
-    if not is_valid:
-        logging.error(f"Frame validation failed: {validation_error}")
-        return None
-    
-    # Determine inference device - default to GPU (CUDA) if available
-    if device is None:
-        # Only use CPU if explicitly forced after errors
-        inference_device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
-    else:
-        inference_device = device
-    
-    # Ensure model is on the correct device
-    try:
-        if inference_device == 'cuda' and torch.cuda.is_available():
-            model.to('cuda')
-        elif inference_device == 'cpu':
-            model.to('cpu')
-    except Exception:
-        pass
-    
-    inference_half = False  # Never use half precision to avoid issues
-    
-    # Ensure consistent input size - YOLO models work best with 640x640
-    # But we'll let YOLO handle resizing via imgsz parameter
-    imgsz = 640  # Standard YOLO input size
-    
+# --- YOLO tracking helper (robust to tracker failures) ---
+def safe_track_persons(model, frame, conf=0.25, iou=0.5):
     with torch.inference_mode():
         try:
-            result = model.track(
+            return model.track(
                 frame,
                 persist=True,
                 classes=[0],
                 conf=conf,
                 iou=iou,
                 verbose=False,
-                device=inference_device,
-                half=inference_half,
-                tracker='bytetrack.yaml',
-                imgsz=imgsz  # Explicitly set image size for consistency
+                device=DEVICE,
+                half=(DEVICE == 'cuda'),
+                tracker='bytetrack.yaml'
             )
-            cleanup_cuda_memory()
-            return result
-        except RuntimeError as e:
-            error_str = str(e)
-            # Handle tensor size mismatch errors
-            if 'size of tensor' in error_str and 'must match' in error_str:
-                logging.warning(f"Tensor size mismatch in track(), falling back to predict with explicit imgsz: {e}")
-                # This will be handled by the outer exception handler
-                raise
-            # Handle CUDA errors
-            if 'CUDA' in error_str or 'device-side assert' in error_str:
-                handle_cuda_error(error_msg=error_str)
-                # Move model to CPU and retry
-                try:
-                    model.to('cpu')
-                    if hasattr(model, 'model'):
-                        model.model.to('cpu')
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
-                    gc.collect()
-                except Exception:
-                    pass
-                
-                # Retry on CPU
-                try:
-                    logging.info("Retrying inference on CPU after CUDA error")
-                    result = model.predict(
-                        frame,
-                        classes=[0],
-                        conf=conf,
-                        iou=iou,
-                        verbose=False,
-                        device='cpu',
-                        half=False,
-                        imgsz=imgsz  # Ensure consistent size
-                    )
-                    cleanup_cuda_memory()
-                    return result
-                except Exception as e2:
-                    logging.error(f"CPU inference also failed: {e2}")
-                    cleanup_cuda_memory()
-                    return None
-            else:
-                # Other RuntimeError - try predict fallback
-                raise
-        except (IndexError, RuntimeError) as e:
-            error_str = str(e)
-            # Check if it's the ByteTrack index out of bounds error or tensor size mismatch
-            if 'index is out of bounds' in error_str or 'dimension with size 0' in error_str:
-                logging.warning(f"ByteTrack error (index out of bounds), falling back to predict without tracker: {e}")
-            elif 'size of tensor' in error_str and 'must match' in error_str:
-                logging.warning(f"Tensor size mismatch error, falling back to predict with explicit imgsz: {e}")
-            else:
-                logging.warning(f"track() failed, fallback to predict(): {e}")
-            
-            # Try predict() without tracker
-            try:
-                # Clear CUDA state if using CUDA
-                if inference_device == 'cuda' and torch.cuda.is_available():
-                    try:
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
-                    except Exception:
-                        pass
-                
-                result = model.predict(
-                    frame,
-                    classes=[0],
-                    conf=conf,
-                    iou=iou,
-                    verbose=False,
-                    device=inference_device,
-                    half=inference_half,
-                    imgsz=imgsz  # Explicitly set image size to avoid tensor mismatch
-                )
-                cleanup_cuda_memory()
-                return result
-            except (IndexError, RuntimeError) as e2:
-                error_str2 = str(e2)
-                logging.error(f"Predict fallback also failed: {e2}")
-                
-                # If this is also an index error, tensor mismatch, or CUDA error, try CPU
-                if ('index is out of bounds' in error_str2 or 'dimension with size 0' in error_str2 or 
-                    'size of tensor' in error_str2 or 'must match' in error_str2 or
-                    'CUDA' in error_str2 or 'device-side assert' in error_str2):
-                    if 'CUDA' in error_str2:
-                        handle_cuda_error(error_msg=error_str2)
-                    try:
-                        logging.info("Final fallback: trying CPU inference with explicit imgsz")
-                        result = model.predict(
-                            frame,
-                            classes=[0],
-                            conf=conf,
-                            iou=iou,
-                            verbose=False,
-                            device='cpu',
-                            half=False,
-                            imgsz=imgsz  # Ensure consistent size
-                        )
-                        cleanup_cuda_memory()
-                        return result
-                    except Exception as e3:
-                        logging.error(f"CPU inference also failed: {e3}")
-                        cleanup_cuda_memory()
-                        return None
-                else:
-                    cleanup_cuda_memory()
-                    return None
         except Exception as e:
-            logging.error(f"Unexpected error in safe_track_persons: {e}")
-            cleanup_cuda_memory()
-            return None
+            logging.warning(f"track() failed, fallback to predict(): {e}")
+            return model.predict(
+                frame,
+                classes=[0],
+                conf=conf,
+                iou=iou,
+                verbose=False,
+                device=DEVICE,
+                half=(DEVICE == 'cuda')
+            )
 
 
 # --- QUEUE MONITOR CONFIGURATION ---
@@ -591,70 +399,15 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
-                        # Use GPU (CUDA) by default - only use CPU if forced after errors
-                        inference_device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
-                        inference_half = False  # Disable half precision to avoid CUDA errors
-                        
-                        # Ensure model is on correct device
-                        try:
-                            task['model'].to(inference_device)
-                        except Exception:
-                            pass
-                        
-                        try:
-                            with torch.inference_mode():
-                                results = task['model'](
-                                    frame,
-                                    device=inference_device,
-                                    half=inference_half,
-                                    imgsz=640,  # Ensure consistent image size
-                                    **model_args
-                                )
-                            cleanup_cuda_memory()
-                        except RuntimeError as e:
-                            error_str = str(e)
-                            # Handle tensor size mismatch errors
-                            if 'size of tensor' in error_str and 'must match' in error_str:
-                                logging.warning(f"Tensor size mismatch for {app_name}, trying with explicit imgsz")
-                                try:
-                                    with torch.inference_mode():
-                                        results = task['model'](
-                                            frame,
-                                            device=inference_device,
-                                            half=inference_half,
-                                            imgsz=640,
-                                            **model_args
-                                        )
-                                    cleanup_cuda_memory()
-                                    # Continue if successful
-                                except Exception as e2:
-                                    logging.error(f"Retry with explicit imgsz failed for {app_name}: {e2}")
-                                    cleanup_cuda_memory()
-                                    continue
-                            elif 'CUDA' in error_str or 'device-side assert' in error_str:
-                                handle_cuda_error(error_msg=error_str)
-                                # Retry on CPU
-                                try:
-                                    logging.info(f"Retrying {app_name} on CPU after CUDA error")
-                                    with torch.inference_mode():
-                                        results = task['model'](
-                                            frame,
-                                            device='cpu',
-                                            half=False,
-                                            imgsz=640,  # Ensure consistent image size
-                                            **model_args
-                                        )
-                                    cleanup_cuda_memory()
-                                except Exception as e2:
-                                    logging.error(f"CPU inference also failed for {app_name}: {e2}")
-                                    cleanup_cuda_memory()
-                                    continue
-                            else:
-                                logging.error(f"Model inference error for {app_name}: {e}")
-                                cleanup_cuda_memory()
-                                continue
+                        with torch.inference_mode():
+                            results = task['model'](
+                                frame,
+                                device=DEVICE,
+                                half=(DEVICE == 'cuda'),
+                                **model_args
+                            )
 
-                        if results and len(results) > 0 and len(results[0].boxes) > 0:
+                        if results and len(results[0].boxes) > 0:
                             self.last_detection_times[app_name] = current_time
                             if task['is_gif']:
                                 frames_to_capture = self.gif_duration_seconds * self.fps
@@ -676,10 +429,6 @@ class PeopleCounterProcessor(threading.Thread):
         self.rtsp_url, self.channel_id, self.model, self.detection_callback = rtsp_url, channel_id, model, detection_callback
         self.channel_name, self.app_name = channel_name, "PeopleCounter"
         self.socketio = socketio
-        # Explicitly use GPU (CUDA) if available - only use CPU if forced
-        self.device = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
-        self.model.to(self.device)
-        logging.info(f"PeopleCounter {channel_name}: Using device {self.device.upper()}")
         self.is_running, self.lock = True, threading.Lock()
         self.track_history = defaultdict(list)
         self.counts = {'in': 0, 'out': 0}
@@ -762,10 +511,9 @@ class PeopleCounterProcessor(threading.Thread):
             if frame is None:
                 time.sleep(0.01)
                 continue
-            # Robust tracker call; falls back to predict on errors - use GPU (CUDA)
-            device_for_inference = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
-            results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, device=device_for_inference)
-            r0 = results[0] if (results is not None and len(results) > 0) else None
+            # Robust tracker call; falls back to predict on errors
+            results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5)
+            r0 = results[0] if (results and len(results) > 0) else None
             if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
                 boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
                 line_x, count_changed = int(frame.shape[1] * 0.5), False
@@ -795,10 +543,6 @@ class QueueMonitorProcessor(threading.Thread):
         self.channel_id = channel_id
         self.channel_name = channel_name
         self.model = model
-        # Explicitly use GPU (CUDA) if available - only use CPU if forced
-        self.device = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
-        self.model.to(self.device)
-        logging.info(f"QueueMonitor {channel_name}: Using device {self.device.upper()}")
         self.is_running = True
         self.lock = threading.Lock()
         self.latest_frame = None
@@ -895,12 +639,10 @@ class QueueMonitorProcessor(threading.Thread):
 
     def process_frame(self, frame):
         current_time = time.time()
-        # Use GPU (CUDA) for QueueMonitor
-        device_for_inference = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
-        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5, device=device_for_inference)
+        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5)
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
-        r0 = results[0] if (results is not None and len(results) > 0) else None
+        r0 = results[0] if (results and len(results) > 0) else None
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
             for box, track_id in zip(r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()):
                 # person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
@@ -1010,10 +752,9 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.send_notification = send_notification
         
         # Auto-detect device (CUDA if available, else CPU)
-        # Explicitly use GPU (CUDA) if available - only use CPU if forced
-        self.device = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model.to(self.device)
-        logging.info(f"OccupancyMonitor {channel_name}: Using device {self.device.upper()}")
+        logging.info(f"🎯 Using device: {self.device.upper()}")
         
         self.is_running = True
         self.lock = threading.Lock()
@@ -1111,15 +852,6 @@ class OccupancyMonitorProcessor(threading.Thread):
     def _detect_people(self, frame):
         """Enhanced YOLO detection with CUDA support and maximum accuracy"""
         try:
-            # Use GPU (CUDA) by default - only use CPU if forced after errors
-            inference_device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
-            # Ensure model is on correct device
-            try:
-                self.model.to(inference_device)
-            except Exception:
-                pass
-            inference_half = False  # Disable half precision to avoid CUDA errors
-            
             # Enhanced detection with very low confidence for maximum recall
             with torch.inference_mode():
                 results = self.model(
@@ -1128,13 +860,12 @@ class OccupancyMonitorProcessor(threading.Thread):
                     iou=0.40,
                     classes=[0],
                     verbose=False,
-                    device=inference_device,
+                    device=self.device,
                     imgsz=640,
                     max_det=100,
                     agnostic_nms=True,
-                    half=inference_half
+                    half=(self.device == 'cuda')
                 )
-            cleanup_cuda_memory()
             person_count = 0
             detections = []
             
@@ -1180,52 +911,8 @@ class OccupancyMonitorProcessor(threading.Thread):
                 logging.info(f"Detected {person_count} people with confidences: {', '.join(conf_list)}")
             
             return person_count, annotated_frame
-        except RuntimeError as e:
-            error_str = str(e)
-            if 'CUDA' in error_str or 'device-side assert' in error_str:
-                handle_cuda_error(error_msg=error_str)
-                # Retry on CPU
-                try:
-                    logging.info("Retrying OccupancyMonitor detection on CPU after CUDA error")
-                    with torch.inference_mode():
-                        results = self.model(
-                            frame,
-                            conf=0.15,
-                            iou=0.40,
-                            classes=[0],
-                            verbose=False,
-                            device='cpu',
-                            imgsz=640,
-                            max_det=100,
-                            agnostic_nms=True,
-                            half=False
-                        )
-                    cleanup_cuda_memory()
-                    # Process results same as above
-                    person_count = 0
-                    detections = []
-                    annotated_frame = frame.copy()
-                    for result in results:
-                        boxes = result.boxes
-                        for box in boxes:
-                            conf = float(box.conf[0])
-                            if conf > 0.15:
-                                person_count += 1
-                                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                                detections.append({'conf': conf, 'bbox': (x1, y1, x2, y2)})
-                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    return person_count, annotated_frame
-                except Exception as e2:
-                    logging.error(f"CPU retry also failed: {e2}")
-                    cleanup_cuda_memory()
-                    return 0, frame
-            else:
-                logging.error(f"Detection error: {e}")
-                cleanup_cuda_memory()
-                return 0, frame
         except Exception as e:
             logging.error(f"Detection error: {e}")
-            cleanup_cuda_memory()
             return 0, frame
     
     def _check_occupancy_requirement(self):
@@ -1923,30 +1610,26 @@ def load_model(model_path: str):
         return None
     try:
         model = YOLO(model_path)
-        # Explicitly use GPU (CUDA) if available - only use CPU if forced
-        device_for_model = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
-        model.to(device_for_model)
-        logging.info(f"Loading model '{model_path}' on {device_for_model.upper()}")
+        model.to(DEVICE)
         try:
             model.fuse()
         except Exception:
             pass
-        # Don't use half precision - causes CUDA errors on T4
-        # if device_for_model == 'cuda':
-        #     try:
-        #         model.model.half()
-        #     except Exception:
-        #         pass
+        if DEVICE == 'cuda':
+            try:
+                model.model.half()
+            except Exception:
+                pass
         # Warmup to remove first-frame CUDA lag
         try:
             import numpy as _np
             dummy = _np.zeros((640, 640, 3), dtype=_np.uint8)
             with torch.inference_mode():
                 for _ in range(3):
-                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=device_for_model, verbose=False, half=False)
+                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=DEVICE, verbose=False)
         except Exception:
             pass
-        logging.info(f"Loaded '{model_path}' on {device_for_model.upper()} (half=False)")
+        logging.info(f"Loaded '{model_path}' on {DEVICE} (half={DEVICE=='cuda'})")
         _MODEL_CACHE[model_path] = model
         return model
     except Exception as e:
