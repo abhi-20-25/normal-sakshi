@@ -78,8 +78,63 @@ APP_TASKS_CONFIG = {
     'OccupancyMonitor': {'model_path': 'yolov8n.pt', 'confidence': 0.15}
 }
 
+# Global CUDA error tracking for auto-restart
+_cuda_error_count = {}
+_cuda_error_lock = threading.Lock()
+_last_cuda_reset_time = 0
+
+def reset_cuda_device():
+    """Reset CUDA device completely - last resort recovery"""
+    global _last_cuda_reset_time
+    current_time = time.time()
+    # Don't reset more than once every 60 seconds
+    if current_time - _last_cuda_reset_time < 60:
+        return False
+    
+    if DEVICE == 'cuda' and torch.cuda.is_available():
+        try:
+            logging.warning("Attempting full CUDA device reset...")
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            # Reset all CUDA contexts
+            torch.cuda.reset_peak_memory_stats()
+            _last_cuda_reset_time = current_time
+            logging.info("CUDA device reset completed")
+            return True
+        except Exception as e:
+            logging.error(f"Failed to reset CUDA device: {e}")
+            return False
+    return False
+
+def track_cuda_error(processor_name):
+    """Track CUDA errors and trigger restart if threshold exceeded"""
+    global _cuda_error_count
+    with _cuda_error_lock:
+        if processor_name not in _cuda_error_count:
+            _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
+        
+        _cuda_error_count[processor_name]['count'] += 1
+        _cuda_error_count[processor_name]['last_error'] = time.time()
+        
+        error_count = _cuda_error_count[processor_name]['count']
+        last_error = _cuda_error_count[processor_name]['last_error']
+        
+        # If more than 3 errors in 30 seconds, trigger reset
+        if error_count >= 3 and (time.time() - last_error) < 30:
+            logging.error(f"CUDA error threshold exceeded for {processor_name}: {error_count} errors. Triggering CUDA reset.")
+            reset_cuda_device()
+            # Reset counter after reset
+            _cuda_error_count[processor_name]['count'] = 0
+            return True  # Indicates reset was triggered
+        
+        # Reset counter if no errors for 60 seconds
+        if error_count > 0 and (time.time() - last_error) > 60:
+            _cuda_error_count[processor_name]['count'] = 0
+    
+    return False
+
 # --- YOLO tracking helper (robust to tracker failures) ---
-def safe_track_persons(model, frame, conf=0.25, iou=0.5):
+def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
     # Validate frame before processing
     if frame is None:
         logging.warning("safe_track_persons: frame is None, returning empty result")
@@ -123,13 +178,22 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
             error_msg = str(e)
             if 'CUDA' in error_msg or 'cuda' in error_msg or 'index out of bounds' in error_msg.lower():
                 logging.error(f"CUDA error in safe_track_persons: {e}. Frame shape: {frame.shape}")
-                # Try to reset CUDA state and fallback to predict
+                
+                # Track error and potentially trigger reset
+                if processor_name:
+                    track_cuda_error(processor_name)
+                
+                # Try aggressive CUDA recovery
                 if DEVICE == 'cuda':
                     try:
                         torch.cuda.empty_cache()
                         torch.cuda.synchronize()
-                    except:
-                        pass
+                        # If error count is high, try full reset
+                        if processor_name and _cuda_error_count.get(processor_name, {}).get('count', 0) >= 2:
+                            reset_cuda_device()
+                    except Exception as recovery_error:
+                        logging.error(f"CUDA recovery failed: {recovery_error}")
+                
                 logging.warning("Falling back to predict() after CUDA error")
                 try:
                     return model.predict(
@@ -143,18 +207,23 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                     )
                 except Exception as predict_error:
                     logging.error(f"predict() also failed after CUDA error: {predict_error}")
+                    # If predict also fails, skip this frame
                     return []
             else:
                 logging.warning(f"track() failed with non-CUDA error, fallback to predict(): {e}")
-                return model.predict(
-                    frame,
-                    classes=[0],
-                    conf=conf,
-                    iou=iou,
-                    verbose=False,
-                    device=DEVICE,
-                    half=(DEVICE == 'cuda')
-                )
+                try:
+                    return model.predict(
+                        frame,
+                        classes=[0],
+                        conf=conf,
+                        iou=iou,
+                        verbose=False,
+                        device=DEVICE,
+                        half=(DEVICE == 'cuda')
+                    )
+                except Exception as predict_error:
+                    logging.error(f"predict() also failed: {predict_error}")
+                    return []
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
             try:
@@ -719,35 +788,68 @@ class PeopleCounterProcessor(threading.Thread):
                 self.last_saved_hour = datetime.now(IST).hour
 
     def run(self):
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+        
         while self.is_running:
-            self._check_for_new_day()
-            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            # Robust tracker call; falls back to predict on errors
-            results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5)
-            r0 = results[0] if (results and len(results) > 0) else None
-            if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-                boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
-                line_x, count_changed = int(frame.shape[1] * 0.5), False
-                for box, track_id in zip(boxes, track_ids):
-                    center_x = int(box[0])
-                    history = self.track_history[track_id]
-                    history.append(center_x)
-                    if len(history) > 2: history.pop(0)
-                    if len(history) == 2:
-                        prev_x, curr_x = history
-                        if prev_x < line_x and curr_x >= line_x: self.counts['in'] += 1; count_changed = True   # Left to Right = IN
-                        elif prev_x > line_x and curr_x <= line_x: self.counts['out'] += 1; count_changed = True  # Right to Left = OUT
-                if count_changed: self._update_and_log_counts()
-            annotated_frame = r0.plot() if r0 is not None else frame
-            line_x = int(annotated_frame.shape[1] * 0.5)
-            cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
-            cv2.putText(annotated_frame, f"IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            cv2.putText(annotated_frame, f"OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-            with self.lock: self.latest_frame = annotated_frame.copy()
-            socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
+            try:
+                self._check_for_new_day()
+                frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
+                # Robust tracker call; falls back to predict on errors
+                results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
+                consecutive_errors = 0  # Reset on successful frame
+                r0 = results[0] if (results and len(results) > 0) else None
+                if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
+                    boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
+                    line_x, count_changed = int(frame.shape[1] * 0.5), False
+                    for box, track_id in zip(boxes, track_ids):
+                        center_x = int(box[0])
+                        history = self.track_history[track_id]
+                        history.append(center_x)
+                        if len(history) > 2: history.pop(0)
+                        if len(history) == 2:
+                            prev_x, curr_x = history
+                            if prev_x < line_x and curr_x >= line_x: self.counts['in'] += 1; count_changed = True   # Left to Right = IN
+                            elif prev_x > line_x and curr_x <= line_x: self.counts['out'] += 1; count_changed = True  # Right to Left = OUT
+                    if count_changed: self._update_and_log_counts()
+                annotated_frame = r0.plot() if r0 is not None else frame
+                line_x = int(annotated_frame.shape[1] * 0.5)
+                cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, f"OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                with self.lock: self.latest_frame = annotated_frame.copy()
+                socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
+            except RuntimeError as e:
+                error_msg = str(e)
+                if 'CUDA' in error_msg or 'cuda' in error_msg:
+                    consecutive_errors += 1
+                    logging.error(f"CUDA error in PeopleCounter {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
+                    
+                    # Track error globally
+                    track_cuda_error(f"{self.channel_name}-PeopleCounter")
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        logging.error(f"Too many consecutive CUDA errors for {self.channel_name}. Pausing for recovery...")
+                        reset_cuda_device()
+                        time.sleep(10)  # Pause for recovery
+                        consecutive_errors = 0
+                    else:
+                        time.sleep(2)  # Short pause before retry
+                else:
+                    logging.error(f"Runtime error in PeopleCounter {self.channel_name}: {e}")
+                    time.sleep(1)
+            except Exception as e:
+                logging.error(f"Unexpected error in PeopleCounter {self.channel_name}: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing...")
+                    time.sleep(10)
+                    consecutive_errors = 0
+                else:
+                    time.sleep(1)
         # No cap to release when using FrameHub
 
 class QueueMonitorProcessor(threading.Thread):
@@ -900,7 +1002,7 @@ class QueueMonitorProcessor(threading.Thread):
 
     def process_frame(self, frame):
         current_time = time.time()
-        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5)
+        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results and len(results) > 0) else None
