@@ -349,9 +349,25 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                     logging.error(f"CPU inference also failed: {e2}")
                     cleanup_cuda_memory()
                     return None
-        except Exception as e:
-            logging.warning(f"track() failed, fallback to predict(): {e}")
+        except (IndexError, RuntimeError) as e:
+            error_str = str(e)
+            # Check if it's the ByteTrack index out of bounds error
+            if 'index is out of bounds' in error_str or 'dimension with size 0' in error_str:
+                logging.warning(f"ByteTrack error (index out of bounds), falling back to predict without tracker: {e}")
+            else:
+                logging.warning(f"track() failed, fallback to predict(): {e}")
+            
+            # Try predict() without tracker - this should be more stable
             try:
+                # Move model to CPU if not already there to avoid any CUDA state issues
+                try:
+                    if inference_device == 'cuda' and torch.cuda.is_available():
+                        # Try to clear any corrupted CUDA state first
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                except Exception:
+                    pass
+                
                 result = model.predict(
                     frame,
                     classes=[0],
@@ -363,8 +379,33 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                 )
                 cleanup_cuda_memory()
                 return result
-            except Exception as e2:
+            except (IndexError, RuntimeError) as e2:
+                error_str2 = str(e2)
                 logging.error(f"Predict fallback also failed: {e2}")
+                
+                # If this is also an index error, try even simpler prediction
+                if 'index is out of bounds' in error_str2 or 'dimension with size 0' in error_str2:
+                    try:
+                        logging.info("Trying minimal prediction (no classes filter) on CPU")
+                        # Try without classes filter - sometimes this works when classes filter fails
+                        # This will detect all classes, caller should filter for class 0 (person)
+                        result = model.predict(
+                            frame,
+                            conf=conf,
+                            iou=iou,
+                            verbose=False,
+                            device='cpu',  # Force CPU for stability
+                            half=False
+                        )
+                        # Result might contain all classes, but that's okay - caller will filter
+                        cleanup_cuda_memory()
+                        return result
+                    except Exception as e3:
+                        logging.error(f"Minimal prediction also failed: {e3}")
+                        # Return None gracefully instead of crashing
+                        cleanup_cuda_memory()
+                        return None
+                
                 cleanup_cuda_memory()
                 # Last resort: always try CPU if other device failed
                 if inference_device != 'cpu':
@@ -385,6 +426,11 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                         logging.error(f"CPU inference also failed: {e3}")
                         cleanup_cuda_memory()
                 return None
+        except Exception as e:
+            # Catch any other unexpected errors
+            logging.error(f"Unexpected error in safe_track_persons: {e}")
+            cleanup_cuda_memory()
+            return None
 
 
 # --- QUEUE MONITOR CONFIGURATION ---
@@ -689,13 +735,14 @@ class MultiModelProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, tasks, detection_callback):
         super().__init__(daemon=not _is_background)
         self.rtsp_url, self.channel_id, self.channel_name, self.tasks, self.detection_callback = rtsp_url, channel_id, channel_name, tasks, detection_callback
-        # MultiModelProcessor always uses CPU
-        self.device = 'cpu'
-        # Move all models to CPU
+        # MultiModelProcessor uses GPU (CUDA) if available
+        global _force_cpu
+        self.device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
+        # Move all models to GPU
         for task in self.tasks:
             if 'model' in task:
                 task['model'].to(self.device)
-        logging.info(f"MultiModelProcessor {self.channel_name}: Using device CPU for all models")
+        logging.info(f"MultiModelProcessor {self.channel_name}: Using device {self.device.upper()} for all models")
         self.is_running = True
         self.last_detection_times = {task['app_name']: 0 for task in self.tasks}
         self.cooldown, self.gif_duration_seconds, self.fps = 30, 3, 10
@@ -719,6 +766,19 @@ class MultiModelProcessor(threading.Thread):
                 logging.warning(f"Frame validation failed for MultiModelProcessor: {validation_error}")
                 time.sleep(0.01)
                 continue
+            
+            # Check if CUDA was disabled due to errors
+            if _force_cpu and self.device == 'cuda':
+                logging.warning(f"MultiModelProcessor: CUDA disabled, moving models to CPU")
+                self.device = 'cpu'
+                try:
+                    for task in self.tasks:
+                        if 'model' in task:
+                            task['model'].to('cpu')
+                            if hasattr(task['model'], 'model'):
+                                task['model'].model.to('cpu')
+                except Exception as e:
+                    logging.error(f"Error moving MultiModelProcessor models to CPU: {e}")
 
             current_time = time.time()
 
@@ -733,9 +793,9 @@ class MultiModelProcessor(threading.Thread):
                             model_args['classes'] = task['target_class_id']
 
                         try:
-                            # MultiModelProcessor always uses CPU
-                            inference_device = self.device  # Always 'cpu'
-                            inference_half = False
+                            # MultiModelProcessor uses GPU (CUDA) if available
+                            inference_device = self.device  # 'cuda' or 'cpu' based on availability and _force_cpu
+                            inference_half = False  # Disable half precision to avoid CUDA errors
                             
                             with torch.inference_mode():
                                 results = task['model'](
@@ -907,7 +967,7 @@ class PeopleCounterProcessor(threading.Thread):
                 continue
             # Robust tracker call; falls back to predict on errors
             results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, device=self.device)
-            r0 = results[0] if (results and len(results) > 0) else None
+            r0 = results[0] if (results is not None and len(results) > 0) else None
             if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
                 # Move tensors to CPU and convert immediately, then cleanup
                 boxes = r0.boxes.xywh.cpu()
@@ -1084,7 +1144,7 @@ class QueueMonitorProcessor(threading.Thread):
         results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5, device=self.device)
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
-        r0 = results[0] if (results and len(results) > 0) else None
+        r0 = results[0] if (results is not None and len(results) > 0) else None
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
             # Move tensors to CPU and convert immediately, then cleanup
             boxes_cpu = r0.boxes.xyxy.cpu()
@@ -1260,10 +1320,11 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.SessionLocal = SessionLocal
         self.send_notification = send_notification
         
-        # OccupancyMonitorProcessor always uses CPU
-        self.device = 'cpu'
+        # OccupancyMonitorProcessor uses GPU (CUDA) if available
+        global _force_cpu
+        self.device = 'cpu' if _force_cpu else ('cuda' if torch.cuda.is_available() else 'cpu')
         self.model.to(self.device)
-        logging.info(f"OccupancyMonitorProcessor {self.channel_name}: Using device CPU")
+        logging.info(f"OccupancyMonitorProcessor {self.channel_name}: Using device {self.device.upper()}")
         
         self.is_running = True
         self.lock = threading.Lock()
@@ -1359,11 +1420,11 @@ class OccupancyMonitorProcessor(threading.Thread):
         return False, current_hour, current_day, 0
     
     def _detect_people(self, frame):
-        """Enhanced YOLO detection - OccupancyMonitor always uses CPU"""
+        """Enhanced YOLO detection - OccupancyMonitor uses GPU (CUDA) if available"""
         try:
-            # OccupancyMonitorProcessor always uses CPU
-            inference_device = self.device  # Always 'cpu'
-            inference_half = False
+            # OccupancyMonitorProcessor uses GPU (CUDA) if available
+            inference_device = self.device  # 'cuda' or 'cpu' based on availability and _force_cpu
+            inference_half = False  # Disable half precision to avoid CUDA errors
             
             # Enhanced detection with very low confidence for maximum recall
             with torch.inference_mode():
@@ -1545,6 +1606,18 @@ class OccupancyMonitorProcessor(threading.Thread):
             if frame is None:
                 time.sleep(0.01)
                 continue
+            
+            # Check if CUDA was disabled due to errors
+            global _force_cpu
+            if _force_cpu and self.device == 'cuda':
+                logging.warning(f"OccupancyMonitor: CUDA disabled, moving model to CPU")
+                self.device = 'cpu'
+                try:
+                    self.model.to('cpu')
+                    if hasattr(self.model, 'model'):
+                        self.model.model.to('cpu')
+                except Exception as e:
+                    logging.error(f"Error moving OccupancyMonitor model to CPU: {e}")
             
             reconnect_attempts = 0
             current_time = time.time()
@@ -2202,11 +2275,12 @@ def start_streams():
                 logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}) on {device_for_qm.upper()}.")
                 atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
         if 'KitchenCompliance' in active_app_names:
-            # KitchenCompliance uses CPU
+            # KitchenCompliance uses GPU
             config = APP_TASKS_CONFIG['KitchenCompliance']
-            general_model = load_model(config['model_path'], device='cpu')
-            apron_cap_model = load_model(config['apron_cap_model'], device='cpu')
-            gloves_model = load_model(config['gloves_model'], device='cpu')
+            device_for_kc = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+            general_model = load_model(config['model_path'], device=device_for_kc)
+            apron_cap_model = load_model(config['apron_cap_model'], device=device_for_kc)
+            gloves_model = load_model(config['gloves_model'], device=device_for_kc)
             if general_model and apron_cap_model and gloves_model:
                 kc_processor = KitchenComplianceProcessor(
                     link, channel_id, channel_name, SessionLocal, socketio, 
@@ -2217,12 +2291,13 @@ def start_streams():
                     kc_processor.frame_hub = hub
                 stream_processors[channel_id].append(kc_processor)
                 kc_processor.start()
-                logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}) on CPU.")
+                logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}) on {device_for_kc.upper()}.")
                 atexit.register(kc_processor.shutdown)
                 active_app_names.remove('KitchenCompliance')
         if 'OccupancyMonitor' in active_app_names:
-            # OccupancyMonitor uses CPU
-            model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'], device='cpu')
+            # OccupancyMonitor uses GPU
+            device_for_om = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
+            model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'], device=device_for_om)
             if model_obj:
                 om_processor = OccupancyMonitorProcessor(
                     link, channel_id, channel_name, model_obj, socketio, 
@@ -2231,16 +2306,17 @@ def start_streams():
                 om_processor.frame_hub = hub
                 stream_processors[channel_id].append(om_processor)
                 om_processor.start()
-                logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}) on CPU.")
+                logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}) on {device_for_om.upper()}.")
                 atexit.register(om_processor.shutdown)
                 active_app_names.remove('OccupancyMonitor')
         if active_app_names:
             tasks_for_multi_model = []
+            # MultiModel uses GPU for all apps
+            device_for_multi = 'cuda' if torch.cuda.is_available() and not _force_cpu else 'cpu'
             for app_name in active_app_names:
                 config = APP_TASKS_CONFIG.get(app_name)
                 if config and 'model_path' in config:
-                    # MultiModel uses CPU for all apps
-                    model_obj = load_model(config['model_path'], device='cpu')
+                    model_obj = load_model(config['model_path'], device=device_for_multi)
                     if model_obj: tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
                     else: logging.warning(f"Skipping '{app_name}' for {channel_id}; model failed to load.")
             if tasks_for_multi_model:
