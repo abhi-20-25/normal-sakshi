@@ -2213,12 +2213,8 @@ def start_streams():
                 logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
                 atexit.register(multi_processor.shutdown)
 
+initialize_database()
+
 if __name__ == "__main__":
-    if initialize_database():
-        scheduler = BackgroundScheduler(timezone=str(IST))
-        # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
-        scheduler.start()
-        atexit.register(lambda: scheduler.shutdown())
-        start_streams()
-        logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
-        socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
+    logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
+    socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
