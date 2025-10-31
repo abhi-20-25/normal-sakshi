@@ -108,19 +108,30 @@ def reset_cuda_device():
 
 def track_cuda_error(processor_name):
     """Track CUDA errors and trigger restart if threshold exceeded"""
-    global _cuda_error_count
+    global _cuda_error_count, _last_cuda_reset_time
     with _cuda_error_lock:
         if processor_name not in _cuda_error_count:
             _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
         
+        current_time = time.time()
+        # Check if a manual reset just happened (within last 90 seconds)
+        time_since_reset = current_time - _last_cuda_reset_time if _last_cuda_reset_time > 0 else 999
+        
         _cuda_error_count[processor_name]['count'] += 1
-        _cuda_error_count[processor_name]['last_error'] = time.time()
+        _cuda_error_count[processor_name]['last_error'] = current_time
         
         error_count = _cuda_error_count[processor_name]['count']
         last_error = _cuda_error_count[processor_name]['last_error']
         
+        # If a reset just happened, be much more lenient - don't disable immediately
+        if time_since_reset < 90:
+            logging.warning(f"CUDA error for {processor_name} but reset happened {time_since_reset:.0f}s ago. Being lenient - not disabling yet.")
+            # Reduce count instead of increasing it to avoid rapid re-disabling
+            _cuda_error_count[processor_name]['count'] = max(1, error_count - 1)
+            return False
+        
         # If more than 3 errors in 30 seconds, trigger reset and disable CUDA for this processor
-        if error_count >= 3 and (time.time() - last_error) < 30:
+        if error_count >= 3 and (current_time - last_error) < 30:
             logging.error(f"CUDA error threshold exceeded for {processor_name}: {error_count} errors. Triggering CUDA reset and disabling CUDA for this processor.")
             reset_cuda_device()
             disable_cuda_for_processor(processor_name)
@@ -128,14 +139,14 @@ def track_cuda_error(processor_name):
             _cuda_error_count[processor_name]['count'] = 0
             return True  # Indicates reset was triggered
         
-        # If more than 5 errors total, disable CUDA permanently for this processor
+        # If more than 5 errors total, disable CUDA for this processor (but not if reset just happened)
         if error_count >= 5:
-            logging.error(f"Too many CUDA errors ({error_count}) for {processor_name}. Permanently disabling CUDA for this processor.")
+            logging.error(f"Too many CUDA errors ({error_count}) for {processor_name}. Disabling CUDA for this processor.")
             disable_cuda_for_processor(processor_name)
             _cuda_error_count[processor_name]['count'] = 0
         
         # Reset counter if no errors for 60 seconds
-        if error_count > 0 and (time.time() - last_error) > 60:
+        if error_count > 0 and (current_time - last_error) > 60:
             _cuda_error_count[processor_name]['count'] = 0
     
     return False
@@ -2135,12 +2146,25 @@ def reset_cuda_errors():
     """API endpoint to reset all CUDA errors and re-enable CUDA for all processors"""
     try:
         count = reset_all_cuda_errors()
+        # Verify reset worked
+        with _cuda_disabled_lock:
+            remaining = len(_cuda_disabled_processors)
+        
+        if remaining > 0:
+            logging.warning(f"Warning: {remaining} processors still marked as disabled after reset. Force-clearing...")
+            with _cuda_disabled_lock:
+                _cuda_disabled_processors.clear()
+        
         return jsonify({
             "success": True,
-            "message": f"CUDA errors reset. {count} processor(s) re-enabled for CUDA mode."
+            "message": f"CUDA errors reset. {count} processor(s) re-enabled for CUDA mode.",
+            "disabled_before": count,
+            "disabled_after": remaining
         })
     except Exception as e:
         logging.error(f"Error resetting CUDA: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/reset_cuda/<processor_name>', methods=['POST'])
@@ -2167,6 +2191,14 @@ def get_cuda_status():
     try:
         with _cuda_disabled_lock:
             disabled_list = list(_cuda_disabled_processors.keys())
+            disabled_details = {
+                name: {
+                    'disabled_time': info.get('disabled_time', 0),
+                    'time_disabled_seconds': int(time.time() - info.get('disabled_time', time.time())),
+                    'success_count': info.get('success_count', 0)
+                }
+                for name, info in _cuda_disabled_processors.items()
+            }
             error_counts = {
                 name: info.get('count', 0) 
                 for name, info in _cuda_error_count.items()
@@ -2174,8 +2206,11 @@ def get_cuda_status():
         return jsonify({
             "success": True,
             "disabled_processors": disabled_list,
+            "disabled_details": disabled_details,
             "error_counts": error_counts,
-            "cuda_available": DEVICE == 'cuda' and torch.cuda.is_available()
+            "cuda_available": DEVICE == 'cuda' and torch.cuda.is_available(),
+            "last_cuda_reset": _last_cuda_reset_time,
+            "time_since_reset": int(time.time() - _last_cuda_reset_time) if _last_cuda_reset_time > 0 else None
         })
     except Exception as e:
         logging.error(f"Error getting CUDA status: {e}")
@@ -2424,10 +2459,18 @@ def enable_cuda_for_processor(processor_name):
         if processor_name in _cuda_disabled_processors:
             del _cuda_disabled_processors[processor_name]
             logging.info(f"CUDA manually re-enabled for {processor_name}")
-            # Reset error count
+            # Reset error count completely
             if processor_name in _cuda_error_count:
-                _cuda_error_count[processor_name]['count'] = 0
+                _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
+            # Force CUDA reset to clear any lingering state
+            reset_cuda_device()
             return True
+        else:
+            # Even if not in disabled list, reset error count
+            if processor_name in _cuda_error_count:
+                _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
+            logging.info(f"CUDA error count reset for {processor_name} (was not in disabled list)")
+            return True  # Return True even if not disabled, to indicate count was reset
     return False
 
 def track_cuda_success(processor_name):
@@ -2439,13 +2482,29 @@ def track_cuda_success(processor_name):
 
 def reset_all_cuda_errors():
     """Reset all CUDA error states - allows all processors to use CUDA again"""
-    global _cuda_disabled_processors, _cuda_error_count
+    global _cuda_disabled_processors, _cuda_error_count, _last_cuda_reset_time
     with _cuda_disabled_lock:
         count = len(_cuda_disabled_processors)
+        disabled_names = list(_cuda_disabled_processors.keys())
         _cuda_disabled_processors.clear()
         _cuda_error_count.clear()
-        reset_cuda_device()
-        logging.warning(f"All CUDA errors reset. {count} processors re-enabled for CUDA mode.")
+        
+        # Force a full CUDA device reset
+        if DEVICE == 'cuda' and torch.cuda.is_available():
+            try:
+                logging.warning("Performing full CUDA device reset...")
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                # Try to reset CUDA state more aggressively
+                for i in range(torch.cuda.device_count()):
+                    torch.cuda.empty_cache(i)
+                torch.cuda.reset_peak_memory_stats()
+                _last_cuda_reset_time = time.time()
+                logging.info("CUDA device reset completed")
+            except Exception as e:
+                logging.error(f"Error during CUDA reset: {e}")
+        
+        logging.warning(f"All CUDA errors reset. {count} processor(s) re-enabled for CUDA mode: {disabled_names}")
         return count
 
 def restart_processor(processor_info):
