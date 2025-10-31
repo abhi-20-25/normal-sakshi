@@ -9,6 +9,8 @@ import json
 from datetime import datetime, date, timedelta, time as dt_time
 from collections import defaultdict
 import os
+import sys
+import signal
 import requests
 import imageio
 from flask import Flask, Response, render_template, jsonify, url_for, request, stream_with_context, session, redirect
@@ -78,11 +80,13 @@ APP_TASKS_CONFIG = {
     'OccupancyMonitor': {'model_path': 'yolov8n.pt', 'confidence': 0.15}
 }
 
-# --- YOLO tracking helper (robust to tracker failures) ---
+# --- YOLO tracking helper (robust to tracker failures + CUDA errors) ---
+USE_HALF_PRECISION = False  # Disable half precision to avoid CUDA device-side asserts on T4
+
 def safe_track_persons(model, frame, conf=0.25, iou=0.5):
     with torch.inference_mode():
         try:
-            return model.track(
+            result = model.track(
                 frame,
                 persist=True,
                 classes=[0],
@@ -90,20 +94,48 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5):
                 iou=iou,
                 verbose=False,
                 device=DEVICE,
-                half=(DEVICE == 'cuda'),
+                half=USE_HALF_PRECISION,
                 tracker='bytetrack.yaml'
             )
+            # Clear CUDA cache after inference to prevent accumulation
+            if DEVICE == 'cuda':
+                torch.cuda.empty_cache()
+            return result
+        except RuntimeError as e:
+            if 'CUDA' in str(e):
+                logging.error(f"CUDA error in tracking, clearing cache and retrying: {e}")
+                if DEVICE == 'cuda':
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                # Fallback to predict without tracking
+                try:
+                    return model.predict(
+                        frame,
+                        classes=[0],
+                        conf=conf,
+                        iou=iou,
+                        verbose=False,
+                        device=DEVICE,
+                        half=USE_HALF_PRECISION
+                    )
+                except Exception as e2:
+                    logging.error(f"Predict also failed after CUDA error: {e2}")
+                    return None
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
-            return model.predict(
-                frame,
-                classes=[0],
-                conf=conf,
-                iou=iou,
-                verbose=False,
-                device=DEVICE,
-                half=(DEVICE == 'cuda')
-            )
+            try:
+                return model.predict(
+                    frame,
+                    classes=[0],
+                    conf=conf,
+                    iou=iou,
+                    verbose=False,
+                    device=DEVICE,
+                    half=USE_HALF_PRECISION
+                )
+            except Exception as e2:
+                logging.error(f"Predict fallback also failed: {e2}")
+                return None
 
 
 # --- QUEUE MONITOR CONFIGURATION ---
@@ -128,11 +160,26 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # --- Global State Management ---
 stream_processors = {}
 
+def graceful_shutdown(signum, frame):
+    """Handle SIGTERM/SIGINT for graceful shutdown when running as background process"""
+    logging.info(f"Received signal {signum}, shutting down gracefully...")
+    for channel_id, processors in stream_processors.items():
+        for processor in processors:
+            if hasattr(processor, 'shutdown'):
+                processor.shutdown()
+            elif hasattr(processor, 'stop'):
+                processor.stop()
+    sys.exit(0)
+
 # Shared RTSP frame provider per camera to minimize latency and duplicate decoding
 # Shared RTSP frame provider using a thread-safe queue
+# Detect if running as background process (non-interactive)
+_is_background = not os.isatty(sys.stdin.fileno()) if hasattr(sys.stdin, 'fileno') else True
+
 class FrameHub(threading.Thread):
     def __init__(self, rtsp_url, name):
-        super().__init__(name=f"FrameHub-{name}", daemon=True)
+        # Non-daemon threads keep process alive when running as background service
+        super().__init__(name=f"FrameHub-{name}", daemon=not _is_background)
         self.rtsp_url = rtsp_url
         
         # A queue of size 1 is the perfect "latest frame" buffer
@@ -369,7 +416,7 @@ def handle_detection(app_name, channel_id, frames, message, is_gif=False):
 
 class MultiModelProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, tasks, detection_callback):
-        super().__init__()
+        super().__init__(daemon=not _is_background)
         self.rtsp_url, self.channel_id, self.channel_name, self.tasks, self.detection_callback = rtsp_url, channel_id, channel_name, tasks, detection_callback
         self.is_running = True
         self.last_detection_times = {task['app_name']: 0 for task in self.tasks}
@@ -399,22 +446,38 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
-                        with torch.inference_mode():
-                            results = task['model'](
-                                frame,
-                                device=DEVICE,
-                                half=(DEVICE == 'cuda'),
-                                **model_args
-                            )
+                        try:
+                            with torch.inference_mode():
+                                results = task['model'](
+                                    frame,
+                                    device=DEVICE,
+                                    half=USE_HALF_PRECISION,
+                                    **model_args
+                                )
+                            if DEVICE == 'cuda':
+                                torch.cuda.empty_cache()
+                        except RuntimeError as e:
+                            if 'CUDA' in str(e):
+                                logging.error(f"CUDA error in MultiModelProcessor for {app_name}: {e}")
+                                if DEVICE == 'cuda':
+                                    torch.cuda.empty_cache()
+                                    torch.cuda.synchronize()
+                                continue
+                            else:
+                                logging.error(f"Model error for {app_name}: {e}")
+                                continue
+                        except Exception as e:
+                            logging.error(f"Model inference error for {app_name}: {e}")
+                            continue
 
-                        if results and len(results[0].boxes) > 0:
+                        if results and len(results) > 0 and len(results[0].boxes) > 0:
                             self.last_detection_times[app_name] = current_time
                             if task['is_gif']:
                                 frames_to_capture = self.gif_duration_seconds * self.fps
                                 gif_frames = [results[0].plot()]
                                 for _ in range(frames_to_capture - 1):
-                                    ret_gif, frame_gif = cap.read()
-                                    if not ret_gif: break
+                                    frame_gif = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+                                    if frame_gif is None: break
                                     gif_frames.append(frame_gif.copy())
                                     time.sleep(1 / self.fps)
                                 self.detection_callback(app_name, self.channel_id, gif_frames, f"{app_name} detected.", True)
@@ -425,7 +488,7 @@ class MultiModelProcessor(threading.Thread):
 
 class PeopleCounterProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, model, detection_callback, socketio):
-        super().__init__()
+        super().__init__(daemon=not _is_background)
         self.rtsp_url, self.channel_id, self.model, self.detection_callback = rtsp_url, channel_id, model, detection_callback
         self.channel_name, self.app_name = channel_name, "PeopleCounter"
         self.socketio = socketio
@@ -538,7 +601,7 @@ class PeopleCounterProcessor(threading.Thread):
 
 class QueueMonitorProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, model):
-        super().__init__(name=channel_name)
+        super().__init__(name=channel_name, daemon=not _is_background)
         self.rtsp_url = rtsp_url
         self.channel_id = channel_id
         self.channel_name = channel_name
@@ -742,7 +805,7 @@ class OccupancyMonitorProcessor(threading.Thread):
     """
     
     def __init__(self, rtsp_url, channel_id, channel_name, model, socketio, SessionLocal, send_notification):
-        super().__init__(name=f"OccupancyMonitor-{channel_name}")
+        super().__init__(name=f"OccupancyMonitor-{channel_name}", daemon=not _is_background)
         self.rtsp_url = rtsp_url
         self.channel_id = channel_id
         self.channel_name = channel_name
@@ -864,7 +927,7 @@ class OccupancyMonitorProcessor(threading.Thread):
                     imgsz=640,
                     max_det=100,
                     agnostic_nms=True,
-                    half=(self.device == 'cuda')
+                    half=USE_HALF_PRECISION
                 )
             person_count = 0
             detections = []
@@ -1615,11 +1678,12 @@ def load_model(model_path: str):
             model.fuse()
         except Exception:
             pass
-        if DEVICE == 'cuda':
-            try:
-                model.model.half()
-            except Exception:
-                pass
+        # Skip half precision to avoid CUDA device-side asserts on T4
+        # if DEVICE == 'cuda':
+        #     try:
+        #         model.model.half()
+        #     except Exception:
+        #         pass
         # Warmup to remove first-frame CUDA lag
         try:
             import numpy as _np
@@ -1629,7 +1693,7 @@ def load_model(model_path: str):
                     _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=DEVICE, verbose=False)
         except Exception:
             pass
-        logging.info(f"Loaded '{model_path}' on {DEVICE} (half={DEVICE=='cuda'})")
+        logging.info(f"Loaded '{model_path}' on {DEVICE} (half={USE_HALF_PRECISION})")
         _MODEL_CACHE[model_path] = model
         return model
     except Exception as e:
@@ -1723,6 +1787,10 @@ def start_streams():
                 atexit.register(multi_processor.shutdown)
 
 if __name__ == "__main__":
+    # Register signal handlers for graceful shutdown when running as background process
+    signal.signal(signal.SIGTERM, graceful_shutdown)
+    signal.signal(signal.SIGINT, graceful_shutdown)
+    
     if initialize_database():
         scheduler = BackgroundScheduler(timezone=str(IST))
         # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
