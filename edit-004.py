@@ -165,6 +165,10 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
     
     inference_half = False  # Never use half precision to avoid issues
     
+    # Ensure consistent input size - YOLO models work best with 640x640
+    # But we'll let YOLO handle resizing via imgsz parameter
+    imgsz = 640  # Standard YOLO input size
+    
     with torch.inference_mode():
         try:
             result = model.track(
@@ -176,12 +180,18 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                 verbose=False,
                 device=inference_device,
                 half=inference_half,
-                tracker='bytetrack.yaml'
+                tracker='bytetrack.yaml',
+                imgsz=imgsz  # Explicitly set image size for consistency
             )
             cleanup_cuda_memory()
             return result
         except RuntimeError as e:
             error_str = str(e)
+            # Handle tensor size mismatch errors
+            if 'size of tensor' in error_str and 'must match' in error_str:
+                logging.warning(f"Tensor size mismatch in track(), falling back to predict with explicit imgsz: {e}")
+                # This will be handled by the outer exception handler
+                raise
             # Handle CUDA errors
             if 'CUDA' in error_str or 'device-side assert' in error_str:
                 handle_cuda_error(error_msg=error_str)
@@ -207,7 +217,8 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                         iou=iou,
                         verbose=False,
                         device='cpu',
-                        half=False
+                        half=False,
+                        imgsz=imgsz  # Ensure consistent size
                     )
                     cleanup_cuda_memory()
                     return result
@@ -220,9 +231,11 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                 raise
         except (IndexError, RuntimeError) as e:
             error_str = str(e)
-            # Check if it's the ByteTrack index out of bounds error
+            # Check if it's the ByteTrack index out of bounds error or tensor size mismatch
             if 'index is out of bounds' in error_str or 'dimension with size 0' in error_str:
                 logging.warning(f"ByteTrack error (index out of bounds), falling back to predict without tracker: {e}")
+            elif 'size of tensor' in error_str and 'must match' in error_str:
+                logging.warning(f"Tensor size mismatch error, falling back to predict with explicit imgsz: {e}")
             else:
                 logging.warning(f"track() failed, fallback to predict(): {e}")
             
@@ -243,7 +256,8 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                     iou=iou,
                     verbose=False,
                     device=inference_device,
-                    half=inference_half
+                    half=inference_half,
+                    imgsz=imgsz  # Explicitly set image size to avoid tensor mismatch
                 )
                 cleanup_cuda_memory()
                 return result
@@ -251,13 +265,14 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                 error_str2 = str(e2)
                 logging.error(f"Predict fallback also failed: {e2}")
                 
-                # If this is also an index error or CUDA error, try CPU
+                # If this is also an index error, tensor mismatch, or CUDA error, try CPU
                 if ('index is out of bounds' in error_str2 or 'dimension with size 0' in error_str2 or 
+                    'size of tensor' in error_str2 or 'must match' in error_str2 or
                     'CUDA' in error_str2 or 'device-side assert' in error_str2):
                     if 'CUDA' in error_str2:
                         handle_cuda_error(error_msg=error_str2)
                     try:
-                        logging.info("Final fallback: trying CPU inference")
+                        logging.info("Final fallback: trying CPU inference with explicit imgsz")
                         result = model.predict(
                             frame,
                             classes=[0],
@@ -265,7 +280,8 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
                             iou=iou,
                             verbose=False,
                             device='cpu',
-                            half=False
+                            half=False,
+                            imgsz=imgsz  # Ensure consistent size
                         )
                         cleanup_cuda_memory()
                         return result
@@ -591,12 +607,32 @@ class MultiModelProcessor(threading.Thread):
                                     frame,
                                     device=inference_device,
                                     half=inference_half,
+                                    imgsz=640,  # Ensure consistent image size
                                     **model_args
                                 )
                             cleanup_cuda_memory()
                         except RuntimeError as e:
-                            if 'CUDA' in str(e) or 'device-side assert' in str(e):
-                                handle_cuda_error(error_msg=str(e))
+                            error_str = str(e)
+                            # Handle tensor size mismatch errors
+                            if 'size of tensor' in error_str and 'must match' in error_str:
+                                logging.warning(f"Tensor size mismatch for {app_name}, trying with explicit imgsz")
+                                try:
+                                    with torch.inference_mode():
+                                        results = task['model'](
+                                            frame,
+                                            device=inference_device,
+                                            half=inference_half,
+                                            imgsz=640,
+                                            **model_args
+                                        )
+                                    cleanup_cuda_memory()
+                                    # Continue if successful
+                                except Exception as e2:
+                                    logging.error(f"Retry with explicit imgsz failed for {app_name}: {e2}")
+                                    cleanup_cuda_memory()
+                                    continue
+                            elif 'CUDA' in error_str or 'device-side assert' in error_str:
+                                handle_cuda_error(error_msg=error_str)
                                 # Retry on CPU
                                 try:
                                     logging.info(f"Retrying {app_name} on CPU after CUDA error")
@@ -605,6 +641,7 @@ class MultiModelProcessor(threading.Thread):
                                             frame,
                                             device='cpu',
                                             half=False,
+                                            imgsz=640,  # Ensure consistent image size
                                             **model_args
                                         )
                                     cleanup_cuda_memory()
