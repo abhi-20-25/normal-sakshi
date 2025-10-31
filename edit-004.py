@@ -2131,7 +2131,6 @@ def download_schedule_template():
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/reset_cuda', methods=['POST'])
-@login_required
 def reset_cuda_errors():
     """API endpoint to reset all CUDA errors and re-enable CUDA for all processors"""
     try:
@@ -2145,7 +2144,6 @@ def reset_cuda_errors():
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/reset_cuda/<processor_name>', methods=['POST'])
-@login_required
 def reset_cuda_for_processor(processor_name):
     """API endpoint to reset CUDA errors for a specific processor"""
     try:
@@ -2164,7 +2162,6 @@ def reset_cuda_for_processor(processor_name):
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/api/cuda_status', methods=['GET'])
-@login_required
 def get_cuda_status():
     """API endpoint to get CUDA status for all processors"""
     try:
