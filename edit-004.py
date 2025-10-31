@@ -860,7 +860,9 @@ class PeopleCounterProcessor(threading.Thread):
                                           out_count = hourly_footfall.out_count + EXCLUDED.out_count;
                         """)
                         db.execute(stmt, {'cid': self.channel_id, 'rdate': self.tracking_date, 'hour': self.last_saved_hour, 'inc': hourly_in, 'outc': hourly_out})
+                    logging.info(f"PeopleCounter {self.channel_name}: Saved hourly counts for hour {self.last_saved_hour}: IN={hourly_in}, OUT={hourly_out}")
                     self.last_saved_total_counts, self.last_saved_hour = self.counts.copy(), current_hour_ist
+                    logging.info(f"PeopleCounter {self.channel_name}: Hour changed to {current_hour_ist}. Resetting saved counts reference.")
                 db.commit()
             except Exception as e:
                 logging.error(f"Error updating counts in DB: {e}"); db.rollback()
@@ -906,8 +908,41 @@ class PeopleCounterProcessor(threading.Thread):
                 annotated_frame = r0.plot() if r0 is not None else frame
                 line_x = int(annotated_frame.shape[1] * 0.5)
                 cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
-                cv2.putText(annotated_frame, f"IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.putText(annotated_frame, f"OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                # Display both total daily count and current hour count (matching DB)
+                current_hour_ist = datetime.now(IST).hour
+                current_date_ist = datetime.now(IST).date()
+                
+                # Calculate current hour counts (what would be in DB for current hour)
+                hourly_in_current = self.counts['in'] - self.last_saved_total_counts['in']
+                hourly_out_current = self.counts['out'] - self.last_saved_total_counts['out']
+                
+                # If hour changed, fetch the saved count from DB for current hour
+                # For already-past hours, fetch from DB; for current hour, use calculated value
+                if current_hour_ist != self.last_saved_hour:
+                    # Hour changed - try to get saved value from DB for current hour (might be 0 if no data yet)
+                    try:
+                        with SessionLocal() as db:
+                            saved_hourly = db.query(HourlyFootfall).filter_by(
+                                channel_id=self.channel_id,
+                                report_date=current_date_ist,
+                                hour=current_hour_ist
+                            ).first()
+                            if saved_hourly:
+                                hourly_in_current = saved_hourly.in_count
+                                hourly_out_current = saved_hourly.out_count
+                    except Exception as e:
+                        logging.warning(f"Could not fetch hourly count from DB: {e}")
+                        # Use calculated value if DB fetch fails
+                        pass
+                
+                # Display total daily counts
+                cv2.putText(annotated_frame, f"TOTAL - IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, f"TOTAL - OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                
+                # Display current hour counts (matching what's stored in DB for current hour)
+                cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - IN: {hourly_in_current}", (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - OUT: {hourly_out_current}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                
                 with self.lock: self.latest_frame = annotated_frame.copy()
                 socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
             except RuntimeError as e:
