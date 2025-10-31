@@ -24,11 +24,11 @@ loglevel = "info"
 access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s"'
 
 # Process naming
-proc_name = "sakshi-ai-server"
+proc_name = "gunicorn"
 
 # Server mechanics
 daemon = False
-pidfile = "/var/run/gunicorn/sakshi-ai.pid"
+pidfile = "/var/run/gunicorn/gunicorn.pid"
 umask = 0
 user = None
 group = None
