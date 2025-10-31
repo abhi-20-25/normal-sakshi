@@ -1338,9 +1338,9 @@ class QueueMonitorProcessor(threading.Thread):
         queue_display_count = valid_queue_count  # Show actual current count
         counter_display_count = valid_secondary_count  # Show actual current count
         
-        cv2.putText(annotated_frame, f"Queue: {queue_display_count}", (50, 55), 
+        cv2.putText(annotated_frame, f"Queue: {counter_display_count}", (50, 55), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Yellow, thicker
-        cv2.putText(annotated_frame, f"Counter: {counter_display_count}", (50, 90), 
+        cv2.putText(annotated_frame, f"Counter: {queue_display_count}", (50, 90), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Cyan, thicker
         
         # Log count changes for debugging
