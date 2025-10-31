@@ -691,9 +691,25 @@ class QueueMonitorProcessor(threading.Thread):
             if first_frame:
                 h, w, _ = frame.shape
                 if hasattr(self, 'normalized_main_roi') and self.normalized_main_roi:
-                    self.roi_poly = Polygon([(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi])
+                    pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi]
+                    self.roi_poly = Polygon(pixel_coords)
+                    if self.roi_poly.is_valid:
+                        logging.info(f"QueueMonitor {self.channel_name}: Main ROI initialized with {len(pixel_coords)} points (frame size: {w}x{h})")
+                    else:
+                        logging.warning(f"QueueMonitor {self.channel_name}: Main ROI is invalid after initialization")
+                else:
+                    logging.warning(f"QueueMonitor {self.channel_name}: No normalized_main_roi found")
+                    
                 if hasattr(self, 'normalized_secondary_roi') and self.normalized_secondary_roi:
-                    self.secondary_roi_poly = Polygon([(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi])
+                    pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi]
+                    self.secondary_roi_poly = Polygon(pixel_coords)
+                    if self.secondary_roi_poly.is_valid:
+                        logging.info(f"QueueMonitor {self.channel_name}: Secondary ROI initialized with {len(pixel_coords)} points (frame size: {w}x{h})")
+                    else:
+                        logging.warning(f"QueueMonitor {self.channel_name}: Secondary ROI is invalid after initialization")
+                else:
+                    logging.warning(f"QueueMonitor {self.channel_name}: No normalized_secondary_roi found")
+                    
                 first_frame = False
 
             self.process_frame(frame.copy())
@@ -708,31 +724,65 @@ class QueueMonitorProcessor(threading.Thread):
         r0 = results[0] if (results and len(results) > 0) else None
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
             for box, track_id in zip(r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()):
-                # person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
-                person_point = Point(int((box[0] + box[2]) / 2), int(box[3]))
-                if self.roi_poly.is_valid and self.roi_poly.contains(person_point):
-                    current_tracks_in_main_roi.add(track_id)
-                    tracker = self.queue_tracker[track_id]
-                    if tracker['entry_time'] == 0: tracker['entry_time'] = current_time
-                if self.secondary_roi_poly.is_valid and self.secondary_roi_poly.contains(person_point):
-                    current_tracks_in_secondary_roi.add(track_id)
-                    sec_tracker = self.secondary_queue_tracker[track_id]
-                    if sec_tracker['entry_time'] == 0: sec_tracker['entry_time'] = current_time
+                # Use center point for better ROI detection
+                center_x = int((box[0] + box[2]) / 2)
+                center_y = int((box[1] + box[3]) / 2)
+                person_point = Point(center_x, center_y)
+                
+                # Check main ROI (queue area)
+                if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+                    if self.roi_poly.contains(person_point):
+                        current_tracks_in_main_roi.add(track_id)
+                        if track_id not in self.queue_tracker:
+                            self.queue_tracker[track_id] = {'entry_time': current_time}
+                            logging.debug(f"QueueMonitor: Person {track_id} entered main ROI")
+                        # Update entry time if not set
+                        if self.queue_tracker[track_id]['entry_time'] == 0:
+                            self.queue_tracker[track_id]['entry_time'] = current_time
+                
+                # Check secondary ROI (counter area)
+                if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+                    if self.secondary_roi_poly.contains(person_point):
+                        current_tracks_in_secondary_roi.add(track_id)
+                        if track_id not in self.secondary_queue_tracker:
+                            self.secondary_queue_tracker[track_id] = {'entry_time': current_time}
+                            logging.debug(f"QueueMonitor: Person {track_id} entered secondary ROI")
+                        # Update entry time if not set
+                        if self.secondary_queue_tracker[track_id]['entry_time'] == 0:
+                            self.secondary_queue_tracker[track_id]['entry_time'] = current_time
 
-        valid_queue_count = sum(1 for track_id in list(self.queue_tracker.keys()) if (track_id in current_tracks_in_main_roi and (current_time - self.queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC) or (self.queue_tracker.pop(track_id) and False))
+        # Clean up trackers for people who left the main ROI
+        for track_id in list(self.queue_tracker.keys()):
+            if track_id not in current_tracks_in_main_roi:
+                del self.queue_tracker[track_id]
+        
+        # Count people in main ROI who have been there long enough
+        valid_queue_count = 0
+        for track_id in current_tracks_in_main_roi:
+            if track_id in self.queue_tracker:
+                dwell_time = current_time - self.queue_tracker[track_id]['entry_time']
+                if dwell_time >= QUEUE_DWELL_TIME_SEC:
+                    valid_queue_count += 1
+                elif logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug(f"QueueMonitor: Track {track_id} in main ROI but dwell time {dwell_time:.3f}s < {QUEUE_DWELL_TIME_SEC}s")
+        
         updated = False
         if self.current_queue_count != valid_queue_count:
             self.current_queue_count = valid_queue_count
             updated = True
 
-        # Validate secondary (counter area) count with dwell
-        valid_secondary_count = sum(
-            1 for track_id in list(self.secondary_queue_tracker.keys())
-            if (
-                track_id in current_tracks_in_secondary_roi and
-                (current_time - self.secondary_queue_tracker[track_id]['entry_time']) >= QUEUE_DWELL_TIME_SEC
-            ) or (self.secondary_queue_tracker.pop(track_id) and False)
-        )
+        # Clean up trackers for people who left the secondary ROI
+        for track_id in list(self.secondary_queue_tracker.keys()):
+            if track_id not in current_tracks_in_secondary_roi:
+                del self.secondary_queue_tracker[track_id]
+
+        # Count people in secondary ROI (counter area) who have been there long enough
+        valid_secondary_count = 0
+        for track_id in current_tracks_in_secondary_roi:
+            if track_id in self.secondary_queue_tracker:
+                dwell_time = current_time - self.secondary_queue_tracker[track_id]['entry_time']
+                if dwell_time >= QUEUE_DWELL_TIME_SEC:
+                    valid_secondary_count += 1
 
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
