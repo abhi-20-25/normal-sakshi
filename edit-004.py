@@ -478,12 +478,34 @@ class MultiModelProcessor(threading.Thread):
                             if task['is_gif']:
                                 frames_to_capture = self.gif_duration_seconds * self.fps
                                 gif_frames = [results[0].plot()]
+                                # Collect additional frames from frame_hub for GIF
                                 for _ in range(frames_to_capture - 1):
-                                    ret_gif, frame_gif = cap.read()
-                                    if not ret_gif: break
-                                    gif_frames.append(frame_gif.copy())
                                     time.sleep(1 / self.fps)
-                                self.detection_callback(app_name, self.channel_id, gif_frames, f"{app_name} detected.", True)
+                                    frame_gif = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+                                    if frame_gif is None:
+                                        break
+                                    # Run detection on this frame to get annotated version
+                                    try:
+                                        with torch.inference_mode():
+                                            gif_results = task['model'](
+                                                frame_gif,
+                                                device=DEVICE,
+                                                half=(DEVICE == 'cuda'),
+                                                **model_args
+                                            )
+                                        if gif_results and len(gif_results[0].boxes) > 0:
+                                            gif_frames.append(gif_results[0].plot())
+                                        else:
+                                            gif_frames.append(frame_gif.copy())
+                                    except Exception as e:
+                                        logging.warning(f"Error processing GIF frame: {e}")
+                                        gif_frames.append(frame_gif.copy())
+                                # Only create GIF if we have multiple frames
+                                if len(gif_frames) > 1:
+                                    self.detection_callback(app_name, self.channel_id, gif_frames, f"{app_name} detected.", True)
+                                else:
+                                    # Fallback to single frame if we couldn't capture enough frames
+                                    self.detection_callback(app_name, self.channel_id, gif_frames, f"{app_name} detected.", False)
                             else:
                                 annotated_frame = results[0].plot()
                                 self.detection_callback(app_name, self.channel_id, [annotated_frame], f"{app_name} detected.", False)
