@@ -119,13 +119,20 @@ def track_cuda_error(processor_name):
         error_count = _cuda_error_count[processor_name]['count']
         last_error = _cuda_error_count[processor_name]['last_error']
         
-        # If more than 3 errors in 30 seconds, trigger reset
+        # If more than 3 errors in 30 seconds, trigger reset and disable CUDA for this processor
         if error_count >= 3 and (time.time() - last_error) < 30:
-            logging.error(f"CUDA error threshold exceeded for {processor_name}: {error_count} errors. Triggering CUDA reset.")
+            logging.error(f"CUDA error threshold exceeded for {processor_name}: {error_count} errors. Triggering CUDA reset and disabling CUDA for this processor.")
             reset_cuda_device()
+            disable_cuda_for_processor(processor_name)
             # Reset counter after reset
             _cuda_error_count[processor_name]['count'] = 0
             return True  # Indicates reset was triggered
+        
+        # If more than 5 errors total, disable CUDA permanently for this processor
+        if error_count >= 5:
+            logging.error(f"Too many CUDA errors ({error_count}) for {processor_name}. Permanently disabling CUDA for this processor.")
+            disable_cuda_for_processor(processor_name)
+            _cuda_error_count[processor_name]['count'] = 0
         
         # Reset counter if no errors for 60 seconds
         if error_count > 0 and (time.time() - last_error) > 60:
@@ -160,19 +167,29 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
         logging.warning(f"safe_track_persons: frame too small (h={h}, w={w}), returning empty result")
         return []
     
+    # Check if CUDA is disabled for this processor
+    proc_name = processor_name if processor_name else 'unknown'
+    cuda_disabled = is_cuda_disabled_for_processor(proc_name)
+    use_cuda = DEVICE == 'cuda' and not cuda_disabled
+    device_to_use = 'cuda' if use_cuda else 'cpu'
+    
     with torch.inference_mode():
         try:
-            return model.track(
+            result = model.track(
                 frame,
                 persist=True,
                 classes=[0],
                 conf=conf,
                 iou=iou,
                 verbose=False,
-                device=DEVICE,
-                half=(DEVICE == 'cuda'),
+                device=device_to_use,
+                half=use_cuda,
                 tracker='bytetrack.yaml'
             )
+            # Track successful CPU operation for recovery
+            if not use_cuda and cuda_disabled:
+                track_cuda_success(proc_name)
+            return result
         except RuntimeError as e:
             # Handle CUDA errors specifically
             error_msg = str(e)
@@ -183,8 +200,15 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
                 if processor_name:
                     track_cuda_error(processor_name)
                 
-                # Try aggressive CUDA recovery
-                if DEVICE == 'cuda':
+                # Check if CUDA is disabled now (may have been disabled by track_cuda_error)
+                cuda_now_disabled = is_cuda_disabled_for_processor(proc_name)
+                if cuda_now_disabled:
+                    device_to_use = 'cpu'
+                    use_cuda = False
+                    logging.info(f"Using CPU mode for {proc_name} due to CUDA errors")
+                
+                # If CUDA is still enabled, try recovery
+                if use_cuda:
                     try:
                         torch.cuda.empty_cache()
                         torch.cuda.synchronize()
@@ -194,17 +218,21 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
                     except Exception as recovery_error:
                         logging.error(f"CUDA recovery failed: {recovery_error}")
                 
-                logging.warning("Falling back to predict() after CUDA error")
+                logging.warning(f"Falling back to predict() after CUDA error (device: {device_to_use})")
                 try:
-                    return model.predict(
+                    result = model.predict(
                         frame,
                         classes=[0],
                         conf=conf,
                         iou=iou,
                         verbose=False,
-                        device=DEVICE,
-                        half=(DEVICE == 'cuda')
+                        device=device_to_use,
+                        half=use_cuda
                     )
+                    # Track successful CPU operation for recovery
+                    if not use_cuda:
+                        track_cuda_success(proc_name)
+                    return result
                 except Exception as predict_error:
                     logging.error(f"predict() also failed after CUDA error: {predict_error}")
                     # If predict also fails, skip this frame
@@ -212,30 +240,38 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
             else:
                 logging.warning(f"track() failed with non-CUDA error, fallback to predict(): {e}")
                 try:
-                    return model.predict(
+                    result = model.predict(
                         frame,
                         classes=[0],
                         conf=conf,
                         iou=iou,
                         verbose=False,
-                        device=DEVICE,
-                        half=(DEVICE == 'cuda')
+                        device=device_to_use,
+                        half=use_cuda
                     )
+                    # Track successful CPU operation for recovery
+                    if not use_cuda:
+                        track_cuda_success(proc_name)
+                    return result
                 except Exception as predict_error:
                     logging.error(f"predict() also failed: {predict_error}")
                     return []
         except Exception as e:
             logging.warning(f"track() failed, fallback to predict(): {e}")
             try:
-                return model.predict(
+                result = model.predict(
                     frame,
                     classes=[0],
                     conf=conf,
                     iou=iou,
                     verbose=False,
-                    device=DEVICE,
-                    half=(DEVICE == 'cuda')
+                    device=device_to_use,
+                    half=use_cuda
                 )
+                # Track successful CPU operation for recovery
+                if not use_cuda:
+                    track_cuda_success(proc_name)
+                return result
             except Exception as predict_error:
                 logging.error(f"Both track() and predict() failed: {predict_error}")
                 return []
@@ -538,6 +574,8 @@ class MultiModelProcessor(threading.Thread):
         self.cooldown, self.gif_duration_seconds, self.fps = 30, 3, 10
         self.expected_frame_shape = None  # Track expected frame dimensions
         self.consecutive_invalid_frames = 0  # Track consecutive invalid frames
+        self.consecutive_errors = 0  # Track consecutive CUDA errors
+        self.max_consecutive_errors = 10
 
     def stop(self): self.is_running = False
     def shutdown(self):
@@ -619,25 +657,59 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
+                        # Check if CUDA is disabled for this processor
+                        processor_name = f"{self.channel_name}-MultiModel-{app_name}"
+                        use_cuda = DEVICE == 'cuda' and not is_cuda_disabled_for_processor(processor_name)
+                        device_to_use = 'cuda' if use_cuda else 'cpu'
+                        
                         try:
                             with torch.inference_mode():
                                 results = task['model'](
                                     frame,
-                                    device=DEVICE,
-                                    half=(DEVICE == 'cuda'),
+                                    device=device_to_use,
+                                    half=use_cuda,
                                     **model_args
                                 )
+                            self.consecutive_errors = 0  # Reset on success
                         except RuntimeError as e:
                             error_msg = str(e)
                             if 'CUDA' in error_msg or 'cuda' in error_msg or 'index out of bounds' in error_msg.lower():
-                                logging.error(f"CUDA error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}")
+                                self.consecutive_errors += 1
+                                logging.error(f"CUDA error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}. Error count: {self.consecutive_errors}")
+                                
+                                # Track error globally
+                                track_cuda_error(processor_name)
+                                
+                                # If too many errors, disable CUDA for this processor
+                                if self.consecutive_errors >= self.max_consecutive_errors:
+                                    logging.error(f"Too many CUDA errors for {self.channel_name} MultiModel. Disabling CUDA.")
+                                    disable_cuda_for_processor(processor_name)
+                                    reset_cuda_device()
+                                    self.consecutive_errors = 0
+                                    # Try with CPU
+                                    device_to_use = 'cpu'
+                                    use_cuda = False
+                                    try:
+                                        with torch.inference_mode():
+                                            results = task['model'](
+                                                frame,
+                                                device='cpu',
+                                                half=False,
+                                                **model_args
+                                            )
+                                        continue
+                                    except Exception as cpu_error:
+                                        logging.error(f"CPU fallback also failed: {cpu_error}")
+                                        break
+                                
                                 # Try to reset CUDA state
-                                if DEVICE == 'cuda':
+                                if use_cuda:
                                     try:
                                         torch.cuda.empty_cache()
                                         torch.cuda.synchronize()
                                     except:
                                         pass
+                                
                                 # Reset expected frame shape to force revalidation
                                 self.expected_frame_shape = None
                                 self.consecutive_invalid_frames = 0
@@ -672,11 +744,16 @@ class MultiModelProcessor(threading.Thread):
                                     
                                     # Run detection on this frame to get annotated version
                                     try:
+                                        # Use same device as main detection
+                                        gif_processor_name = f"{self.channel_name}-MultiModel-{app_name}"
+                                        gif_use_cuda = DEVICE == 'cuda' and not is_cuda_disabled_for_processor(gif_processor_name)
+                                        gif_device_to_use = 'cuda' if gif_use_cuda else 'cpu'
+                                        
                                         with torch.inference_mode():
                                             gif_results = task['model'](
                                                 frame_gif,
-                                                device=DEVICE,
-                                                half=(DEVICE == 'cuda'),
+                                                device=gif_device_to_use,
+                                                half=gif_use_cuda,
                                                 **model_args
                                             )
                                         if gif_results and len(gif_results[0].boxes) > 0:
@@ -986,17 +1063,54 @@ class QueueMonitorProcessor(threading.Thread):
 
     def run(self):
         first_frame = True
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        last_error_time = 0
+        
         while self.is_running:
-            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            
-            if first_frame or not self.roi_poly.is_valid or self.roi_poly.is_empty:
-                self._update_roi_polygons(frame)
-                first_frame = False
+            try:
+                frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
+                
+                if first_frame or not self.roi_poly.is_valid or self.roi_poly.is_empty:
+                    self._update_roi_polygons(frame)
+                    first_frame = False
 
-            self.process_frame(frame.copy())
+                self.process_frame(frame.copy())
+                consecutive_errors = 0  # Reset on successful frame
+                
+            except RuntimeError as e:
+                error_msg = str(e)
+                if 'CUDA' in error_msg or 'cuda' in error_msg:
+                    consecutive_errors += 1
+                    last_error_time = time.time()
+                    logging.error(f"CUDA error in QueueMonitor {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
+                    
+                    # Track error globally
+                    track_cuda_error(f"{self.channel_name}-QueueMonitor")
+                    
+                    if consecutive_errors >= max_consecutive_errors:
+                        logging.error(f"Too many consecutive CUDA errors for {self.channel_name}. Disabling CUDA and pausing for recovery...")
+                        disable_cuda_for_processor(f"{self.channel_name}-QueueMonitor")
+                        reset_cuda_device()
+                        time.sleep(15)  # Longer pause for recovery
+                        consecutive_errors = 0
+                    else:
+                        time.sleep(3)  # Short pause before retry
+                else:
+                    logging.error(f"Runtime error in QueueMonitor {self.channel_name}: {e}")
+                    time.sleep(1)
+            except Exception as e:
+                logging.error(f"Unexpected error in QueueMonitor {self.channel_name}: {e}")
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing...")
+                    time.sleep(15)
+                    consecutive_errors = 0
+                else:
+                    time.sleep(1)
 
         # No cap to release when using FrameHub
 
@@ -2016,6 +2130,60 @@ def download_schedule_template():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/reset_cuda', methods=['POST'])
+@login_required
+def reset_cuda_errors():
+    """API endpoint to reset all CUDA errors and re-enable CUDA for all processors"""
+    try:
+        count = reset_all_cuda_errors()
+        return jsonify({
+            "success": True,
+            "message": f"CUDA errors reset. {count} processor(s) re-enabled for CUDA mode."
+        })
+    except Exception as e:
+        logging.error(f"Error resetting CUDA: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/reset_cuda/<processor_name>', methods=['POST'])
+@login_required
+def reset_cuda_for_processor(processor_name):
+    """API endpoint to reset CUDA errors for a specific processor"""
+    try:
+        if enable_cuda_for_processor(processor_name):
+            return jsonify({
+                "success": True,
+                "message": f"CUDA re-enabled for {processor_name}"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "message": f"Processor {processor_name} not found in disabled list"
+            }), 404
+    except Exception as e:
+        logging.error(f"Error resetting CUDA for {processor_name}: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/cuda_status', methods=['GET'])
+@login_required
+def get_cuda_status():
+    """API endpoint to get CUDA status for all processors"""
+    try:
+        with _cuda_disabled_lock:
+            disabled_list = list(_cuda_disabled_processors.keys())
+            error_counts = {
+                name: info.get('count', 0) 
+                for name, info in _cuda_error_count.items()
+            }
+        return jsonify({
+            "success": True,
+            "disabled_processors": disabled_list,
+            "error_counts": error_counts,
+            "cuda_available": DEVICE == 'cuda' and torch.cuda.is_available()
+        })
+    except Exception as e:
+        logging.error(f"Error getting CUDA status: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/api/occupancy/schedule/upload/<channel_id>', methods=['POST'])
 @login_required
 def upload_schedule_file(channel_id):
@@ -2213,8 +2381,168 @@ def start_streams():
                 logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
                 atexit.register(multi_processor.shutdown)
 
+# Global flag to temporarily disable CUDA for failed processors
+_cuda_disabled_processors = {}  # {processor_name: {'disabled_time': timestamp, 'success_count': count}}
+_cuda_disabled_lock = threading.Lock()
+CUDA_RECOVERY_COOLDOWN = 300  # 5 minutes before trying CUDA again
+CUDA_SUCCESS_THRESHOLD = 50  # Need 50 successful CPU frames before trying CUDA again
+
+def disable_cuda_for_processor(processor_name):
+    """Temporarily disable CUDA for a processor after repeated failures"""
+    global _cuda_disabled_processors
+    with _cuda_disabled_lock:
+        _cuda_disabled_processors[processor_name] = {
+            'disabled_time': time.time(),
+            'success_count': 0
+        }
+        logging.warning(f"CUDA disabled for {processor_name} due to repeated errors. Switching to CPU mode.")
+        return True
+
+def is_cuda_disabled_for_processor(processor_name):
+    """Check if CUDA is disabled for a processor"""
+    with _cuda_disabled_lock:
+        if processor_name not in _cuda_disabled_processors:
+            return False
+        
+        # Check if recovery period has passed and we've had enough successes
+        disabled_info = _cuda_disabled_processors[processor_name]
+        time_disabled = time.time() - disabled_info['disabled_time']
+        
+        # If enough time has passed AND enough successful frames, try CUDA again
+        if time_disabled >= CUDA_RECOVERY_COOLDOWN and disabled_info['success_count'] >= CUDA_SUCCESS_THRESHOLD:
+            # Auto-re-enable CUDA for recovery attempt
+            logging.info(f"Attempting to re-enable CUDA for {processor_name} after {time_disabled:.0f}s and {disabled_info['success_count']} successful CPU frames")
+            del _cuda_disabled_processors[processor_name]
+            # Reset error count when re-enabling
+            if processor_name in _cuda_error_count:
+                _cuda_error_count[processor_name]['count'] = 0
+            return False
+        
+        return True
+
+def enable_cuda_for_processor(processor_name):
+    """Manually re-enable CUDA for a processor after recovery"""
+    global _cuda_disabled_processors, _cuda_error_count
+    with _cuda_disabled_lock:
+        if processor_name in _cuda_disabled_processors:
+            del _cuda_disabled_processors[processor_name]
+            logging.info(f"CUDA manually re-enabled for {processor_name}")
+            # Reset error count
+            if processor_name in _cuda_error_count:
+                _cuda_error_count[processor_name]['count'] = 0
+            return True
+    return False
+
+def track_cuda_success(processor_name):
+    """Track successful CPU operations to enable gradual CUDA recovery"""
+    global _cuda_disabled_processors
+    with _cuda_disabled_lock:
+        if processor_name in _cuda_disabled_processors:
+            _cuda_disabled_processors[processor_name]['success_count'] += 1
+
+def reset_all_cuda_errors():
+    """Reset all CUDA error states - allows all processors to use CUDA again"""
+    global _cuda_disabled_processors, _cuda_error_count
+    with _cuda_disabled_lock:
+        count = len(_cuda_disabled_processors)
+        _cuda_disabled_processors.clear()
+        _cuda_error_count.clear()
+        reset_cuda_device()
+        logging.warning(f"All CUDA errors reset. {count} processors re-enabled for CUDA mode.")
+        return count
+
+def restart_processor(processor_info):
+    """Restart a failed processor"""
+    channel_id, processor_type, channel_name = processor_info['channel_id'], processor_info['type'], processor_info['name']
+    rtsp_url = processor_info.get('rtsp_url')
+    frame_hub = processor_info.get('frame_hub')
+    
+    logging.warning(f"Attempting to restart {processor_type} for {channel_name} ({channel_id})")
+    
+    try:
+        # Find and stop the old processor
+        processors = stream_processors.get(channel_id, [])
+        old_processor = None
+        for p in processors:
+            if isinstance(p, processor_type):
+                old_processor = p
+                break
+        
+        if old_processor:
+            old_processor.is_running = False
+            old_processor.shutdown()
+            # Wait a bit for it to stop
+            time.sleep(2)
+            processors.remove(old_processor)
+        
+        # Create new processor instance
+        if processor_type == PeopleCounterProcessor:
+            model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
+            if model_obj:
+                new_processor = PeopleCounterProcessor(rtsp_url, channel_id, channel_name, model_obj, handle_detection, socketio)
+                new_processor.frame_hub = frame_hub
+                new_processor.start()
+                processors.append(new_processor)
+                logging.info(f"Successfully restarted PeopleCounter for {channel_name}")
+                return True
+        elif processor_type == QueueMonitorProcessor:
+            model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
+            if model_obj:
+                new_processor = QueueMonitorProcessor(rtsp_url, channel_id, channel_name, model_obj)
+                new_processor.frame_hub = frame_hub
+                new_processor.start()
+                processors.append(new_processor)
+                logging.info(f"Successfully restarted QueueMonitor for {channel_name}")
+                return True
+        elif processor_type == MultiModelProcessor:
+            # MultiModelProcessor restart would need tasks info
+            logging.warning(f"Cannot auto-restart MultiModelProcessor - requires task configuration")
+            return False
+            
+    except Exception as e:
+        logging.error(f"Failed to restart {processor_type} for {channel_name}: {e}")
+        return False
+    
+    return False
+
+def periodic_cuda_recovery():
+    """Periodically attempt to re-enable CUDA for processors that have been running successfully in CPU mode"""
+    global _cuda_disabled_processors
+    current_time = time.time()
+    processors_to_enable = []
+    
+    with _cuda_disabled_lock:
+        for processor_name, info in list(_cuda_disabled_processors.items()):
+            time_disabled = current_time - info['disabled_time']
+            success_count = info['success_count']
+            
+            # If enough time passed and enough successful frames, try re-enabling
+            if time_disabled >= CUDA_RECOVERY_COOLDOWN and success_count >= CUDA_SUCCESS_THRESHOLD:
+                processors_to_enable.append(processor_name)
+    
+    # Re-enable outside lock to avoid deadlock
+    for processor_name in processors_to_enable:
+        if enable_cuda_for_processor(processor_name):
+            logging.info(f"Periodic recovery: Re-enabled CUDA for {processor_name} after successful CPU operation")
+
 initialize_database()
 
 if __name__ == "__main__":
+    # Start the scheduler if database is connected
+    if db_connected:
+        scheduler = BackgroundScheduler(timezone=str(IST))
+        # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
+        # Add periodic CUDA recovery check every 5 minutes
+        scheduler.add_job(periodic_cuda_recovery, 'interval', minutes=5, id='cuda_recovery')
+        scheduler.start()
+        atexit.register(lambda: scheduler.shutdown())
+        logging.info("CUDA recovery scheduler started - will attempt to re-enable CUDA every 5 minutes")
+    
+    # Start all stream processors
+    start_streams()
+    
     logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
+    logging.info("CUDA Reset API: POST /api/reset_cuda to reset all CUDA errors")
+    logging.info("CUDA Status API: GET /api/cuda_status to check CUDA status")
+    logging.info("CUDA Reset per processor: POST /api/reset_cuda/<processor_name> to reset specific processor")
     socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)
