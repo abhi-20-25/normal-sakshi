@@ -34,10 +34,19 @@ from queue import Queue, Empty
 import gc  # Garbage collection for memory management
 
 # --- CUDA/Backend Tuning ---
+# Set CUDA_LAUNCH_BLOCKING for better error reporting (can be disabled for performance)
+if 'CUDA_LAUNCH_BLOCKING' not in os.environ:
+    os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
+# Enable device-side assertions for detailed debugging (slower but more informative)
+if 'TORCH_USE_CUDA_DSA' not in os.environ:
+    os.environ['TORCH_USE_CUDA_DSA'] = '1'
+
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 _cuda_error_count = 0
-_cuda_error_threshold = 5  # Fallback to CPU after 5 CUDA errors
+_cuda_error_threshold = 3  # Lower threshold - fallback to CPU after 3 CUDA errors
 _force_cpu = False
+_cuda_error_details = []  # Track error details for debugging
 
 if DEVICE == 'cuda' and not _force_cpu:
     try:
@@ -75,12 +84,49 @@ def get_gpu_memory_usage():
             return None, None
     return None, None
 
-def handle_cuda_error():
+def validate_frame_for_inference(frame, model_name="unknown"):
+    """Validate frame before inference to prevent CUDA errors"""
+    if frame is None:
+        return False, "Frame is None"
+    if not isinstance(frame, np.ndarray):
+        return False, f"Frame is not a numpy array: {type(frame)}"
+    if len(frame.shape) != 3:
+        return False, f"Invalid frame shape: {frame.shape} (expected 3D array)"
+    h, w, c = frame.shape
+    if h <= 0 or w <= 0:
+        return False, f"Invalid frame dimensions: {h}x{w}"
+    if c not in [1, 3, 4]:
+        return False, f"Invalid number of channels: {c} (expected 1, 3, or 4)"
+    if frame.dtype != np.uint8:
+        return False, f"Invalid frame dtype: {frame.dtype} (expected uint8)"
+    if np.any(np.isnan(frame)) or np.any(np.isinf(frame)):
+        return False, "Frame contains NaN or Inf values"
+    if h > 10000 or w > 10000:
+        return False, f"Frame too large: {h}x{w} (may cause OOM)"
+    return True, None
+
+def handle_cuda_error(error_msg=None, context=None):
     """Handle CUDA errors and potentially fallback to CPU"""
-    global DEVICE, _cuda_error_count, _force_cpu
+    global DEVICE, _cuda_error_count, _force_cpu, _cuda_error_details
     if DEVICE == 'cuda':
         _cuda_error_count += 1
+        error_detail = {
+            'count': _cuda_error_count,
+            'timestamp': time.time(),
+            'error': str(error_msg) if error_msg else "Unknown CUDA error",
+            'context': context,
+            'gpu_memory': get_gpu_memory_usage()
+        }
+        _cuda_error_details.append(error_detail)
         logging.error(f"CUDA error detected (count: {_cuda_error_count}/{_cuda_error_threshold})")
+        if error_msg:
+            logging.error(f"Error details: {error_msg}")
+        if context:
+            logging.error(f"Error context: {context}")
+        if len(_cuda_error_details) > 0:
+            mem_info = _cuda_error_details[-1].get('gpu_memory', {})
+            if mem_info:
+                logging.error(f"GPU Memory at error: {mem_info.get('allocated', 'N/A')}MB / {mem_info.get('reserved', 'N/A')}MB")
         cleanup_cuda_memory()  # Aggressive cleanup on error
         
         if _cuda_error_count >= _cuda_error_threshold:
@@ -104,14 +150,70 @@ def handle_cuda_error():
                 except Exception as e:
                     logging.warning(f"Error moving model {model_path} to CPU: {e}")
             
-            # Final CUDA cleanup
+            # Final CUDA cleanup - more aggressive
             try:
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-            except Exception:
-                pass
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    torch.cuda.reset_peak_memory_stats()
+                gc.collect()  # Force garbage collection
+            except Exception as e:
+                logging.warning(f"Error during final CUDA cleanup: {e}")
             
             logging.info("All models moved to CPU. Inference will now use CPU.")
+            
+            # Print error summary for debugging
+            print_cuda_error_summary()
+
+def print_cuda_error_summary():
+    """Print a summary of CUDA errors for debugging"""
+    global _cuda_error_details
+    if not _cuda_error_details:
+        return
+    
+    logging.error("=" * 80)
+    logging.error("CUDA ERROR SUMMARY - DEBUGGING INFORMATION")
+    logging.error("=" * 80)
+    logging.error(f"Total CUDA errors: {len(_cuda_error_details)}")
+    
+    for i, error in enumerate(_cuda_error_details[-5:], 1):  # Show last 5 errors
+        logging.error(f"\nError #{i} (Count: {error['count']}):")
+        logging.error(f"  Timestamp: {error.get('timestamp', 'N/A')}")
+        logging.error(f"  Error: {error.get('error', 'N/A')}")
+        if error.get('context'):
+            ctx = error['context']
+            logging.error(f"  Context:")
+            logging.error(f"    - Frame shape: {ctx.get('frame_shape', 'N/A')}")
+            logging.error(f"    - Frame dtype: {ctx.get('frame_dtype', 'N/A')}")
+            logging.error(f"    - Device: {ctx.get('device', 'N/A')}")
+            logging.error(f"    - Model device: {ctx.get('model_device', 'N/A')}")
+            logging.error(f"    - Confidence: {ctx.get('conf', 'N/A')}")
+            logging.error(f"    - IOU: {ctx.get('iou', 'N/A')}")
+        if error.get('gpu_memory'):
+            mem = error['gpu_memory']
+            logging.error(f"  GPU Memory: {mem.get('allocated', 'N/A')}MB allocated / {mem.get('reserved', 'N/A')}MB reserved")
+    
+    logging.error("\n" + "=" * 80)
+    logging.error("COMMON CUDA ERROR CAUSES:")
+    logging.error("=" * 80)
+    logging.error("1. Out-of-bounds array access in model/tracker")
+    logging.error("   -> Check if frame dimensions are valid and within expected range")
+    logging.error("   -> Verify model is compatible with input size")
+    logging.error("2. Invalid memory access / memory corruption")
+    logging.error("   -> Check GPU memory usage (may be too high)")
+    logging.error("   -> Ensure models are properly initialized")
+    logging.error("3. Tracker state corruption (ByteTrack)")
+    logging.error("   -> Track IDs or detections may be invalid")
+    logging.error("   -> Try reducing conf/iou thresholds or disable tracking")
+    logging.error("4. Model corruption or incompatible weights")
+    logging.error("   -> Verify model files are not corrupted")
+    logging.error("   -> Ensure model version matches Ultralytics version")
+    logging.error("5. Mixed precision issues")
+    logging.error("   -> Half precision (FP16) is disabled but may still occur")
+    logging.error("6. Frame format issues")
+    logging.error("   -> Frame validation should catch most issues")
+    logging.error("   -> Check if frame is proper numpy array with uint8 dtype")
+    logging.error("=" * 80)
 
 # --- Frame Downscale Settings ---
 # Reduce resolution early in the pipeline to speed up processing/streaming
@@ -159,6 +261,12 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
     """Track persons with automatic CUDA fallback to CPU"""
     global DEVICE, _force_cpu
     
+    # Validate frame before inference
+    is_valid, validation_error = validate_frame_for_inference(frame, "safe_track_persons")
+    if not is_valid:
+        logging.error(f"Frame validation failed: {validation_error}")
+        return None
+    
     # Determine inference device
     if device is None:
         # If device not specified, use model's device if available, else use global DEVICE
@@ -174,6 +282,16 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
         inference_device = 'cpu'
     
     inference_half = False  # Never use half precision to avoid issues
+    
+    # Log inference details for debugging
+    context_info = {
+        'frame_shape': frame.shape,
+        'frame_dtype': frame.dtype,
+        'device': inference_device,
+        'conf': conf,
+        'iou': iou,
+        'model_device': getattr(model, 'device', 'unknown')
+    }
     
     with torch.inference_mode():
         try:
@@ -192,23 +310,39 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, device=None):
             cleanup_cuda_memory()
             return result
         except RuntimeError as e:
-            if 'CUDA' in str(e) or 'device-side assert' in str(e):
-                handle_cuda_error()
-                # Force CPU after CUDA error
+            error_str = str(e)
+            if 'CUDA' in error_str or 'device-side assert' in error_str:
+                handle_cuda_error(error_msg=error_str, context=context_info)
+                # Force CPU after CUDA error - move model to CPU first
                 inference_device = 'cpu'
                 inference_half = False
+                try:
+                    # Move model to CPU to avoid any CUDA operations
+                    model.to('cpu')
+                    if hasattr(model, 'model'):
+                        model.model.to('cpu')
+                    # Clear all CUDA caches
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                    gc.collect()
+                    logging.info("Model moved to CPU after CUDA error")
+                except Exception as move_e:
+                    logging.warning(f"Error moving model to CPU: {move_e}")
+                
                 # Fallback to predict without tracking on CPU
                 try:
                     logging.info("Retrying inference on CPU after CUDA error")
-                    result = model.predict(
-                        frame,
-                        classes=[0],
-                        conf=conf,
-                        iou=iou,
-                        verbose=False,
-                        device='cpu',
-                        half=False
-                    )
+                    with torch.no_grad():
+                        result = model.predict(
+                            frame,
+                            classes=[0],
+                            conf=conf,
+                            iou=iou,
+                            verbose=False,
+                            device='cpu',
+                            half=False
+                        )
                     cleanup_cuda_memory()  # Clean up even after CPU fallback
                     return result
                 except Exception as e2:
@@ -578,6 +712,13 @@ class MultiModelProcessor(threading.Thread):
             if frame is None:
                 time.sleep(0.01)
                 continue
+            
+            # Validate frame before processing
+            is_valid, validation_error = validate_frame_for_inference(frame, f"MultiModelProcessor-{self.channel_name}")
+            if not is_valid:
+                logging.warning(f"Frame validation failed for MultiModelProcessor: {validation_error}")
+                time.sleep(0.01)
+                continue
 
             current_time = time.time()
 
@@ -606,9 +747,19 @@ class MultiModelProcessor(threading.Thread):
                             # Aggressive memory cleanup after inference
                             cleanup_cuda_memory()
                         except RuntimeError as e:
-                            if 'CUDA' in str(e) or 'device-side assert' in str(e):
-                                handle_cuda_error()
-                                logging.error(f"CUDA error in MultiModelProcessor for {app_name}: {e}")
+                            error_str = str(e)
+                            if 'CUDA' in error_str or 'device-side assert' in error_str:
+                                context_info = {
+                                    'processor': 'MultiModelProcessor',
+                                    'app_name': app_name,
+                                    'channel_name': self.channel_name,
+                                    'frame_shape': frame.shape,
+                                    'frame_dtype': frame.dtype,
+                                    'device': inference_device,
+                                    'model_args': model_args
+                                }
+                                handle_cuda_error(error_msg=error_str, context=context_info)
+                                logging.error(f"CUDA error in MultiModelProcessor for {app_name}: {error_str}")
                                 # Try one more time on CPU if CUDA failed and device switched
                                 if DEVICE == 'cpu' or _force_cpu:
                                     try:
@@ -738,11 +889,23 @@ class PeopleCounterProcessor(threading.Thread):
     def run(self):
         while self.is_running:
             self._check_for_new_day()
+            # Check if CUDA was disabled due to errors
+            global _force_cpu
+            if _force_cpu and self.device == 'cuda':
+                logging.warning(f"PeopleCounter: CUDA disabled, moving model to CPU")
+                self.device = 'cpu'
+                try:
+                    self.model.to('cpu')
+                    if hasattr(self.model, 'model'):
+                        self.model.model.to('cpu')
+                except Exception as e:
+                    logging.error(f"Error moving PeopleCounter model to CPU: {e}")
+            
             frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
             if frame is None:
                 time.sleep(0.01)
                 continue
-            # Robust tracker call; falls back to predict on errors (use GPU for PeopleCounter)
+            # Robust tracker call; falls back to predict on errors
             results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, device=self.device)
             r0 = results[0] if (results and len(results) > 0) else None
             if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
@@ -898,6 +1061,18 @@ class QueueMonitorProcessor(threading.Thread):
                     logging.warning(f"QueueMonitor {self.channel_name}: No normalized_secondary_roi found")
                     
                 first_frame = False
+            
+            # Check if CUDA was disabled due to errors
+            global _force_cpu
+            if _force_cpu and self.device == 'cuda':
+                logging.warning(f"QueueMonitor: CUDA disabled, moving model to CPU")
+                self.device = 'cpu'
+                try:
+                    self.model.to('cpu')
+                    if hasattr(self.model, 'model'):
+                        self.model.model.to('cpu')
+                except Exception as e:
+                    logging.error(f"Error moving QueueMonitor model to CPU: {e}")
 
             self.process_frame(frame.copy())
 
