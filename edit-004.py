@@ -507,6 +507,7 @@ class MultiModelProcessor(threading.Thread):
         self.is_running = False
 
     def run(self):
+        global _force_cpu
         while self.is_running:
             frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
             if frame is None:
@@ -527,7 +528,6 @@ class MultiModelProcessor(threading.Thread):
 
                         try:
                             # Use CPU if forced after CUDA errors
-                            global _force_cpu
                             inference_device = 'cpu' if _force_cpu else DEVICE
                             inference_half = False if _force_cpu else USE_HALF_PRECISION
                             
@@ -545,7 +545,6 @@ class MultiModelProcessor(threading.Thread):
                                 handle_cuda_error()
                                 logging.error(f"CUDA error in MultiModelProcessor for {app_name}: {e}")
                                 # Try one more time on CPU if CUDA failed and device switched
-                                global _force_cpu
                                 if DEVICE == 'cpu' or _force_cpu:
                                     try:
                                         logging.info(f"Retrying {app_name} on CPU after CUDA error")
