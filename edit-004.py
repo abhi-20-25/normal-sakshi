@@ -1870,8 +1870,13 @@ def gen_video_feed(processor):
 @login_required
 def video_feed(app_name, channel_id):
     """Video feed endpoint - works with both direct run and gunicorn"""
-    # Ensure initialization
-    _ensure_initialized()
+    # Ensure initialization (non-blocking check)
+    if not _initialized:
+        # Try to ensure initialization, but don't block
+        _ensure_initialized(background=True)
+        # Wait a bit for initialization if still in progress
+        if _initialization_thread and _initialization_thread.is_alive():
+            _initialization_thread.join(timeout=2.0)  # Wait max 2 seconds
     
     processors = stream_processors.get(channel_id)
     if not processors:
@@ -2655,17 +2660,50 @@ def initialize_app():
 # Initialize when module is imported (for gunicorn)
 # Use threading lock to prevent multiple initializations in multi-worker setup
 _init_lock = threading.Lock()
+_initialization_thread = None
 
-def _ensure_initialized():
-    """Ensure initialization happens, with locking for multi-worker safety"""
-    global _initialized
+def _ensure_initialized(background=True):
+    """Ensure initialization happens, with locking for multi-worker safety
+    
+    Args:
+        background: If True, run initialization in background thread (non-blocking)
+                   If False, run synchronously (blocking)
+    """
+    global _initialized, _initialization_thread
+    
     with _init_lock:
-        if not _initialized:
-            initialize_app()
+        if _initialized:
+            return True  # Already initialized
+        
+        if _initialization_thread is not None and _initialization_thread.is_alive():
+            return False  # Initialization in progress
+        
+        def _init_wrapper():
+            """Wrapper to run initialization in background"""
+            try:
+                initialize_app()
+            except Exception as e:
+                logging.error(f"Background initialization error: {e}", exc_info=True)
+        
+        if background:
+            # Run initialization in background thread so server can start responding
+            _initialization_thread = threading.Thread(target=_init_wrapper, daemon=True, name="AppInitializer")
+            _initialization_thread.start()
+            logging.info("Initialization started in background thread - server will respond immediately")
+            return False  # Still initializing
+        else:
+            # Run synchronously (for direct run mode)
+            _init_wrapper()
+            return _initialized
 
-# Call on import
-_ensure_initialized()
+# For gunicorn: initialize in background (non-blocking)
+# For direct run: initialize synchronously in __main__
+_ensure_initialized(background=True)
 
 if __name__ == "__main__":
+    # For direct run, initialize synchronously (blocking until ready)
+    logging.info("Direct run mode - initializing synchronously...")
+    _ensure_initialized(background=False)
+    
     logging.info("Starting Flask-SocketIO server on http://0.0.0.0:5001")
     socketio.run(app, host='0.0.0.0', port=5001, debug=False, allow_unsafe_werkzeug=True)

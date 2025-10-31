@@ -31,13 +31,18 @@ logger.info("Module loaded successfully")
 app = edit_004.app
 socketio = edit_004.socketio
 
-# Ensure initialization happens (it should have happened on import, but double-check)
-if hasattr(edit_004, 'initialize_app'):
-    try:
-        edit_004.initialize_app()
-        logger.info("Application initialization completed in WSGI")
-    except Exception as e:
-        logger.error(f"Error during WSGI initialization: {e}", exc_info=True)
+# Ensure initialization happens (it should have started on import in background)
+# Don't call initialize_app() directly here - it's already running in background thread
+# Just verify it's initialized or starting
+if hasattr(edit_004, '_initialized'):
+    if edit_004._initialized:
+        logger.info("Application already initialized")
+    elif hasattr(edit_004, '_initialization_thread') and edit_004._initialization_thread and edit_004._initialization_thread.is_alive():
+        logger.info("Application initialization in progress (background thread)")
+    else:
+        logger.warning("Application initialization not started - triggering now")
+        if hasattr(edit_004, '_ensure_initialized'):
+            edit_004._ensure_initialized(background=True)
 
 # Gunicorn expects 'application' variable
 # For Flask-SocketIO, we need to use socketio as WSGI app
