@@ -1465,12 +1465,12 @@ class QueueMonitorProcessor(threading.Thread):
         cv2.rectangle(annotated_frame, (45, 25), (280, 95), (255, 255, 255), 2)  # White border
         
         # Queue count with larger, more visible font - use valid_queue_count for real-time display
-        queue_display_count = valid_queue_count  # Show actual current count
-        counter_display_count = valid_secondary_count  # Show actual current count
+        queue_display_count = valid_queue_count  # Show actual current count (main ROI = queue area)
+        counter_display_count = valid_secondary_count  # Show actual current count (secondary ROI = counter area)
         
-        cv2.putText(annotated_frame, f"Counter: {queue_display_count}", (50, 55), 
+        cv2.putText(annotated_frame, f"Queue: {queue_display_count}", (50, 55), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Yellow, thicker
-        cv2.putText(annotated_frame, f"Queue: {counter_display_count}", (50, 90), 
+        cv2.putText(annotated_frame, f"Counter: {counter_display_count}", (50, 90), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Cyan, thicker
         
         # Log count changes for debugging
