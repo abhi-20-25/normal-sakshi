@@ -1402,7 +1402,52 @@ class QueueMonitorProcessor(threading.Thread):
             (current_time - self.last_overqueue_time) > QUEUE_ALERT_COOLDOWN_SEC
         )
 
-        annotated_frame = r0.plot() if r0 is not None else frame
+        # Create annotated frame - draw bounding boxes with colors based on ROI
+        annotated_frame = frame.copy()
+        
+        # Draw bounding boxes with color based on which ROI the person is in
+        if r0 is not None and getattr(r0, 'boxes', None) is not None:
+            boxes = r0.boxes.xyxy.cpu()
+            track_ids = r0.boxes.id.int().cpu().tolist() if getattr(r0.boxes, 'id', None) is not None else []
+            confidences = r0.boxes.conf.cpu() if hasattr(r0.boxes, 'conf') else None
+            
+            for idx, box in enumerate(boxes):
+                x1, y1, x2, y2 = map(int, box)
+                track_id = track_ids[idx] if idx < len(track_ids) else None
+                
+                # Determine box color based on ROI membership
+                box_color = (255, 255, 255)  # Default white if not in any ROI
+                label_color = (255, 255, 255)
+                
+                if track_id is not None:
+                    if track_id in current_tracks_in_main_roi:
+                        box_color = (0, 255, 255)  # Yellow (BGR format) for queue area
+                        label_color = (0, 255, 255)
+                    elif track_id in current_tracks_in_secondary_roi:
+                        box_color = (255, 255, 0)  # Cyan (BGR format) for counter area
+                        label_color = (255, 255, 0)
+                    else:
+                        box_color = (128, 128, 128)  # Gray for persons not in any ROI
+                        label_color = (128, 128, 128)
+                
+                # Draw bounding box
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, 2)
+                
+                # Draw label with track ID and confidence
+                if confidences is not None and idx < len(confidences):
+                    conf = float(confidences[idx])
+                    label = f"ID:{track_id}" if track_id is not None else f"Conf:{conf:.2f}"
+                    if track_id is not None:
+                        label = f"ID:{track_id} ({conf:.2f})"
+                else:
+                    label = f"ID:{track_id}" if track_id is not None else "Person"
+                
+                # Draw label background
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 5), 
+                            (x1 + label_size[0] + 5, y1), box_color, -1)
+                cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
         
         # Draw main ROI (queue area) - Yellow
         if self.roi_poly.is_valid and not self.roi_poly.is_empty:
