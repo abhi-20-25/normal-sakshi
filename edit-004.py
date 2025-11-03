@@ -1350,10 +1350,7 @@ class QueueMonitorProcessor(threading.Thread):
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
             updated = True
-            # Optional: capture a screenshot when secondary area becomes occupied
-            if self.current_secondary_count > 0:
-                annotated_for_save = r0.plot() if r0 is not None else frame
-                handle_detection('QueueMonitor', self.channel_id, [annotated_for_save], f"Counter area presence: {self.current_secondary_count}", is_gif=False)
+            # No screenshot when counter area becomes occupied - only when queue present and counter empty
 
         # Emit live counts (no DB persistence) if either changed
         if updated:
@@ -1372,18 +1369,19 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
                     persons_in_queue_5sec.append(track_id)
         
-        # Screenshot trigger: person in queue > 5 seconds AND no one in counter area AND queue count > 3
+        # Screenshot trigger 1: person in queue > 5 seconds AND no one in counter area AND queue count > 0
         should_screenshot_5sec = (
             len(persons_in_queue_5sec) > 0 and
-            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3
-            valid_secondary_count == 0 and  # No person in counter
+            valid_queue_count > 0 and  # At least 1 person in queue (requirement 1)
+            valid_secondary_count == 0 and  # No person in counter (requirement 1 & 2)
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
         
-        # Screenshot trigger: queue count > 3 AND no person in counter area
+        # Screenshot trigger 2: queue count > 3 AND no person in counter area (requirement 2)
         should_screenshot_high_count = (
-            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and
-            valid_secondary_count == 0 and  # No person in counter
+            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3 (requirement 2)
+            valid_queue_count > 0 and  # Ensure queue is not empty
+            valid_secondary_count == 0 and  # No person in counter (requirement 2)
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
 
