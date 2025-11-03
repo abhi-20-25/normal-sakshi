@@ -972,8 +972,8 @@ class PeopleCounterProcessor(threading.Thread):
                 cv2.putText(annotated_frame, f"TOTAL - OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
                 
                 # Display current hour counts (matching what's stored in DB for current hour)
-                cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - IN: {hourly_in_current}", (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - OUT: {hourly_out_current}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                #cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - IN: {hourly_in_current}", (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                #cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - OUT: {hourly_out_current}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                 
                 with self.lock: self.latest_frame = annotated_frame.copy()
                 socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
