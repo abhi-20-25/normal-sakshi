@@ -104,7 +104,7 @@ class KitchenComplianceProcessor(threading.Thread):
         with self.lock:
             if self.error_message:
                 placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, f'Error: {self.error_message}', (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(placeholder, f'Error: {self.error_message}', (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                 _, jpeg = cv2.imencode('.jpg', placeholder)
                 return jpeg.tobytes()
             
@@ -113,7 +113,7 @@ class KitchenComplianceProcessor(threading.Thread):
                 return jpeg.tobytes() if success else b''
             else:
                 placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
+                cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (201, 209, 217), 2)
                 _, jpeg = cv2.imencode('.jpg', placeholder)
                 return jpeg.tobytes()
 
@@ -167,9 +167,9 @@ class KitchenComplianceProcessor(threading.Thread):
             frame_counter = 0
             while self.is_running:
                 frame = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(frame, f'{self.channel_name}', (180, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (201, 209, 217), 2)
-                cv2.putText(frame, f'Camera Offline - Test Mode', (120, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 150, 255), 2)
-                cv2.putText(frame, f'Frame: {frame_counter}', (230, 290), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+                cv2.putText(frame, f'{self.channel_name}', (180, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (201, 209, 217), 2)
+                cv2.putText(frame, f'Camera Offline - Test Mode', (120, 250), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 150, 255), 2)
+                cv2.putText(frame, f'Frame: {frame_counter}', (230, 290), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
                 
                 with self.lock:
                     self.latest_frame = frame
@@ -219,11 +219,11 @@ class KitchenComplianceProcessor(threading.Thread):
             cv2.rectangle(overlay, (10, 10), (400, 110), (0, 0, 0), -1)
             cv2.addWeighted(overlay, 0.7, annotated_frame, 0.3, 0, annotated_frame)
             cv2.putText(annotated_frame, "Kitchen Compliance Monitor", (15, 35), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             cv2.putText(annotated_frame, "Checking: Gloves, Apron, Cap, Uniform, Phone", (15, 65), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
             cv2.putText(annotated_frame, f"Device: {self.device.upper()} | Conf: {CONFIDENCE_THRESHOLD}", (15, 90), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
             # --- Process Each Person ---
             if person_results and person_results[0].boxes.id is not None:
@@ -244,7 +244,7 @@ class KitchenComplianceProcessor(threading.Thread):
             else:
                 # No people detected - show status
                 cv2.putText(annotated_frame, "No people detected", (50, h-50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (100, 100, 100), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
 
             if person_results and person_results[0].boxes.id is not None:
                 for person_box, track_id, conf in zip(person_boxes, track_ids, confidences):
@@ -279,7 +279,7 @@ class KitchenComplianceProcessor(threading.Thread):
                             # Draw glove indicator
                             cv2.rectangle(annotated_frame, (gx1, gy1), (gx2, gy2), (0, 255, 0), 2)
                             cv2.putText(annotated_frame, "GLOVES", (gx1, gy1-5), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 1)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
                             break
                     
                     if not has_gloves:
@@ -330,21 +330,21 @@ class KitchenComplianceProcessor(threading.Thread):
                         label_color = (0, 255, 0)
                     
                     # Draw label background
-                    label_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                    label_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 2)[0]
                     cv2.rectangle(annotated_frame, (px1, py1-label_size[1]-10), 
                                  (px1+label_size[0]+5, py1), box_color, -1)
                     cv2.putText(annotated_frame, status_text, (px1, py1-5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2)
                     
                     # Show violations below box
                     if violations:
                         for idx, violation in enumerate(violations[:3]):  # Show max 3
                             cv2.putText(annotated_frame, f"- {violation}", (px1, py2+20+idx*20),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
                     
                     # Show confidence
                     cv2.putText(annotated_frame, f"{conf:.2f}", (px2-50, py1+20),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
 
             # --- 4. Detect and Track Mobile Phones ---
             if phone_results and phone_results[0].boxes is not None:
@@ -373,7 +373,7 @@ class KitchenComplianceProcessor(threading.Thread):
                     # Draw phone detection
                     cv2.rectangle(annotated_frame, (p_x1, p_y1), (p_x2, p_y2), (0, 0, 255), 2)
                     cv2.putText(annotated_frame, f"PHONE {data['frames']}f", (p_x1, p_y1-5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
                     
                     if data['frames'] > phone_persistence_frames and not data['alerted']:
                         data['alerted'] = True # Mark as alerted to prevent spamming
@@ -382,7 +382,7 @@ class KitchenComplianceProcessor(threading.Thread):
             
             # Add footer indicator
             cv2.putText(annotated_frame, "YOLO Kitchen Compliance Active", (w-350, h-15), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
             
             # Update latest frame AFTER all annotations
             with self.lock:
