@@ -1400,64 +1400,17 @@ class QueueMonitorProcessor(threading.Thread):
         )
 
         annotated_frame = r0.plot() if r0 is not None else frame
-        h, w = annotated_frame.shape[:2]
         
-        # Draw main ROI (queue area) - Yellow with point labels
+        # Draw main ROI (queue area) - Yellow
         if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-            pixel_coords = np.array(self.roi_poly.exterior.coords, dtype=np.int32)
-            cv2.polylines(annotated_frame, [pixel_coords], True, (255, 255, 0), 2)
-            
-            # Draw and label each point of main ROI
-            if hasattr(self, 'normalized_main_roi') and self.normalized_main_roi:
-                for idx, (norm_x, norm_y) in enumerate(self.normalized_main_roi):
-                    px, py = int(norm_x * w), int(norm_y * h)
-                    # Draw point circle
-                    cv2.circle(annotated_frame, (px, py), 5, (255, 255, 0), -1)  # Filled yellow circle
-                    cv2.circle(annotated_frame, (px, py), 7, (0, 0, 0), 2)  # Black border
-                    # Label with point number and coordinates
-                    label = f"P{idx+1}({px},{py})"
-                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
-                    cv2.rectangle(annotated_frame, (px - 2, py - label_size[1] - 4), 
-                                (px + label_size[0] + 2, py + 2), (255, 255, 0), -1)
-                    cv2.putText(annotated_frame, label, (px, py), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-            
-            # Add label for main ROI
-            if len(pixel_coords) > 0:
-                center_x, center_y = int(pixel_coords[:, 0].mean()), int(pixel_coords[:, 1].mean())
-                cv2.putText(annotated_frame, "QUEUE AREA (Main ROI)", (center_x - 80, center_y), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-            
+            cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
             logging.debug(f"Drawing main ROI with {len(self.roi_poly.exterior.coords)} points")
         else:
             logging.warning(f"Main ROI is invalid or empty. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
         
-        # Draw secondary ROI (counter area) - Cyan with point labels
+        # Draw secondary ROI (cashier area) - Cyan
         if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-            pixel_coords = np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)
-            cv2.polylines(annotated_frame, [pixel_coords], True, (0, 255, 255), 2)
-            
-            # Draw and label each point of secondary ROI
-            if hasattr(self, 'normalized_secondary_roi') and self.normalized_secondary_roi:
-                for idx, (norm_x, norm_y) in enumerate(self.normalized_secondary_roi):
-                    px, py = int(norm_x * w), int(norm_y * h)
-                    # Draw point circle
-                    cv2.circle(annotated_frame, (px, py), 5, (0, 255, 255), -1)  # Filled cyan circle
-                    cv2.circle(annotated_frame, (px, py), 7, (0, 0, 0), 2)  # Black border
-                    # Label with point number and coordinates
-                    label = f"S{idx+1}({px},{py})"
-                    label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
-                    cv2.rectangle(annotated_frame, (px - 2, py - label_size[1] - 4), 
-                                (px + label_size[0] + 2, py + 2), (0, 255, 255), -1)
-                    cv2.putText(annotated_frame, label, (px, py), 
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
-            
-            # Add label for secondary ROI
-            if len(pixel_coords) > 0:
-                center_x, center_y = int(pixel_coords[:, 0].mean()), int(pixel_coords[:, 1].mean())
-                cv2.putText(annotated_frame, "COUNTER AREA (Secondary ROI)", (center_x - 100, center_y), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-            
+            cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
             logging.debug(f"Drawing secondary ROI with {len(self.secondary_roi_poly.exterior.coords)} points")
         else:
             logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
@@ -1514,9 +1467,9 @@ class QueueMonitorProcessor(threading.Thread):
         counter_display_count = valid_secondary_count  # Show actual current count (secondary ROI = counter area)
         
         cv2.putText(annotated_frame, f"Queue: {queue_display_count}", (50, 55), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Yellow, thicker
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Yellow, thicker
         cv2.putText(annotated_frame, f"Counter: {counter_display_count}", (50, 90), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Cyan, thicker
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Cyan, thicker
         
         # Log count changes for debugging
         if queue_display_count > 0 or counter_display_count > 0:
