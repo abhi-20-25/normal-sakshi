@@ -1279,10 +1279,13 @@ class QueueMonitorProcessor(threading.Thread):
                 logging.debug(f"Detected {len(boxes)} persons in frame for {self.channel_name}")
             
             for box, track_id in zip(boxes, track_ids):
-                # person_point = Point(int((box[0] + box[2]) / 2), int((box[1] + box[3]) / 2))
-                person_point = Point(int((box[0] + box[2]) / 2), int(box[3]))
+                # Calculate the true center point of the bounding box (center X and center Y)
+                # box format: [x1, y1, x2, y2] where (x1,y1) is top-left and (x2,y2) is bottom-right
+                center_x = int((box[0] + box[2]) / 2)  # Center X coordinate
+                center_y = int((box[1] + box[3]) / 2)  # Center Y coordinate (true center, not bottom)
+                person_point = Point(center_x, center_y)
                 
-                # Check main ROI (queue area)
+                # Check main ROI (queue area) - count if center point is inside ROI
                 if self.roi_poly.is_valid and not self.roi_poly.is_empty:
                     contains_main = self.roi_poly.contains(person_point)
                     if contains_main:
@@ -1290,17 +1293,17 @@ class QueueMonitorProcessor(threading.Thread):
                         tracker = self.queue_tracker[track_id]
                         if tracker['entry_time'] == 0: 
                             tracker['entry_time'] = current_time
-                            logging.info(f"Person {track_id} entered queue ROI at {current_time} - Point: ({person_point.x}, {person_point.y})")
+                            logging.info(f"Person {track_id} entered queue ROI at {current_time} - Center Point: ({center_x}, {center_y})")
                     else:
                         # Log when person is detected but not in ROI (for debugging)
                         if track_id not in current_tracks_in_main_roi and len(current_tracks_in_main_roi) == 0:
-                            logging.debug(f"Person {track_id} at ({person_point.x}, {person_point.y}) NOT in queue ROI")
+                            logging.debug(f"Person {track_id} center point ({center_x}, {center_y}) NOT in queue ROI")
                 else:
                     if not hasattr(self, '_roi_warning_logged'):
                         logging.warning(f"Main ROI is invalid or empty for {self.channel_name} - cannot count persons. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
                         self._roi_warning_logged = True
                 
-                # Check secondary ROI (counter area)
+                # Check secondary ROI (counter area) - count if center point is inside ROI
                 if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
                     contains_secondary = self.secondary_roi_poly.contains(person_point)
                     if contains_secondary:
@@ -1308,11 +1311,11 @@ class QueueMonitorProcessor(threading.Thread):
                         sec_tracker = self.secondary_queue_tracker[track_id]
                         if sec_tracker['entry_time'] == 0: 
                             sec_tracker['entry_time'] = current_time
-                            logging.info(f"Person {track_id} entered counter ROI at {current_time} - Point: ({person_point.x}, {person_point.y})")
+                            logging.info(f"Person {track_id} entered counter ROI at {current_time} - Center Point: ({center_x}, {center_y})")
                     else:
                         # Log when person is detected but not in ROI (for debugging)
                         if track_id not in current_tracks_in_secondary_roi and len(current_tracks_in_secondary_roi) == 0:
-                            logging.debug(f"Person {track_id} at ({person_point.x}, {person_point.y}) NOT in counter ROI")
+                            logging.debug(f"Person {track_id} center point ({center_x}, {center_y}) NOT in counter ROI")
                 else:
                     if not hasattr(self, '_secondary_roi_warning_logged'):
                         logging.warning(f"Secondary ROI is invalid or empty for {self.channel_name} - cannot count persons. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
