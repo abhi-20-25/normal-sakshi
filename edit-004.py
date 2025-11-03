@@ -1403,14 +1403,14 @@ class QueueMonitorProcessor(threading.Thread):
         
         # Draw main ROI (queue area) - Yellow
         if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-            cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
+            cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
             logging.debug(f"Drawing main ROI with {len(self.roi_poly.exterior.coords)} points")
         else:
             logging.warning(f"Main ROI is invalid or empty. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
         
         # Draw secondary ROI (cashier area) - Cyan
         if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-            cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
+            cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
             logging.debug(f"Drawing secondary ROI with {len(self.secondary_roi_poly.exterior.coords)} points")
         else:
             logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
