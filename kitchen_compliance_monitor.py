@@ -215,9 +215,6 @@ class KitchenComplianceProcessor(threading.Thread):
 
             # Draw header info
             h, w = annotated_frame.shape[:2]
-            overlay = annotated_frame.copy()
-            cv2.rectangle(overlay, (10, 10), (400, 110), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.7, annotated_frame, 0.3, 0, annotated_frame)
             cv2.putText(annotated_frame, "Kitchen Compliance Monitor", (15, 35), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
             cv2.putText(annotated_frame, "Checking: Gloves, Apron, Cap, Uniform, Phone", (15, 65), 
