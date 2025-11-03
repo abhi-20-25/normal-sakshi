@@ -803,8 +803,7 @@ class PeopleCounterProcessor(threading.Thread):
         self.is_running, self.lock = True, threading.Lock()
         self.track_history = defaultdict(list)
         self.counts = {'in': 0, 'out': 0}
-        self.last_saved_total_counts = {'in': 0, 'out': 0}
-        self.last_saved_hour = datetime.now(IST).hour
+        self.current_hour = datetime.now(IST).hour
         self.tracking_date = datetime.now(IST).date()
         self.latest_frame = None
         self._load_initial_counts()
@@ -834,7 +833,6 @@ class PeopleCounterProcessor(threading.Thread):
                 record = db.query(DailyFootfall).filter_by(channel_id=self.channel_id, report_date=today_ist).first()
                 if record: self.counts = {'in': record.in_count, 'out': record.out_count}
                 else: self._reset_counts_for_new_day(db, today_ist)
-                self.last_saved_total_counts = self.counts.copy()
             except Exception as e: logging.error(f"Failed to load initial counts: {e}")
 
     def _reset_counts_for_new_day(self, db, new_date):
@@ -844,38 +842,64 @@ class PeopleCounterProcessor(threading.Thread):
         db.commit()
 
     def _update_and_log_counts(self):
+        """Update daily counts in database"""
         if not db_connected: return
         with SessionLocal() as db, self.lock:
             try:
                 db.query(DailyFootfall).filter_by(channel_id=self.channel_id, report_date=self.tracking_date).update({'in_count': self.counts['in'], 'out_count': self.counts['out']})
-                current_hour_ist = datetime.now(IST).hour
-                if current_hour_ist != self.last_saved_hour:
-                    hourly_in, hourly_out = self.counts['in'] - self.last_saved_total_counts['in'], self.counts['out'] - self.last_saved_total_counts['out']
-                    if hourly_in > 0 or hourly_out > 0:
-                        stmt = text("""
-                            INSERT INTO hourly_footfall (channel_id, report_date, hour, in_count, out_count)
-                            VALUES (:cid, :rdate, :hour, :inc, :outc)
-                            ON CONFLICT (channel_id, report_date, hour)
-                            DO UPDATE SET in_count = hourly_footfall.in_count + EXCLUDED.in_count,
-                                          out_count = hourly_footfall.out_count + EXCLUDED.out_count;
-                        """)
-                        db.execute(stmt, {'cid': self.channel_id, 'rdate': self.tracking_date, 'hour': self.last_saved_hour, 'inc': hourly_in, 'outc': hourly_out})
-                    logging.info(f"PeopleCounter {self.channel_name}: Saved hourly counts for hour {self.last_saved_hour}: IN={hourly_in}, OUT={hourly_out}")
-                    self.last_saved_total_counts, self.last_saved_hour = self.counts.copy(), current_hour_ist
-                    logging.info(f"PeopleCounter {self.channel_name}: Hour changed to {current_hour_ist}. Resetting saved counts reference.")
                 db.commit()
             except Exception as e:
-                logging.error(f"Error updating counts in DB: {e}"); db.rollback()
+                logging.error(f"Error updating daily counts in DB: {e}"); db.rollback()
+    
+    def _update_hourly_count_realtime(self, count_type):
+        """Update hourly count in database in real-time when in/out is detected"""
+        if not db_connected: return
+        current_time = datetime.now(IST)
+        current_hour_ist = current_time.hour
+        current_date_ist = current_time.date()
+        
+        # Check if hour changed - if so, update current_hour
+        if current_hour_ist != self.current_hour:
+            self.current_hour = current_hour_ist
+        
+        # Check if day changed - if so, update tracking_date
+        if current_date_ist != self.tracking_date:
+            self.tracking_date = current_date_ist
+        
+        with SessionLocal() as db:
+            try:
+                # Increment hourly count for current hour
+                stmt = text("""
+                    INSERT INTO hourly_footfall (channel_id, report_date, hour, in_count, out_count)
+                    VALUES (:cid, :rdate, :hour, :inc, :outc)
+                    ON CONFLICT (channel_id, report_date, hour)
+                    DO UPDATE SET 
+                        in_count = hourly_footfall.in_count + EXCLUDED.in_count,
+                        out_count = hourly_footfall.out_count + EXCLUDED.out_count;
+                """)
+                inc = 1 if count_type == 'in' else 0
+                outc = 1 if count_type == 'out' else 0
+                db.execute(stmt, {
+                    'cid': self.channel_id,
+                    'rdate': self.tracking_date,
+                    'hour': self.current_hour,
+                    'inc': inc,
+                    'outc': outc
+                })
+                db.commit()
+                logging.info(f"PeopleCounter {self.channel_name}: Updated hourly count in real-time - Hour {self.current_hour:02d}:00, {count_type.upper()}+1")
+            except Exception as e:
+                logging.error(f"Error updating hourly count in DB: {e}"); db.rollback()
 
     def _check_for_new_day(self):
         current_date_ist = datetime.now(IST).date()
+        current_hour_ist = datetime.now(IST).hour
         if current_date_ist > self.tracking_date:
             logging.info("New day detected. Resetting people counter.")
             self._update_and_log_counts()
             with SessionLocal() as db:
                 self._reset_counts_for_new_day(db, current_date_ist)
-                self.last_saved_total_counts = self.counts.copy()
-                self.last_saved_hour = datetime.now(IST).hour
+                self.current_hour = current_hour_ist
 
     def run(self):
         consecutive_errors = 0
@@ -902,9 +926,20 @@ class PeopleCounterProcessor(threading.Thread):
                         if len(history) > 2: history.pop(0)
                         if len(history) == 2:
                             prev_x, curr_x = history
-                            if prev_x < line_x and curr_x >= line_x: self.counts['in'] += 1; count_changed = True   # Left to Right = IN
-                            elif prev_x > line_x and curr_x <= line_x: self.counts['out'] += 1; count_changed = True  # Right to Left = OUT
-                    if count_changed: self._update_and_log_counts()
+                            count_type = None
+                            if prev_x < line_x and curr_x >= line_x:
+                                self.counts['in'] += 1
+                                count_changed = True
+                                count_type = 'in'
+                            elif prev_x > line_x and curr_x <= line_x:
+                                self.counts['out'] += 1
+                                count_changed = True
+                                count_type = 'out'
+                            
+                            # Update database in real-time for both daily and hourly counts
+                            if count_type:
+                                self._update_and_log_counts()  # Update daily counts
+                                self._update_hourly_count_realtime(count_type)  # Update hourly counts in real-time
                 annotated_frame = r0.plot() if r0 is not None else frame
                 line_x = int(annotated_frame.shape[1] * 0.5)
                 cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
@@ -912,28 +947,25 @@ class PeopleCounterProcessor(threading.Thread):
                 current_hour_ist = datetime.now(IST).hour
                 current_date_ist = datetime.now(IST).date()
                 
-                # Calculate current hour counts (what would be in DB for current hour)
-                hourly_in_current = self.counts['in'] - self.last_saved_total_counts['in']
-                hourly_out_current = self.counts['out'] - self.last_saved_total_counts['out']
+                # Update current_hour if hour changed
+                if current_hour_ist != self.current_hour:
+                    self.current_hour = current_hour_ist
                 
-                # If hour changed, fetch the saved count from DB for current hour
-                # For already-past hours, fetch from DB; for current hour, use calculated value
-                if current_hour_ist != self.last_saved_hour:
-                    # Hour changed - try to get saved value from DB for current hour (might be 0 if no data yet)
-                    try:
-                        with SessionLocal() as db:
-                            saved_hourly = db.query(HourlyFootfall).filter_by(
-                                channel_id=self.channel_id,
-                                report_date=current_date_ist,
-                                hour=current_hour_ist
-                            ).first()
-                            if saved_hourly:
-                                hourly_in_current = saved_hourly.in_count
-                                hourly_out_current = saved_hourly.out_count
-                    except Exception as e:
-                        logging.warning(f"Could not fetch hourly count from DB: {e}")
-                        # Use calculated value if DB fetch fails
-                        pass
+                # Fetch current hour counts from database (updated in real-time)
+                hourly_in_current = 0
+                hourly_out_current = 0
+                try:
+                    with SessionLocal() as db:
+                        saved_hourly = db.query(HourlyFootfall).filter_by(
+                            channel_id=self.channel_id,
+                            report_date=current_date_ist,
+                            hour=current_hour_ist
+                        ).first()
+                        if saved_hourly:
+                            hourly_in_current = saved_hourly.in_count
+                            hourly_out_current = saved_hourly.out_count
+                except Exception as e:
+                    logging.warning(f"Could not fetch hourly count from DB: {e}")
                 
                 # Display total daily counts
                 cv2.putText(annotated_frame, f"TOTAL - IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
@@ -2029,14 +2061,8 @@ def get_report(channel_id, date_str):
     with SessionLocal() as db:
         for r in db.query(HourlyFootfall).filter_by(channel_id=channel_id, report_date=report_date).order_by(HourlyFootfall.hour).all():
             hourly_data[r.hour].update({'in': r.in_count, 'out': r.out_count, 'total': r.in_count + r.out_count})
-    if report_date == datetime.now(IST).date():
-        pc_processor = next((p for p in stream_processors.get(channel_id, []) if isinstance(p, PeopleCounterProcessor)), None)
-        if pc_processor:
-            with pc_processor.lock:
-                current_hour = datetime.now(IST).hour
-                hourly_data[current_hour]['in'] += pc_processor.counts['in'] - pc_processor.last_saved_total_counts['in']
-                hourly_data[current_hour]['out'] += pc_processor.counts['out'] - pc_processor.last_saved_total_counts['out']
-                hourly_data[current_hour]['total'] = hourly_data[current_hour]['in'] + hourly_data[current_hour]['out']
+    # Note: Hourly counts are now updated in real-time, so database already has the latest data
+    # No need to calculate from processor counts anymore
     if not any(v['total'] > 0 for v in hourly_data.values()):
         with SessionLocal() as db:
             daily_record = db.query(DailyFootfall).filter_by(channel_id=channel_id, report_date=report_date).first()
