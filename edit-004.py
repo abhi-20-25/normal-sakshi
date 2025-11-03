@@ -2288,20 +2288,56 @@ def update_occupancy_schedule(channel_id):
 @app.route('/occupancy-logs/<channel_id>')
 @login_required
 def get_occupancy_logs(channel_id):
-    """Get occupancy logs page for a channel"""
+    """Download occupancy logs as CSV for a channel"""
     if not db_connected: return jsonify({"error": "Database not connected"}), 500
     try:
         with SessionLocal() as db:
-            logs = db.query(OccupancyLog).filter_by(channel_id=channel_id).order_by(OccupancyLog.timestamp.desc()).limit(100).all()
-            return jsonify({'logs': [{
-                'timestamp': log.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                'time_slot': log.time_slot,
-                'day_of_week': log.day_of_week,
-                'live_count': log.live_count,
-                'required_count': log.required_count,
-                'status': log.status
-            } for log in logs]})
+            logs = db.query(OccupancyLog).filter_by(channel_id=channel_id).order_by(OccupancyLog.timestamp.desc()).limit(1000).all()
+            
+            # Generate CSV content
+            def generate_csv():
+                data = io.StringIO()
+                writer = csv.writer(data)
+                
+                # Write header
+                writer.writerow(['Timestamp', 'Time Slot', 'Day of Week', 'Live Count', 'Required Count', 'Status'])
+                yield data.getvalue()
+                data.seek(0)
+                data.truncate(0)
+                
+                # Write log entries
+                for log in logs:
+                    writer.writerow([
+                        log.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                        log.time_slot or '',
+                        log.day_of_week or '',
+                        log.live_count or 0,
+                        log.required_count or 0,
+                        log.status or ''
+                    ])
+                    yield data.getvalue()
+                    data.seek(0)
+                    data.truncate(0)
+            
+            # Get channel name for filename
+            channel_name = channel_id
+            processors = stream_processors.get(channel_id, [])
+            if processors:
+                for p in processors:
+                    if hasattr(p, 'channel_name'):
+                        channel_name = p.channel_name
+                        break
+            
+            filename = f"occupancy_logs_{channel_name}_{datetime.now(IST).strftime('%Y%m%d')}.csv"
+            filename = filename.replace(' ', '_').replace('/', '_')
+            
+            return Response(
+                stream_with_context(generate_csv()),
+                mimetype='text/csv',
+                headers={'Content-Disposition': f'attachment; filename={filename}'}
+            )
     except Exception as e:
+        logging.error(f"Error generating occupancy logs CSV: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/occupancy/schedule/template')
