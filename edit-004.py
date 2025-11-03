@@ -802,6 +802,7 @@ class PeopleCounterProcessor(threading.Thread):
         self.socketio = socketio
         self.is_running, self.lock = True, threading.Lock()
         self.track_history = defaultdict(list)
+        self.counted_tracks = set()  # Track IDs that have already been counted to prevent double counting
         self.counts = {'in': 0, 'out': 0}
         self.current_hour = datetime.now(IST).hour
         self.tracking_date = datetime.now(IST).date()
@@ -918,28 +919,88 @@ class PeopleCounterProcessor(threading.Thread):
                 r0 = results[0] if (results and len(results) > 0) else None
                 if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
                     boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
-                    line_x, count_changed = int(frame.shape[1] * 0.5), False
+                    line_x = int(frame.shape[1] * 0.5)
+                    current_track_ids = set(track_ids)
+                    
+                    # Clean up track history and counted tracks for IDs that are no longer detected
+                    # This allows re-counting if a person re-enters (useful for multiple entries/exits)
+                    track_ids_to_clean = set(self.track_history.keys()) - current_track_ids
+                    for tid in track_ids_to_clean:
+                        # Only remove from history if track has been gone for a while
+                        # Keep counted_tracks to prevent immediate re-counting of the same track ID
+                        self.track_history.pop(tid, None)
+                    
                     for box, track_id in zip(boxes, track_ids):
                         center_x = int(box[0])
                         history = self.track_history[track_id]
+                        
+                        # Add current position to history
                         history.append(center_x)
-                        if len(history) > 2: history.pop(0)
-                        if len(history) == 2:
-                            prev_x, curr_x = history
+                        if len(history) > 5:  # Keep more history for better tracking
+                            history.pop(0)
+                        
+                        # Check for crossing only if we have at least 2 positions and haven't counted this track yet
+                        if track_id not in self.counted_tracks:
                             count_type = None
-                            if prev_x < line_x and curr_x >= line_x:
-                                self.counts['in'] += 1
-                                count_changed = True
-                                count_type = 'in'
-                            elif prev_x > line_x and curr_x <= line_x:
-                                self.counts['out'] += 1
-                                count_changed = True
-                                count_type = 'out'
+                            
+                            # Primary detection: Check last 2 positions for clear crossing
+                            if len(history) >= 2:
+                                prev_x = history[-2]
+                                curr_x = history[-1]
+                                line_tolerance = 10  # pixels tolerance for line crossing detection
+                                
+                                # IN: moving from left to right across the line
+                                # Person was clearly on the left and has crossed to the right
+                                if prev_x <= (line_x - line_tolerance) and curr_x > (line_x + line_tolerance):
+                                    self.counts['in'] += 1
+                                    count_type = 'in'
+                                    self.counted_tracks.add(track_id)
+                                    history.clear()  # Clear history after counting to prevent double counting
+                                    logging.info(f"PeopleCounter {self.channel_name}: IN detected - Track ID: {track_id}, prev_x: {prev_x}, curr_x: {curr_x}, line_x: {line_x}")
+                                
+                                # OUT: moving from right to left across the line
+                                # Person was clearly on the right and has crossed to the left (more lenient for OUT detection)
+                                elif prev_x >= (line_x + line_tolerance) and curr_x < line_x:
+                                    self.counts['out'] += 1
+                                    count_type = 'out'
+                                    self.counted_tracks.add(track_id)
+                                    history.clear()  # Clear history after counting to prevent double counting
+                                    logging.info(f"PeopleCounter {self.channel_name}: OUT detected - Track ID: {track_id}, prev_x: {prev_x}, curr_x: {curr_x}, line_x: {line_x}")
+                            
+                            # Fallback: Check for crossing pattern using 3 positions if primary detection didn't trigger
+                            # This helps catch cases where tracking might be intermittent or person crosses slowly
+                            if count_type is None and len(history) >= 3:
+                                pos_1, pos_2, pos_3 = history[-3], history[-2], history[-1]
+                                
+                                # IN: pattern showing clear movement from left to right
+                                if pos_1 < line_x and pos_2 <= line_x and pos_3 > line_x:
+                                    self.counts['in'] += 1
+                                    count_type = 'in'
+                                    self.counted_tracks.add(track_id)
+                                    history.clear()
+                                    logging.info(f"PeopleCounter {self.channel_name}: IN detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
+                                
+                                # OUT: pattern showing clear movement from right to left (more lenient detection)
+                                elif pos_1 > line_x and pos_2 >= line_x and pos_3 < line_x:
+                                    self.counts['out'] += 1
+                                    count_type = 'out'
+                                    self.counted_tracks.add(track_id)
+                                    history.clear()
+                                    logging.info(f"PeopleCounter {self.channel_name}: OUT detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
                             
                             # Update database in real-time for both daily and hourly counts
                             if count_type:
                                 self._update_and_log_counts()  # Update daily counts
                                 self._update_hourly_count_realtime(count_type)  # Update hourly counts in real-time
+                        
+                        # Reset counted flag if track moves away from the line (allows re-entry detection)
+                        elif track_id in self.counted_tracks and len(history) >= 3:
+                            # If person moves significantly away from line after crossing, allow re-counting
+                            last_3_positions = history[-3:]
+                            all_positions_away = all(abs(pos - line_x) > 50 for pos in last_3_positions)
+                            if all_positions_away:
+                                self.counted_tracks.discard(track_id)
+                                logging.debug(f"PeopleCounter {self.channel_name}: Track ID {track_id} moved away from line, resetting count flag")
                 annotated_frame = r0.plot() if r0 is not None else frame
                 line_x = int(annotated_frame.shape[1] * 0.5)
                 cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
@@ -1311,16 +1372,18 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
                     persons_in_queue_5sec.append(track_id)
         
-        # Screenshot trigger: person in queue > 5 seconds AND no one in counter area
+        # Screenshot trigger: person in queue > 5 seconds AND no one in counter area AND queue count > 3
         should_screenshot_5sec = (
             len(persons_in_queue_5sec) > 0 and
-            self.current_secondary_count == 0 and
+            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3
+            valid_secondary_count == 0 and  # No person in counter
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
         
-        # Screenshot trigger: queue count > 3
+        # Screenshot trigger: queue count > 3 AND no person in counter area
         should_screenshot_high_count = (
             valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and
+            valid_secondary_count == 0 and  # No person in counter
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
 
@@ -1405,9 +1468,9 @@ class QueueMonitorProcessor(threading.Thread):
         queue_display_count = valid_queue_count  # Show actual current count
         counter_display_count = valid_secondary_count  # Show actual current count
         
-        cv2.putText(annotated_frame, f"Queue: {queue_display_count}", (50, 55), 
+        cv2.putText(annotated_frame, f"Counter: {queue_display_count}", (50, 55), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Yellow, thicker
-        cv2.putText(annotated_frame, f"Counter: {counter_display_count}", (50, 90), 
+        cv2.putText(annotated_frame, f"Queue: {counter_display_count}", (50, 90), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Cyan, thicker
         
         # Log count changes for debugging
