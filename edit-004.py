@@ -293,7 +293,7 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
 QUEUE_MONITOR_ROI_CONFIG = {
     "Checkout Queue": {
         "secondary_roi_points": [[0.391,0.206],[0.732,0.553],[0.356,0.668],[0.247,0.311]], #[[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
-        "roi_points":[[0.451,0.273],[0.598,0.214],[0.803,0.371],[0.635,0.508]],#[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
+        "roi_points":[[0.380, 0.223], [0.183, 0.338], [0.255, 0.567], [0.517, 0.375]],#[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
     }
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
