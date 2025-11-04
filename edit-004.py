@@ -301,6 +301,7 @@ QUEUE_SCREENSHOT_DWELL_TIME_SEC = 5.0  # How long a person must stay in queue to
 QUEUE_ALERT_THRESHOLD = 3          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
 QUEUE_HIGH_COUNT_THRESHOLD = 3     # Screenshot threshold: queue count > 3
+QUEUE_COUNTER_PERSISTENCE_SEC = 8.0  # How long to keep counter as "occupied" after last detection (8 seconds)
 QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
 
 # --- Flask and SocketIO Setup ---
@@ -1098,6 +1099,7 @@ class QueueMonitorProcessor(threading.Thread):
         self.current_queue_count = 0
         self.secondary_queue_tracker = defaultdict(lambda: {'entry_time': 0})
         self.current_secondary_count = 0
+        self.last_counter_detection_time = 0  # Track last time someone was detected in counter area
         self.last_alert_time = 0
         self.last_overqueue_time = 0  # Track overqueue alerts separately
         self.last_screenshot_time = 0  # Track screenshot alerts to avoid spam
@@ -1271,7 +1273,8 @@ class QueueMonitorProcessor(threading.Thread):
 
     def process_frame(self, frame):
         current_time = time.time()
-        results = safe_track_persons(self.model, frame, conf=0.25, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
+        # Use lower confidence for better detection of partially occluded people (especially in counter area)
+        results = safe_track_persons(self.model, frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results and len(results) > 0) else None
@@ -1328,6 +1331,8 @@ class QueueMonitorProcessor(threading.Thread):
                         if sec_tracker['entry_time'] == 0: 
                             sec_tracker['entry_time'] = current_time
                             logging.info(f"Person {track_id} entered counter ROI at {current_time} - Center Point: ({center_x}, {center_y})")
+                        # Update last detection time whenever someone is detected in counter
+                        self.last_counter_detection_time = current_time
                     else:
                         # Log when person is detected but not in ROI (for debugging)
                         if track_id not in current_tracks_in_secondary_roi and len(current_tracks_in_secondary_roi) == 0:
@@ -1365,6 +1370,17 @@ class QueueMonitorProcessor(threading.Thread):
                 entry_time = self.secondary_queue_tracker[track_id]['entry_time']
                 if entry_time > 0 and (current_time - entry_time) >= QUEUE_DWELL_TIME_SEC:
                     valid_secondary_count += 1
+        
+        # Persistence mechanism: If no one is currently detected in counter but someone was detected
+        # within the persistence window, still consider counter as occupied to prevent false alerts
+        if valid_secondary_count == 0 and self.last_counter_detection_time > 0:
+            time_since_last_detection = current_time - self.last_counter_detection_time
+            if time_since_last_detection <= QUEUE_COUNTER_PERSISTENCE_SEC:
+                valid_secondary_count = 1  # Assume counter is still occupied
+                logging.debug(f"Counter area persistence active: last detection was {time_since_last_detection:.1f}s ago (within {QUEUE_COUNTER_PERSISTENCE_SEC}s window)")
+            else:
+                # Reset if persistence window expired
+                self.last_counter_detection_time = 0
 
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
