@@ -959,8 +959,11 @@ class PeopleCounterProcessor(threading.Thread):
                                     logging.info(f"PeopleCounter {self.channel_name}: IN detected - Track ID: {track_id}, prev_x: {prev_x}, curr_x: {curr_x}, line_x: {line_x}")
                                 
                                 # OUT: moving from right to left across the line
-                                # Person was clearly on the right and has crossed to the left (more lenient for OUT detection)
-                                elif prev_x >= (line_x + line_tolerance) and curr_x < line_x:
+                                # Very lenient detection - accept if person was on right and is now at or past the line
+                                # This handles cases where person might be detected exactly at the line or slightly past
+                                elif prev_x > line_x and curr_x <= line_x:
+                                    # Count as OUT if person was clearly on the right and is now at or past the line
+                                    # This is more lenient than IN detection to catch more OUT cases
                                     self.counts['out'] += 1
                                     count_type = 'out'
                                     self.counted_tracks.add(track_id)
@@ -981,12 +984,25 @@ class PeopleCounterProcessor(threading.Thread):
                                     logging.info(f"PeopleCounter {self.channel_name}: IN detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
                                 
                                 # OUT: pattern showing clear movement from right to left (more lenient detection)
-                                elif pos_1 > line_x and pos_2 >= line_x and pos_3 < line_x:
-                                    self.counts['out'] += 1
-                                    count_type = 'out'
-                                    self.counted_tracks.add(track_id)
-                                    history.clear()
-                                    logging.info(f"PeopleCounter {self.channel_name}: OUT detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
+                                # Accept if person was clearly on right and is now on left or at the line
+                                elif pos_1 > line_x and pos_2 >= line_x and pos_3 <= line_x:
+                                    # Ensure there's clear movement from right to left
+                                    if pos_1 > pos_3:  # Moving left (decreasing X)
+                                        self.counts['out'] += 1
+                                        count_type = 'out'
+                                        self.counted_tracks.add(track_id)
+                                        history.clear()
+                                        logging.info(f"PeopleCounter {self.channel_name}: OUT detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
+                                
+                                # Additional OUT detection: catch cases where person crosses slowly
+                                # If person is clearly moving from right to left across the line
+                                elif pos_1 > (line_x + line_tolerance) and pos_2 > line_x and pos_3 <= (line_x + line_tolerance):
+                                    if pos_1 > pos_3:  # Confirmed leftward movement
+                                        self.counts['out'] += 1
+                                        count_type = 'out'
+                                        self.counted_tracks.add(track_id)
+                                        history.clear()
+                                        logging.info(f"PeopleCounter {self.channel_name}: OUT detected (slow crossing) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
                             
                             # Update database in real-time for both daily and hourly counts
                             if count_type:
