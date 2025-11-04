@@ -349,6 +349,10 @@
         const grid = document.getElementById(`grid-${appName}-${channelId}`);
         const pagination = document.getElementById(`pagination-${appName}-${channelId}`);
         if (!grid) return;
+        
+        // Find the parent section or container to scroll to
+        const sectionElement = grid.closest('.app-section') || grid.closest('.tab-content') || grid.parentElement;
+        
         let url = `/history/${appName}?page=${page}&limit=10`;
         if (channelId) url += `&channel_id=${channelId}`;
         if (startDate && endDate) url += `&start_date=${startDate}&end_date=${endDate}`;
@@ -360,7 +364,10 @@
                 return;
             }
             const data = await response.json();
-            if (data.error) { grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; return; }
+            if (data.error) { 
+                grid.innerHTML = `<p style="color:#f87171;">${data.error}</p>`; 
+                return; 
+            }
             grid.innerHTML = '';
             if (data.detections.length === 0) {
                 grid.innerHTML = '<p>No detections found for the selected criteria.</p>';
@@ -379,12 +386,44 @@
                     const prevBtn = document.createElement('button');
                     prevBtn.textContent = 'Previous';
                     prevBtn.disabled = data.page === 1;
-                    prevBtn.onclick = () => fetchHistory(appName, data.page - 1, channelId, startDate, endDate);
+                    prevBtn.type = 'button'; // Prevent form submission if inside a form
+                    prevBtn.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        fetchHistory(appName, data.page - 1, channelId, startDate, endDate).then(() => {
+                            // Scroll to history section smoothly after update
+                            setTimeout(() => {
+                                const currentGrid = document.getElementById(`grid-${appName}-${channelId}`);
+                                if (currentGrid) {
+                                    const scrollTarget = currentGrid.closest('.app-section') || currentGrid.closest('.tab-content') || currentGrid.parentElement;
+                                    if (scrollTarget) {
+                                        scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                    }
+                                }
+                            }, 100);
+                        });
+                    };
                     pagination.appendChild(prevBtn);
                     const nextBtn = document.createElement('button');
                     nextBtn.textContent = 'Next';
                     nextBtn.disabled = data.page >= totalPages;
-                    nextBtn.onclick = () => fetchHistory(appName, data.page + 1, channelId, startDate, endDate);
+                    nextBtn.type = 'button'; // Prevent form submission if inside a form
+                    nextBtn.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        fetchHistory(appName, data.page + 1, channelId, startDate, endDate).then(() => {
+                            // Scroll to history section smoothly after update
+                            setTimeout(() => {
+                                const currentGrid = document.getElementById(`grid-${appName}-${channelId}`);
+                                if (currentGrid) {
+                                    const scrollTarget = currentGrid.closest('.app-section') || currentGrid.closest('.tab-content') || currentGrid.parentElement;
+                                    if (scrollTarget) {
+                                        scrollTarget.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                                    }
+                                }
+                            }, 100);
+                        });
+                    };
                     pagination.appendChild(nextBtn);
                 }
             }
@@ -503,7 +542,6 @@
                         <div class="pagination" id="pagination-QueueMonitor-${channel.id}"></div>
 
                         <div style="margin-top: 16px;">
-                            <button class="btn" onclick="startRoiEdit('QueueMonitor', '${channel.id}')">Edit ROI</button>
                             <div class="roi-controls">
                                 <button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'main'">Draw Queue Area (Yellow)</button>
                                 <button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'secondary'">Draw Cashier Area (Cyan)</button>
