@@ -25,6 +25,7 @@ import atexit
 import io
 import csv
 import hashlib
+import subprocess
 from apscheduler.schedulers.background import BackgroundScheduler
 from shapely.geometry import Point, Polygon
 import pandas as pd
@@ -2484,6 +2485,49 @@ def get_cuda_status():
     except Exception as e:
         logging.error(f"Error getting CUDA status: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/restart_gunicorn', methods=['GET'])
+def restart_gunicorn():
+    """API endpoint to restart gunicorn.service - No authentication required"""
+    try:
+        logging.info("Restarting gunicorn.service via API request")
+        # Execute systemctl restart command
+        result = subprocess.run(
+            ['sudo', 'systemctl', 'restart', 'gunicorn.service'],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode == 0:
+            logging.info("gunicorn.service restarted successfully")
+            return jsonify({
+                "success": True,
+                "message": "gunicorn.service restarted successfully",
+                "output": result.stdout.strip() if result.stdout else "No output"
+            })
+        else:
+            logging.error(f"Failed to restart gunicorn.service: {result.stderr}")
+            return jsonify({
+                "success": False,
+                "error": f"Failed to restart gunicorn.service: {result.stderr.strip() if result.stderr else 'Unknown error'}",
+                "returncode": result.returncode
+            }), 500
+            
+    except subprocess.TimeoutExpired:
+        logging.error("Timeout while restarting gunicorn.service")
+        return jsonify({
+            "success": False,
+            "error": "Timeout while restarting gunicorn.service"
+        }), 500
+    except Exception as e:
+        logging.error(f"Error restarting gunicorn.service: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 @app.route('/api/occupancy/schedule/upload/<channel_id>', methods=['POST'])
 @login_required
