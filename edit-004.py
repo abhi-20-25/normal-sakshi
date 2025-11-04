@@ -298,7 +298,7 @@ QUEUE_MONITOR_ROI_CONFIG = {
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
 QUEUE_SCREENSHOT_DWELL_TIME_SEC = 5.0  # How long a person must stay in queue to trigger screenshot (5 seconds)
-QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
+QUEUE_ALERT_THRESHOLD = 3          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
 QUEUE_HIGH_COUNT_THRESHOLD = 3     # Screenshot threshold: queue count > 3
 QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
