@@ -2491,9 +2491,29 @@ def restart_gunicorn():
     """API endpoint to restart gunicorn.service - No authentication required"""
     try:
         logging.info("Restarting gunicorn.service via API request")
+        
+        # Use full paths to ensure commands are found
+        systemctl_path = '/usr/bin/systemctl'
+        sudo_path = '/usr/bin/sudo'
+        
+        # Check if commands exist
+        if not os.path.exists(systemctl_path):
+            # Try to find systemctl in PATH
+            systemctl_path = 'systemctl'
+        
+        # Build command: try with sudo first, then without (if running as root)
+        if os.path.exists(sudo_path):
+            cmd = [sudo_path, systemctl_path, 'restart', 'gunicorn.service']
+        elif os.path.exists('/bin/sudo'):
+            cmd = ['/bin/sudo', systemctl_path, 'restart', 'gunicorn.service']
+        else:
+            # Try without sudo (if running as root or user has permissions)
+            cmd = [systemctl_path, 'restart', 'gunicorn.service']
+            logging.info("sudo not found, trying systemctl directly")
+        
         # Execute systemctl restart command
         result = subprocess.run(
-            ['sudo', 'systemctl', 'restart', 'gunicorn.service'],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30
@@ -2504,14 +2524,17 @@ def restart_gunicorn():
             return jsonify({
                 "success": True,
                 "message": "gunicorn.service restarted successfully",
-                "output": result.stdout.strip() if result.stdout else "No output"
+                "output": result.stdout.strip() if result.stdout else "No output",
+                "command_used": " ".join(cmd)
             })
         else:
-            logging.error(f"Failed to restart gunicorn.service: {result.stderr}")
+            error_msg = result.stderr.strip() if result.stderr else result.stdout.strip() if result.stdout else 'Unknown error'
+            logging.error(f"Failed to restart gunicorn.service: {error_msg}")
             return jsonify({
                 "success": False,
-                "error": f"Failed to restart gunicorn.service: {result.stderr.strip() if result.stderr else 'Unknown error'}",
-                "returncode": result.returncode
+                "error": f"Failed to restart gunicorn.service: {error_msg}",
+                "returncode": result.returncode,
+                "command_used": " ".join(cmd)
             }), 500
             
     except subprocess.TimeoutExpired:
@@ -2519,6 +2542,12 @@ def restart_gunicorn():
         return jsonify({
             "success": False,
             "error": "Timeout while restarting gunicorn.service"
+        }), 500
+    except FileNotFoundError as e:
+        logging.error(f"Command not found while restarting gunicorn.service: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Command not found: {str(e)}. Please ensure systemctl is available."
         }), 500
     except Exception as e:
         logging.error(f"Error restarting gunicorn.service: {e}")
