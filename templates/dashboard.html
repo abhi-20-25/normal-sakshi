@@ -50,8 +50,11 @@
         .view-feed-btn { margin-bottom: 15px; }
         .dashboard-summary { margin-bottom: 25px; }
         .dashboard-summary h3 { margin-bottom: 15px; color: var(--text-primary); font-size: 1.1em; }
-        .dashboard-details { margin-top: 25px; }
+        .dashboard-details { margin-top: 25px; width: 100%; }
         .dashboard-details h3 { margin-bottom: 15px; color: var(--text-primary); font-size: 1.1em; }
+        .dashboard-details table { width: 100%; border-collapse: collapse; margin-top: 10px; display: table; }
+        .dashboard-details th, .dashboard-details td { border: 1px solid var(--border-color); padding: 8px; text-align: left; font-size: 0.9em; }
+        .dashboard-details th { background-color: #21262d; }
         .report-section input[type="date"] { background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 5px; border-radius: 4px; }
         .report-section table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         .report-section th, .report-section td { border: 1px solid var(--border-color); padding: 8px; text-align: left; font-size: 0.9em; }
@@ -599,13 +602,15 @@
                             </div>
                         </div>
                     </div>
-                    <div class="dashboard-details" style="margin-top: 25px;">
+                    <div class="dashboard-details" style="margin-top: 25px; width: 100%;">
                         <h3>Daily Footfall Report</h3>
                         <div style="margin-bottom: 15px;">
                             <input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)" style="margin-right: 10px;">
                             <button class="btn btn-primary" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button>
                         </div>
-                        <table><thead><tr><th>Hour</th><th>In</th><th>Out</th><th>Total</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table>
+                        <div style="width: 100%; overflow-x: auto;">
+                            <table style="width: 100%; min-width: 100%;"><thead><tr><th>Hour</th><th>In</th><th>Out</th><th>Total</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table>
+                        </div>
                     </div>`;
                 setTimeout(() => {
                     fetchPCReport(channel.id, today);
@@ -623,7 +628,7 @@
                             <div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div>
                         </div>
                     </div>
-                    <div class="dashboard-summary">
+                    <div class="dashboard-summary" style="display:none;">
                         <h3>Summary</h3>
                         <div class="summary-cards">
                             <div class="summary-card">
