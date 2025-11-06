@@ -918,14 +918,32 @@ class PeopleCounterProcessor(threading.Thread):
                 # Ensure we have a fresh copy to prevent any cross-contamination with other processors
                 frame = frame.copy()
                 # Robust tracker call; falls back to predict on errors
-                results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
+                # Lower confidence (0.15) to match config and improve detection consistency
+                results = safe_track_persons(self.model, frame, conf=0.15, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
                 consecutive_errors = 0  # Reset on successful frame
                 r0 = results[0] if (results and len(results) > 0) else None
+                
+                # Check if we have boxes but no track IDs (tracking might have failed)
+                if r0 is not None and getattr(r0, 'boxes', None) is not None:
+                    try:
+                        boxes_count = len(r0.boxes.xyxy) if hasattr(r0.boxes, 'xyxy') else 0
+                    except:
+                        boxes_count = 0
+                    has_track_ids = getattr(r0.boxes, 'id', None) is not None
+                    
+                    if not has_track_ids and boxes_count > 0:
+                        # Log warning if boxes detected but no track IDs
+                        logging.warning(f"PeopleCounter {self.channel_name}: {boxes_count} boxes detected but no track IDs. Tracking may have failed.")
+                
                 if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
                     # Use xyxy format to get bounding box coordinates (x1, y1, x2, y2)
                     boxes_xyxy, track_ids = r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()
                     line_x = int(frame.shape[1] * 0.5)
                     current_track_ids = set(track_ids)
+                    
+                    # Debug logging for tracking consistency
+                    if len(track_ids) > 0:
+                        logging.debug(f"PeopleCounter {self.channel_name}: Tracking {len(track_ids)} persons with IDs: {track_ids[:5]}{'...' if len(track_ids) > 5 else ''}")
                     
                     # Clean up track history and counted tracks for IDs that are no longer detected
                     # This allows re-counting if a person re-enters (useful for multiple entries/exits)
