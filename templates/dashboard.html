@@ -38,13 +38,16 @@
         .pagination { margin-top: 20px; text-align: center; }
         .pagination button { padding: 8px 16px; margin: 0 5px; cursor: pointer; border: 1px solid var(--border-color); background-color: #21262d; color: var(--text-primary); border-radius: 6px; }
         .pagination button:disabled { cursor: not-allowed; opacity: 0.5; }
-        .layout-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .stream-box { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; max-width: 100%; position: relative; }
+        .layout-grid { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        .layout-grid.stream-visible { grid-template-columns: 1fr 1fr; }
+        .stream-box { border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; max-width: 100%; position: relative; display: none; }
+        .stream-box.visible { display: block; }
         .stream-box img { width: 100%; display: block; background-color: #000; }
         .stream-header, .stream-footer { padding: 10px; background-color: var(--bg-primary); font-weight: bold; }
         .stream-header { font-size: 0.9em; text-align: left; }
         .stream-footer { font-size: 1.1em; text-align: center; }
         .report-section { flex-grow: 1; min-width: 300px; }
+        .view-feed-btn { margin-bottom: 15px; }
         .report-section input[type="date"] { background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 5px; border-radius: 4px; }
         .report-section table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         .report-section th, .report-section td { border: 1px solid var(--border-color); padding: 8px; text-align: left; font-size: 0.9em; }
@@ -73,7 +76,10 @@
         .roi-controls { display: none; gap: 10px; align-items: center; margin-top: 10px; }
         .roi-controls.active { display: flex; }
         .hidden { display: none !important; }
-        @media (max-width: 768px) { .layout-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 768px) { 
+            .layout-grid { grid-template-columns: 1fr !important; }
+            .layout-grid.stream-visible { grid-template-columns: 1fr !important; }
+        }
     </style>
 </head>
 <body class="antialiased">
@@ -444,6 +450,27 @@
         const tabButtons = evt.currentTarget.parentElement.querySelectorAll('.tab-button'); tabButtons.forEach(tb => tb.classList.remove('active'));
         document.getElementById(`tab-content-${appName}-${channelId}`).classList.add('active'); evt.currentTarget.classList.add('active'); fetchHistory(appName, 1, channelId);
     }
+    function toggleFeed(appName, channelId) {
+        const streamBox = document.getElementById(`stream-box-${appName}-${channelId}`);
+        const layoutGrid = document.getElementById(`layout-${appName}-${channelId}`);
+        const feedBtn = document.getElementById(`feed-btn-${appName}-${channelId}`);
+        
+        if (!streamBox || !layoutGrid || !feedBtn) return;
+        
+        const isVisible = streamBox.classList.contains('visible');
+        
+        if (isVisible) {
+            // Hide feed
+            streamBox.classList.remove('visible');
+            layoutGrid.classList.remove('stream-visible');
+            feedBtn.textContent = '📹 View Feed';
+        } else {
+            // Show feed
+            streamBox.classList.add('visible');
+            layoutGrid.classList.add('stream-visible');
+            feedBtn.textContent = '❌ Hide Feed';
+        }
+    }
     // Queue monitoring functions removed - simplified to show only current queue count and detection history
     
     async function generateShutterReport() {
@@ -518,11 +545,25 @@
             let contentHTML = '';
             if (appName === 'PeopleCounter') {
                 const channel = config.channels[0]; const today = new Date().toISOString().split('T')[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name}</div><img src="/video_feed/PeopleCounter/${channel.id}" alt="Live feed"><div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div></div><div class="report-section"><h3>Daily Footfall</h3><input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)"><table><thead><tr><th>Hour</th><th>In</th><th>Out</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table><button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button></div></div>`;
+                contentHTML = `<div class="layout-grid" id="layout-PeopleCounter-${channel.id}">
+                    <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('PeopleCounter', '${channel.id}')" id="feed-btn-PeopleCounter-${channel.id}">📹 View Feed</button>
+                    <div class="stream-box" id="stream-box-PeopleCounter-${channel.id}">
+                        <div class="stream-header">${channel.name}</div>
+                        <img src="/video_feed/PeopleCounter/${channel.id}" alt="Live feed">
+                        <div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div>
+                    </div>
+                    <div class="report-section">
+                        <h3>Daily Footfall</h3>
+                        <input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)">
+                        <table><thead><tr><th>Hour</th><th>In</th><th>Out</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table>
+                        <button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button>
+                    </div>
+                </div>`;
                 setTimeout(() => fetchPCReport(channel.id, today), 100);
             } else if (appName === 'QueueMonitor') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid">
+                contentHTML = `<div class="layout-grid" id="layout-QueueMonitor-${channel.id}">
+                    <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('QueueMonitor', '${channel.id}')" id="feed-btn-QueueMonitor-${channel.id}">📹 View Feed</button>
                     <div class="stream-box" id="stream-box-QueueMonitor-${channel.id}">
                         <div class="stream-header">${channel.name}</div>
                         <img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed">
@@ -563,7 +604,34 @@
                 setTimeout(() => fetchHistory('QueueMonitor', 1, channel.id), 300);
             } else if (appName === 'KitchenCompliance') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid"><div class="stream-box"><div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div><img src="/video_feed/KitchenCompliance/${channel.id}" alt="Live feed"><div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div></div><div class="report-section"><h3>Compliance Violations</h3><div class="summary-cards"><div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div><div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div><div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div></div></div></div><div style="margin-top:20px;"><h3>Violation History</h3><div class="filter-controls"><label>From:</label><input type="date" id="start-date-KitchenCompliance-${channel.id}"><label>To:</label><input type="date" id="end-date-KitchenCompliance-${channel.id}"><button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button></div><div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div><div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div></div>`;
+                contentHTML = `<div class="layout-grid" id="layout-KitchenCompliance-${channel.id}">
+                    <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('KitchenCompliance', '${channel.id}')" id="feed-btn-KitchenCompliance-${channel.id}">📹 View Feed</button>
+                    <div class="stream-box" id="stream-box-KitchenCompliance-${channel.id}">
+                        <div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div>
+                        <img src="/video_feed/KitchenCompliance/${channel.id}" alt="Live feed">
+                        <div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div>
+                    </div>
+                    <div class="report-section">
+                        <h3>Compliance Violations</h3>
+                        <div class="summary-cards">
+                            <div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div>
+                            <div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div>
+                            <div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div>
+                        </div>
+                    </div>
+                </div>
+                <div style="margin-top:20px;">
+                    <h3>Violation History</h3>
+                    <div class="filter-controls">
+                        <label>From:</label>
+                        <input type="date" id="start-date-KitchenCompliance-${channel.id}">
+                        <label>To:</label>
+                        <input type="date" id="end-date-KitchenCompliance-${channel.id}">
+                        <button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button>
+                    </div>
+                    <div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div>
+                    <div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div>
+                </div>`;
                 setTimeout(() => fetchHistory('KitchenCompliance', 1, channel.id), 100);
             } else if (appName === 'Generic') {
                 const channel = config.channels[0];
@@ -596,8 +664,9 @@
                 setTimeout(() => fetchHistory('Generic', 1, channel.id), 100);
             } else if (appName === 'OccupancyMonitor') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid">
-                    <div class="stream-box">
+                contentHTML = `<div class="layout-grid" id="layout-OccupancyMonitor-${channel.id}">
+                    <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('OccupancyMonitor', '${channel.id}')" id="feed-btn-OccupancyMonitor-${channel.id}">📹 View Feed</button>
+                    <div class="stream-box" id="stream-box-OccupancyMonitor-${channel.id}">
                         <div class="stream-header">${channel.name} - Occupancy Monitor</div>
                         <img src="/video_feed/OccupancyMonitor/${channel.id}" alt="Live feed">
                         <div class="stream-footer">Live Count: <span id="live-count-${channel.id}">0</span> | Required: <span id="required-count-${channel.id}">0</span></div>
