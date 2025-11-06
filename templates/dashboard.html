@@ -48,6 +48,10 @@
         .stream-footer { font-size: 1.1em; text-align: center; }
         .report-section { flex-grow: 1; min-width: 300px; }
         .view-feed-btn { margin-bottom: 15px; }
+        .dashboard-summary { margin-bottom: 25px; }
+        .dashboard-summary h3 { margin-bottom: 15px; color: var(--text-primary); font-size: 1.1em; }
+        .dashboard-details { margin-top: 25px; }
+        .dashboard-details h3 { margin-bottom: 15px; color: var(--text-primary); font-size: 1.1em; }
         .report-section input[type="date"] { background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 5px; border-radius: 4px; }
         .report-section table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         .report-section th, .report-section td { border: 1px solid var(--border-color); padding: 8px; text-align: left; font-size: 0.9em; }
@@ -440,10 +444,30 @@
     }
     function applyDateFilter(appName, channelId) { const targetId = `${appName}-${channelId}`; const startDate = document.getElementById(`start-date-${targetId}`).value; const endDate = document.getElementById(`end-date-${targetId}`).value; if (startDate && endDate) { fetchHistory(appName, 1, channelId, startDate, endDate); } else { alert("Please select both a start and end date."); } }
     async function fetchPCReport(channelId, date) {
-        const tableBody = document.getElementById(`pc-report-table-${channelId}`); if (!tableBody) return; tableBody.innerHTML = '<tr><td colspan="3">Loading...</td></tr>';
+        const tableBody = document.getElementById(`pc-report-table-${channelId}`); if (!tableBody) return; tableBody.innerHTML = '<tr><td colspan="4">Loading...</td></tr>';
         const response = await fetch(`/report/${channelId}/${date}`); const data = await response.json();
-        tableBody.innerHTML = ''; if (data.error) { tableBody.innerHTML = `<tr><td colspan="3" style="color:#f87171;">${data.error}</td></tr>`; return; }
-        for (let hour = 0; hour < 24; hour++) { const hourData = data.hourly_data[hour]; const hourFormatted = new Date(0, 0, 0, hour).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true }); const row = `<tr><td>${hourFormatted}</td><td>${hourData.in}</td><td>${hourData.out}</td></tr>`; tableBody.innerHTML += row; }
+        tableBody.innerHTML = ''; if (data.error) { tableBody.innerHTML = `<tr><td colspan="4" style="color:#f87171;">${data.error}</td></tr>`; return; }
+        let totalIn = 0, totalOut = 0;
+        for (let hour = 0; hour < 24; hour++) { 
+            const hourData = data.hourly_data[hour]; 
+            const hourFormatted = new Date(0, 0, 0, hour).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true }); 
+            const total = hourData.in + hourData.out;
+            totalIn += hourData.in;
+            totalOut += hourData.out;
+            const row = `<tr><td>${hourFormatted}</td><td>${hourData.in}</td><td>${hourData.out}</td><td>${total}</td></tr>`; 
+            tableBody.innerHTML += row; 
+        }
+        // Update summary cards
+        const summaryIn = document.getElementById(`summary-in-${channelId}`);
+        const summaryOut = document.getElementById(`summary-out-${channelId}`);
+        const summaryNet = document.getElementById(`summary-net-${channelId}`);
+        if (summaryIn) summaryIn.textContent = totalIn;
+        if (summaryOut) summaryOut.textContent = totalOut;
+        if (summaryNet) {
+            const net = totalIn - totalOut;
+            summaryNet.textContent = net;
+            summaryNet.style.color = net >= 0 ? '#22c55e' : '#ef4444';
+        }
     }
     function openTab(evt, appName, channelId) {
         const tabContents = document.querySelectorAll(`.tab-content[id^="tab-content-${appName}"]`); tabContents.forEach(tc => tc.classList.remove('active'));
@@ -545,32 +569,82 @@
             let contentHTML = '';
             if (appName === 'PeopleCounter') {
                 const channel = config.channels[0]; const today = new Date().toISOString().split('T')[0];
-                contentHTML = `<div class="layout-grid" id="layout-PeopleCounter-${channel.id}">
+                contentHTML = `
                     <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('PeopleCounter', '${channel.id}')" id="feed-btn-PeopleCounter-${channel.id}">📹 View Feed</button>
-                    <div class="stream-box" id="stream-box-PeopleCounter-${channel.id}">
-                        <div class="stream-header">${channel.name}</div>
-                        <img src="/video_feed/PeopleCounter/${channel.id}" alt="Live feed">
-                        <div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div>
+                    <div class="layout-grid" id="layout-PeopleCounter-${channel.id}">
+                        <div class="stream-box" id="stream-box-PeopleCounter-${channel.id}">
+                            <div class="stream-header">${channel.name}</div>
+                            <img src="/video_feed/PeopleCounter/${channel.id}" alt="Live feed">
+                            <div class="stream-footer">IN: <span id="in-count-${channel.id}">...</span> | OUT: <span id="out-count-${channel.id}">...</span></div>
+                        </div>
                     </div>
-                    <div class="report-section">
-                        <h3>Daily Footfall</h3>
-                        <input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)">
-                        <table><thead><tr><th>Hour</th><th>In</th><th>Out</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table>
-                        <button class="btn btn-primary" style="width: 100%; margin-top: 15px;" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button>
+                    <div class="dashboard-summary">
+                        <h3>Summary</h3>
+                        <div class="summary-cards">
+                            <div class="summary-card">
+                                <h4>Total IN (Today)</h4>
+                                <p id="summary-in-${channel.id}" style="color: #22c55e;">...</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Total OUT (Today)</h4>
+                                <p id="summary-out-${channel.id}" style="color: #3b82f6;">...</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Net Count</h4>
+                                <p id="summary-net-${channel.id}" style="color: #f59e0b;">...</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Status</h4>
+                                <p style="color: #22c55e;">Active Monitoring</p>
+                            </div>
+                        </div>
                     </div>
-                </div>`;
-                setTimeout(() => fetchPCReport(channel.id, today), 100);
+                    <div class="dashboard-details" style="margin-top: 25px;">
+                        <h3>Daily Footfall Report</h3>
+                        <div style="margin-bottom: 15px;">
+                            <input type="date" value="${today}" onchange="fetchPCReport('${channel.id}', this.value)" style="margin-right: 10px;">
+                            <button class="btn btn-primary" onclick="openReportModal('${channel.id}', '${channel.name}')">Generate Historical Report</button>
+                        </div>
+                        <table><thead><tr><th>Hour</th><th>In</th><th>Out</th><th>Total</th></tr></thead><tbody id="pc-report-table-${channel.id}"></tbody></table>
+                    </div>`;
+                setTimeout(() => {
+                    fetchPCReport(channel.id, today);
+                    updatePeopleCounterSummary(channel.id);
+                }, 100);
             } else if (appName === 'QueueMonitor') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid" id="layout-QueueMonitor-${channel.id}">
+                contentHTML = `
                     <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('QueueMonitor', '${channel.id}')" id="feed-btn-QueueMonitor-${channel.id}">📹 View Feed</button>
-                    <div class="stream-box" id="stream-box-QueueMonitor-${channel.id}">
-                        <div class="stream-header">${channel.name}</div>
-                        <img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed">
-                        <canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas>
-                        <div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div>
+                    <div class="layout-grid" id="layout-QueueMonitor-${channel.id}">
+                        <div class="stream-box" id="stream-box-QueueMonitor-${channel.id}">
+                            <div class="stream-header">${channel.name}</div>
+                            <img src="/video_feed/QueueMonitor/${channel.id}" alt="Live feed">
+                            <canvas class="roi-canvas" style="display:none;" onclick="handleCanvasClick(event, 'QueueMonitor', '${channel.id}')"></canvas>
+                            <div class="stream-footer">Current Queue: <span id="queue-count-${channel.id}">...</span></div>
+                        </div>
                     </div>
-                    <div class="report-section">
+                    <div class="dashboard-summary">
+                        <h3>Summary</h3>
+                        <div class="summary-cards">
+                            <div class="summary-card">
+                                <h4>Current Queue</h4>
+                                <p id="summary-queue-${channel.id}" style="color: #f59e0b;">...</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Counter Status</h4>
+                                <p id="summary-counter-${channel.id}" style="color: #22c55e;">...</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Status</h4>
+                                <p style="color: #22c55e;">Active Monitoring</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Alert Level</h4>
+                                <p style="color: #3b82f6;">Real-time</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="dashboard-details" style="margin-top: 25px;">
                         <h3>Detection History</h3>
                         <div class="filter-controls">
                             <label>From:</label>
@@ -581,7 +655,6 @@
                         </div>
                         <div class="history-grid" id="grid-QueueMonitor-${channel.id}"></div>
                         <div class="pagination" id="pagination-QueueMonitor-${channel.id}"></div>
-
                         <div style="margin-top: 16px;">
                             <div class="roi-controls">
                                 <button class="btn" onclick="roiDrawingState['${channel.id}'].currentPoly = 'main'">Draw Queue Area (Yellow)</button>
@@ -593,8 +666,7 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
-                </div>`;
+                    </div>`;
                 setTimeout(() => {
                     const canvas = document.getElementById(`stream-box-QueueMonitor-${channel.id}`).querySelector('.roi-canvas');
                     const img = document.getElementById(`stream-box-QueueMonitor-${channel.id}`).querySelector('img');
@@ -604,95 +676,113 @@
                 setTimeout(() => fetchHistory('QueueMonitor', 1, channel.id), 300);
             } else if (appName === 'KitchenCompliance') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid" id="layout-KitchenCompliance-${channel.id}">
+                contentHTML = `
                     <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('KitchenCompliance', '${channel.id}')" id="feed-btn-KitchenCompliance-${channel.id}">📹 View Feed</button>
-                    <div class="stream-box" id="stream-box-KitchenCompliance-${channel.id}">
-                        <div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div>
-                        <img src="/video_feed/KitchenCompliance/${channel.id}" alt="Live feed">
-                        <div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div>
+                    <div class="layout-grid" id="layout-KitchenCompliance-${channel.id}">
+                        <div class="stream-box" id="stream-box-KitchenCompliance-${channel.id}">
+                            <div class="stream-header">${channel.name} - Kitchen Compliance Monitor</div>
+                            <img src="/video_feed/KitchenCompliance/${channel.id}" alt="Live feed">
+                            <div class="stream-footer">Monitoring: Gloves, Apron, Cap, Uniform, Phone</div>
+                        </div>
                     </div>
-                    <div class="report-section">
-                        <h3>Compliance Violations</h3>
+                    <div class="dashboard-summary">
+                        <h3>Summary</h3>
                         <div class="summary-cards">
                             <div class="summary-card"><h4>Status</h4><p style="color: #22c55e;">Active Monitoring</p></div>
                             <div class="summary-card"><h4>Detection Types</h4><p>5 Violation Types</p></div>
                             <div class="summary-card"><h4>Alert Level</h4><p style="color: #f59e0b;">Real-time</p></div>
+                            <div class="summary-card"><h4>Monitoring</h4><p style="font-size: 0.9em;">Gloves, Apron, Cap, Uniform, Phone</p></div>
                         </div>
                     </div>
-                </div>
-                <div style="margin-top:20px;">
-                    <h3>Violation History</h3>
-                    <div class="filter-controls">
-                        <label>From:</label>
-                        <input type="date" id="start-date-KitchenCompliance-${channel.id}">
-                        <label>To:</label>
-                        <input type="date" id="end-date-KitchenCompliance-${channel.id}">
-                        <button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button>
-                    </div>
-                    <div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div>
-                    <div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div>
-                </div>`;
+                    <div class="dashboard-details" style="margin-top: 25px;">
+                        <h3>Violation History</h3>
+                        <div class="filter-controls">
+                            <label>From:</label>
+                            <input type="date" id="start-date-KitchenCompliance-${channel.id}">
+                            <label>To:</label>
+                            <input type="date" id="end-date-KitchenCompliance-${channel.id}">
+                            <button class="btn" onclick="applyDateFilter('KitchenCompliance', '${channel.id}')">Filter</button>
+                        </div>
+                        <div class="history-grid" id="grid-KitchenCompliance-${channel.id}"></div>
+                        <div class="pagination" id="pagination-KitchenCompliance-${channel.id}"></div>
+                    </div>`;
                 setTimeout(() => fetchHistory('KitchenCompliance', 1, channel.id), 100);
             } else if (appName === 'Generic') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="report-section">
-                    <h3>Cash Detection History</h3>
-                    <div class="summary-cards">
-                        <div class="summary-card">
-                            <h4>Status</h4>
-                            <p style="color: #22c55e;">Active Monitoring</p>
-                        </div>
-                        <div class="summary-card">
-                            <h4>Detection Types</h4>
-                            <p>7 Object Classes</p>
-                        </div>
-                        <div class="summary-card">
-                            <h4>Format</h4>
-                            <p style="color: #3b82f6;">Animated GIF</p>
+                contentHTML = `
+                    <div class="dashboard-summary">
+                        <h3>Summary</h3>
+                        <div class="summary-cards">
+                            <div class="summary-card">
+                                <h4>Status</h4>
+                                <p style="color: #22c55e;">Active Monitoring</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Detection Types</h4>
+                                <p>7 Object Classes</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Format</h4>
+                                <p style="color: #3b82f6;">Animated GIF</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Alert Level</h4>
+                                <p style="color: #f59e0b;">Real-time</p>
+                            </div>
                         </div>
                     </div>
-                    <div class="filter-controls">
-                        <label>From:</label>
-                        <input type="date" id="start-date-Generic-${channel.id}">
-                        <label>To:</label>
-                        <input type="date" id="end-date-Generic-${channel.id}">
-                        <button class="btn" onclick="applyDateFilter('Generic', '${channel.id}')">Filter</button>
-                    </div>
-                    <div class="history-grid" id="grid-Generic-${channel.id}"></div>
-                    <div class="pagination" id="pagination-Generic-${channel.id}"></div>
-                </div>`;
+                    <div class="dashboard-details" style="margin-top: 25px;">
+                        <h3>Cash Detection History</h3>
+                        <div class="filter-controls">
+                            <label>From:</label>
+                            <input type="date" id="start-date-Generic-${channel.id}">
+                            <label>To:</label>
+                            <input type="date" id="end-date-Generic-${channel.id}">
+                            <button class="btn" onclick="applyDateFilter('Generic', '${channel.id}')">Filter</button>
+                        </div>
+                        <div class="history-grid" id="grid-Generic-${channel.id}"></div>
+                        <div class="pagination" id="pagination-Generic-${channel.id}"></div>
+                    </div>`;
                 setTimeout(() => fetchHistory('Generic', 1, channel.id), 100);
             } else if (appName === 'OccupancyMonitor') {
                 const channel = config.channels[0];
-                contentHTML = `<div class="layout-grid" id="layout-OccupancyMonitor-${channel.id}">
+                contentHTML = `
                     <button class="btn btn-primary view-feed-btn" onclick="toggleFeed('OccupancyMonitor', '${channel.id}')" id="feed-btn-OccupancyMonitor-${channel.id}">📹 View Feed</button>
-                    <div class="stream-box" id="stream-box-OccupancyMonitor-${channel.id}">
-                        <div class="stream-header">${channel.name} - Occupancy Monitor</div>
-                        <img src="/video_feed/OccupancyMonitor/${channel.id}" alt="Live feed">
-                        <div class="stream-footer">Live Count: <span id="live-count-${channel.id}">0</span> | Required: <span id="required-count-${channel.id}">0</span></div>
+                    <div class="layout-grid" id="layout-OccupancyMonitor-${channel.id}">
+                        <div class="stream-box" id="stream-box-OccupancyMonitor-${channel.id}">
+                            <div class="stream-header">${channel.name} - Occupancy Monitor</div>
+                            <img src="/video_feed/OccupancyMonitor/${channel.id}" alt="Live feed">
+                            <div class="stream-footer">Live Count: <span id="live-count-${channel.id}">0</span> | Required: <span id="required-count-${channel.id}">0</span></div>
+                        </div>
                     </div>
-                    <div class="report-section">
-                        <h3>Occupancy Management</h3>
+                    <div class="dashboard-summary">
+                        <h3>Summary</h3>
                         <div class="summary-cards">
                             <div class="summary-card">
-                                <h4>Current Status</h4>
+                                <h4>Live Count</h4>
+                                <p id="summary-live-${channel.id}" style="color: #3b82f6;">0</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Required Count</h4>
+                                <p id="summary-required-${channel.id}" style="color: #f59e0b;">0</p>
+                            </div>
+                            <div class="summary-card">
+                                <h4>Status</h4>
                                 <p id="occupancy-status-${channel.id}" style="color: #22c55e;">Active Monitoring</p>
                             </div>
                             <div class="summary-card">
                                 <h4>Time Slot</h4>
                                 <p id="time-slot-${channel.id}">No Schedule</p>
                             </div>
-                            <div class="summary-card">
-                                <h4>Device</h4>
-                                <p id="device-info-${channel.id}">CUDA/CPU</p>
-                            </div>
                         </div>
-                        <div style="margin-top: 16px;">
+                    </div>
+                    <div class="dashboard-details" style="margin-top: 25px;">
+                        <h3>Occupancy Management</h3>
+                        <div style="margin-bottom: 16px;">
                             <button class="btn" onclick="promptScheduleUpload('${channel.id}', '${channel.name}')">Manage Schedule</button>
                             <button class="btn" onclick="viewOccupancyLogs('${channel.id}')">View Logs</button>
                         </div>
-                    </div>
-                </div>`;
+                    </div>`;
                 setTimeout(() => {
                     // Initialize occupancy monitoring
                     initializeOccupancyMonitor(channel.id);
@@ -717,7 +807,29 @@
             },
         });
     }
-    socket.on('count_update', data => { const inCount = document.getElementById(`in-count-${data.channel_id}`); const outCount = document.getElementById(`out-count-${data.channel_id}`); if (inCount) inCount.textContent = data.in_count; if (outCount) outCount.textContent = data.out_count; });
+    function updatePeopleCounterSummary(channelId) {
+        const inEl = document.getElementById(`summary-in-${channelId}`);
+        const outEl = document.getElementById(`summary-out-${channelId}`);
+        const netEl = document.getElementById(`summary-net-${channelId}`);
+        const inCount = parseInt(document.getElementById(`in-count-${channelId}`)?.textContent || '0');
+        const outCount = parseInt(document.getElementById(`out-count-${channelId}`)?.textContent || '0');
+        if (inEl) inEl.textContent = inCount;
+        if (outEl) outEl.textContent = outCount;
+        if (netEl) {
+            const net = inCount - outCount;
+            netEl.textContent = net;
+            netEl.style.color = net >= 0 ? '#22c55e' : '#ef4444';
+        }
+    }
+    
+    socket.on('count_update', data => { 
+        const inCount = document.getElementById(`in-count-${data.channel_id}`); 
+        const outCount = document.getElementById(`out-count-${data.channel_id}`); 
+        if (inCount) inCount.textContent = data.in_count; 
+        if (outCount) outCount.textContent = data.out_count;
+        updatePeopleCounterSummary(data.channel_id);
+    });
+    
     socket.on('queue_update', data => { 
         const qVal = typeof data.queue === 'number' ? data.queue : data.count;
         const cVal = typeof data.counter === 'number' ? data.counter : undefined;
@@ -729,6 +841,18 @@
         const currentCounter = document.getElementById(`current-counter-${data.channel_id}`);
         if (counterCount && typeof cVal === 'number') counterCount.textContent = cVal;
         if (currentCounter && typeof cVal === 'number') currentCounter.textContent = cVal;
+        
+        // Update summary cards
+        const summaryQueue = document.getElementById(`summary-queue-${data.channel_id}`);
+        const summaryCounter = document.getElementById(`summary-counter-${data.channel_id}`);
+        if (summaryQueue && typeof qVal === 'number') {
+            summaryQueue.textContent = qVal;
+            summaryQueue.style.color = qVal > 3 ? '#ef4444' : qVal > 0 ? '#f59e0b' : '#22c55e';
+        }
+        if (summaryCounter && typeof cVal === 'number') {
+            summaryCounter.textContent = cVal > 0 ? 'Occupied' : 'Empty';
+            summaryCounter.style.color = cVal > 0 ? '#22c55e' : '#6b7280';
+        }
     });
     socket.on('shutter_update', data => {
         const { channel_id, last_status, last_status_time, first_open_time, first_close_time, total_open_duration_seconds, total_closed_duration_seconds } = data;
@@ -986,20 +1110,34 @@
         if (requiredCountEl) requiredCountEl.textContent = data.required_count;
         if (timeSlotEl) timeSlotEl.textContent = data.time_slot;
         
+        // Update summary cards
+        const summaryLive = document.getElementById(`summary-live-${data.channel_id}`);
+        const summaryRequired = document.getElementById(`summary-required-${data.channel_id}`);
+        if (summaryLive) summaryLive.textContent = data.live_count;
+        if (summaryRequired) summaryRequired.textContent = data.required_count;
+        
         if (statusEl) {
             statusEl.textContent = data.status;
+            const summaryStatus = document.querySelector(`#summary-live-${data.channel_id}`)?.parentElement?.parentElement?.querySelector('p[id^="occupancy-status"]');
+            if (summaryStatus) {
+                summaryStatus.textContent = data.status;
+            }
             switch(data.status) {
                 case 'OK':
                     statusEl.style.color = '#22c55e';
+                    if (summaryStatus) summaryStatus.style.color = '#22c55e';
                     break;
                 case 'BELOW_REQUIREMENT':
                     statusEl.style.color = '#ef4444';
+                    if (summaryStatus) summaryStatus.style.color = '#ef4444';
                     break;
                 case 'NO_SCHEDULE':
                     statusEl.style.color = '#6b7280';
+                    if (summaryStatus) summaryStatus.style.color = '#6b7280';
                     break;
                 case 'PAUSED':
                     statusEl.style.color = '#f59e0b';
+                    if (summaryStatus) summaryStatus.style.color = '#f59e0b';
                     break;
             }
         }
