@@ -872,14 +872,14 @@ class PeopleCounterProcessor(threading.Thread):
         with SessionLocal() as db:
             try:
                 # Increment hourly count for current hour
-                        stmt = text("""
-                            INSERT INTO hourly_footfall (channel_id, report_date, hour, in_count, out_count)
-                            VALUES (:cid, :rdate, :hour, :inc, :outc)
-                            ON CONFLICT (channel_id, report_date, hour)
+                stmt = text("""
+                    INSERT INTO hourly_footfall (channel_id, report_date, hour, in_count, out_count)
+                    VALUES (:cid, :rdate, :hour, :inc, :outc)
+                    ON CONFLICT (channel_id, report_date, hour)
                     DO UPDATE SET 
                         in_count = hourly_footfall.in_count + EXCLUDED.in_count,
-                                          out_count = hourly_footfall.out_count + EXCLUDED.out_count;
-                        """)
+                        out_count = hourly_footfall.out_count + EXCLUDED.out_count;
+                """)
                 inc = 1 if count_type == 'in' else 0
                 outc = 1 if count_type == 'out' else 0
                 db.execute(stmt, {
@@ -915,12 +915,15 @@ class PeopleCounterProcessor(threading.Thread):
                 if frame is None:
                     time.sleep(0.01)
                     continue
+                # Ensure we have a fresh copy to prevent any cross-contamination with other processors
+                frame = frame.copy()
                 # Robust tracker call; falls back to predict on errors
                 results = safe_track_persons(self.model, frame, conf=0.5, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
                 consecutive_errors = 0  # Reset on successful frame
                 r0 = results[0] if (results and len(results) > 0) else None
                 if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-                    boxes, track_ids = r0.boxes.xywh.cpu(), r0.boxes.id.int().cpu().tolist()
+                    # Use xyxy format to get bounding box coordinates (x1, y1, x2, y2)
+                    boxes_xyxy, track_ids = r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()
                     line_x = int(frame.shape[1] * 0.5)
                     current_track_ids = set(track_ids)
                     
@@ -932,13 +935,18 @@ class PeopleCounterProcessor(threading.Thread):
                         # Keep counted_tracks to prevent immediate re-counting of the same track ID
                         self.track_history.pop(tid, None)
                     
-                    for box, track_id in zip(boxes, track_ids):
-                        center_x = int(box[0])
+                    for box, track_id in zip(boxes_xyxy, track_ids):
+                        # Extract bounding box edges: x1 (left), x2 (right)
+                        left_edge = int(box[0])  # Left edge of bounding box
+                        right_edge = int(box[2])  # Right edge of bounding box
+                        center_x = int((left_edge + right_edge) / 2)  # Center for reference
+                        
                         history = self.track_history[track_id]
                         
-                        # Add current position to history
-                        history.append(center_x)
-                        if len(history) > 10:  # Keep more history (increased from 5 to 10) for better tracking with skipped frames
+                        # Store left edge, right edge, and center in history as a tuple
+                        # This allows us to detect crossing using any part of the box
+                        history.append({'left': left_edge, 'right': right_edge, 'center': center_x})
+                        if len(history) > 10:  # Keep more history for better tracking with skipped frames
                             history.pop(0)
                         
                         # Check for crossing only if we have at least 2 positions and haven't counted this track yet
@@ -946,14 +954,31 @@ class PeopleCounterProcessor(threading.Thread):
                             count_type = None
                             line_tolerance = 10  # pixels tolerance for line crossing detection
                             
-                            # Primary detection: Check last 2 positions for clear crossing
+                            # Primary detection: Check last 2 positions for clear crossing using bounding box edges
                             if len(history) >= 2:
-                                prev_x = history[-2]
-                                curr_x = history[-1]
+                                prev = history[-2]
+                                curr = history[-1]
                                 
                                 # IN: moving from left to right across the line
-                                # Person was clearly on the left and has crossed to the right
-                                if prev_x <= (line_x - line_tolerance) and curr_x > (line_x + line_tolerance):
+                                # Check if left edge OR right edge OR center crosses from left to right
+                                # This catches cases where frames are skipped
+                                prev_left = prev['left']
+                                prev_right = prev['right']
+                                prev_center = prev['center']
+                                curr_left = curr['left']
+                                curr_right = curr['right']
+                                curr_center = curr['center']
+                                
+                                # IN: Check if any part of the box crosses from left to right
+                                # Most reliable: left edge crosses (person is entering)
+                                # Backup: right edge or center crosses
+                                in_detected = (
+                                    (prev_left <= line_x and curr_left > line_x) or  # Left edge crosses
+                                    (prev_center <= line_x and curr_center > line_x) or  # Center crosses
+                                    (prev_right <= line_x and curr_right > line_x)  # Right edge crosses
+                                )
+                                
+                                if in_detected:
                                     self.counts['in'] += 1
                                     count_type = 'in'
                                     self.counted_tracks.add(track_id)
@@ -961,12 +986,17 @@ class PeopleCounterProcessor(threading.Thread):
                                     temp = history[-1:]
                                     history.clear()
                                     history.extend(temp)
-                                    logging.info(f"PeopleCounter {self.channel_name}: IN detected - Track ID: {track_id}, prev_x: {prev_x}, curr_x: {curr_x}, line_x: {line_x}")
+                                    logging.info(f"PeopleCounter {self.channel_name}: IN detected - Track ID: {track_id}, prev_left: {prev_left}, curr_left: {curr_left}, prev_right: {prev_right}, curr_right: {curr_right}, line_x: {line_x}")
                                 
-                                # OUT: moving from right to left across the line - VERY LENIENT
-                                # Accept if person was on right side and is now on left side (even with gaps)
-                                # This catches cases where frames are skipped
-                                elif prev_x > line_x and curr_x <= line_x:
+                                # OUT: moving from right to left across the line
+                                # Check if right edge OR left edge OR center crosses from right to left
+                                # Most reliable: right edge crosses (person is exiting)
+                                # Backup: left edge or center crosses
+                                elif (
+                                    (prev_right > line_x and curr_right <= line_x) or  # Right edge crosses
+                                    (prev_center > line_x and curr_center <= line_x) or  # Center crosses
+                                    (prev_left > line_x and curr_left <= line_x)  # Left edge crosses
+                                ):
                                     self.counts['out'] += 1
                                     count_type = 'out'
                                     self.counted_tracks.add(track_id)
@@ -974,55 +1004,80 @@ class PeopleCounterProcessor(threading.Thread):
                                     temp = history[-1:]
                                     history.clear()
                                     history.extend(temp)
-                                    logging.info(f"PeopleCounter {self.channel_name}: OUT detected - Track ID: {track_id}, prev_x: {prev_x}, curr_x: {curr_x}, line_x: {line_x}")
+                                    logging.info(f"PeopleCounter {self.channel_name}: OUT detected - Track ID: {track_id}, prev_left: {prev_left}, curr_left: {curr_left}, prev_right: {prev_right}, curr_right: {curr_right}, line_x: {line_x}")
                             
-                            # Fallback 1: Check for crossing pattern using 3 positions
+                            # Fallback 1: Check for crossing pattern using 3 positions with bounding box edges
                             if count_type is None and len(history) >= 3:
                                 pos_1, pos_2, pos_3 = history[-3], history[-2], history[-1]
                                 
                                 # IN: pattern showing clear movement from left to right
-                                if pos_1 < line_x and pos_2 <= line_x and pos_3 > line_x:
-                                    self.counts['in'] += 1
-                                    count_type = 'in'
-                                    self.counted_tracks.add(track_id)
-                                    temp = history[-1:]
-                                    history.clear()
-                                    history.extend(temp)
-                                    logging.info(f"PeopleCounter {self.channel_name}: IN detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
+                                # Check if any part of the box (left, center, or right) crosses from left to right
+                                # Using left edge for primary detection (most reliable for IN)
+                                pos_1_left = pos_1['left']
+                                pos_1_center = pos_1['center']
+                                pos_1_right = pos_1['right']
+                                pos_3_left = pos_3['left']
+                                pos_3_center = pos_3['center']
+                                pos_3_right = pos_3['right']
+                                
+                                # IN: Check if any edge crosses from left to right, with increasing movement
+                                if ((pos_1_left <= line_x and pos_3_left > line_x) or
+                                    (pos_1_center <= line_x and pos_3_center > line_x) or
+                                    (pos_1_right <= line_x and pos_3_right > line_x)):
+                                    if pos_1_left < pos_3_left or pos_1_center < pos_3_center or pos_1_right < pos_3_right:
+                                        self.counts['in'] += 1
+                                        count_type = 'in'
+                                        self.counted_tracks.add(track_id)
+                                        temp = history[-1:]
+                                        history.clear()
+                                        history.extend(temp)
+                                        logging.info(f"PeopleCounter {self.channel_name}: IN detected (fallback) - Track ID: {track_id}, pos1: L={pos_1_left},R={pos_1_right}, pos3: L={pos_3_left},R={pos_3_right}, line_x: {line_x}")
                                 
                                 # OUT: pattern showing clear movement from right to left
-                                # More lenient - accept if person was on right and is now on left
-                                elif pos_1 > line_x and pos_3 <= line_x:
-                                    if pos_1 > pos_3:  # Moving left (decreasing X)
+                                # Check if any part of the box (right, center, or left) crosses from right to left
+                                # Using right edge for primary detection (most reliable for OUT)
+                                elif ((pos_1_right > line_x and pos_3_right <= line_x) or
+                                      (pos_1_center > line_x and pos_3_center <= line_x) or
+                                      (pos_1_left > line_x and pos_3_left <= line_x)):
+                                    if pos_1_right > pos_3_right or pos_1_center > pos_3_center or pos_1_left > pos_3_left:
                                         self.counts['out'] += 1
                                         count_type = 'out'
                                         self.counted_tracks.add(track_id)
                                         temp = history[-1:]
                                         history.clear()
                                         history.extend(temp)
-                                        logging.info(f"PeopleCounter {self.channel_name}: OUT detected (fallback) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
-                                
-                                # Additional OUT detection: catch cases where person crosses slowly
-                                elif pos_1 > (line_x + line_tolerance) and pos_2 > line_x and pos_3 <= (line_x + line_tolerance):
-                                    if pos_1 > pos_3:  # Confirmed leftward movement
-                                        self.counts['out'] += 1
-                                        count_type = 'out'
-                                        self.counted_tracks.add(track_id)
-                                        temp = history[-1:]
-                                        history.clear()
-                                        history.extend(temp)
-                                        logging.info(f"PeopleCounter {self.channel_name}: OUT detected (slow crossing) - Track ID: {track_id}, positions: {pos_1}, {pos_2}, {pos_3}, line_x: {line_x}")
+                                        logging.info(f"PeopleCounter {self.channel_name}: OUT detected (fallback) - Track ID: {track_id}, pos1: L={pos_1_left},R={pos_1_right}, pos3: L={pos_3_left},R={pos_3_right}, line_x: {line_x}")
                             
-                            # Fallback 2: Check longer history for patterns with skipped frames (OUT only, more lenient)
+                            # Fallback 2: Check longer history for patterns with skipped frames (IN and OUT, more lenient)
                             if count_type is None and len(history) >= 4:
-                                # Check if person moved from right to left, even with gaps
-                                right_positions = [pos for pos in history[-4:] if pos > line_x]
-                                left_positions = [pos for pos in history[-4:] if pos <= line_x]
+                                # Check if person moved from left to right, even with gaps
+                                # Check using left edge for IN detection
+                                left_edge_positions = [pos['left'] for pos in history[-4:] if pos['left'] <= line_x]
+                                right_edge_positions = [pos['right'] for pos in history[-4:] if pos['right'] > line_x]
                                 
-                                # If we have positions on both sides and oldest right > newest left
-                                if len(right_positions) > 0 and len(left_positions) > 0:
-                                    oldest_right = max([pos for i, pos in enumerate(history[-4:]) if pos > line_x], default=0)
-                                    newest_left = min([pos for i, pos in enumerate(history[-4:]) if pos <= line_x], default=float('inf'))
+                                # IN detection: If we have positions on both sides
+                                if len(left_edge_positions) > 0 and len(right_edge_positions) > 0:
+                                    # Find oldest left edge position and newest right edge position
+                                    oldest_left = min([pos['left'] for pos in history[-4:] if pos['left'] <= line_x], default=float('inf'))
+                                    newest_right = max([pos['right'] for pos in history[-4:] if pos['right'] > line_x], default=0)
+                                    
+                                    # If oldest left position is left of line and newest right is right of line
+                                    if oldest_left <= line_x and newest_right > line_x:
+                                        # Check if there's an increasing trend (moving right)
+                                        if oldest_left < newest_right:
+                                            self.counts['in'] += 1
+                                            count_type = 'in'
+                                            self.counted_tracks.add(track_id)
+                                            temp = history[-1:]
+                                            history.clear()
+                                            history.extend(temp)
+                                            logging.info(f"PeopleCounter {self.channel_name}: IN detected (gap-tolerant) - Track ID: {track_id}, oldest_left: {oldest_left}, newest_right: {newest_right}, line_x: {line_x}")
+                                
+                                # OUT detection: Check if person moved from right to left, even with gaps
+                                if count_type is None and len(right_edge_positions) > 0 and len(left_edge_positions) > 0:
+                                    # Find oldest right edge position and newest left edge position
+                                    oldest_right = max([pos['right'] for pos in history[-4:] if pos['right'] > line_x], default=0)
+                                    newest_left = min([pos['left'] for pos in history[-4:] if pos['left'] <= line_x], default=float('inf'))
                                     
                                     # If oldest right position is clearly right of line and newest left is clearly left
                                     if oldest_right > (line_x + line_tolerance) and newest_left <= line_x:
@@ -1036,23 +1091,55 @@ class PeopleCounterProcessor(threading.Thread):
                                             history.extend(temp)
                                             logging.info(f"PeopleCounter {self.channel_name}: OUT detected (gap-tolerant) - Track ID: {track_id}, oldest_right: {oldest_right}, newest_left: {newest_left}, line_x: {line_x}")
                             
-                            # Fallback 3: Very lenient OUT detection - if person was on right side and is now on left
+                            # Fallback 3: Very lenient IN and OUT detection using bounding box edges
                             if count_type is None and len(history) >= 2:
-                                # Check if any position in history was on right and current is on left
-                                has_right_history = any(pos > line_x for pos in history[:-1])
-                                curr_x_val = history[-1]
-                                curr_is_left = curr_x_val <= line_x
+                                curr = history[-1]
+                                prev = history[-2]
                                 
-                                if has_right_history and curr_is_left:
-                                    # Additional check: ensure person is moving left (decreasing)
-                                    if len(history) >= 2 and history[-2] > curr_x_val:
-                                        self.counts['out'] += 1
-                                        count_type = 'out'
+                                curr_left = curr['left']
+                                curr_right = curr['right']
+                                curr_center = curr['center']
+                                prev_left = prev['left']
+                                prev_right = prev['right']
+                                prev_center = prev['center']
+                                
+                                # IN detection: if person was on left side and is now on right
+                                # Check if any part of the box was on left and is now on right
+                                has_left_history = any(
+                                    pos['left'] <= line_x or pos['center'] <= line_x or pos['right'] <= line_x 
+                                    for pos in history[:-1]
+                                )
+                                curr_is_right = curr_left > line_x or curr_center > line_x or curr_right > line_x
+                                
+                                if has_left_history and curr_is_right:
+                                    # Additional check: ensure person is moving right (increasing)
+                                    if prev_left < curr_left or prev_center < curr_center or prev_right < curr_right:
+                                        self.counts['in'] += 1
+                                        count_type = 'in'
                                         self.counted_tracks.add(track_id)
                                         temp = history[-1:]
                                         history.clear()
                                         history.extend(temp)
-                                        logging.info(f"PeopleCounter {self.channel_name}: OUT detected (very lenient) - Track ID: {track_id}, curr_x: {curr_x_val}, line_x: {line_x}")
+                                        logging.info(f"PeopleCounter {self.channel_name}: IN detected (very lenient) - Track ID: {track_id}, curr: L={curr_left},R={curr_right}, line_x: {line_x}")
+                                
+                                # OUT detection: if person was on right side and is now on left
+                                elif count_type is None:
+                                    has_right_history = any(
+                                        pos['right'] > line_x or pos['center'] > line_x or pos['left'] > line_x 
+                                        for pos in history[:-1]
+                                    )
+                                    curr_is_left = curr_right <= line_x or curr_center <= line_x or curr_left <= line_x
+                                    
+                                    if has_right_history and curr_is_left:
+                                        # Additional check: ensure person is moving left (decreasing)
+                                        if prev_right > curr_right or prev_center > curr_center or prev_left > curr_left:
+                                            self.counts['out'] += 1
+                                            count_type = 'out'
+                                            self.counted_tracks.add(track_id)
+                                            temp = history[-1:]
+                                            history.clear()
+                                            history.extend(temp)
+                                            logging.info(f"PeopleCounter {self.channel_name}: OUT detected (very lenient) - Track ID: {track_id}, curr: L={curr_left},R={curr_right}, line_x: {line_x}")
                             
                             # Update database in real-time for both daily and hourly counts
                             if count_type:
@@ -1062,12 +1149,26 @@ class PeopleCounterProcessor(threading.Thread):
                         # Reset counted flag if track moves away from the line (allows re-entry detection)
                         elif track_id in self.counted_tracks and len(history) >= 3:
                             # If person moves significantly away from line after crossing, allow re-counting
+                            # Check if all parts of the bounding box (left, center, right) have moved away
                             last_3_positions = history[-3:]
-                            all_positions_away = all(abs(pos - line_x) > 50 for pos in last_3_positions)
+                            all_positions_away = all(
+                                abs(pos['left'] - line_x) > 50 and 
+                                abs(pos['center'] - line_x) > 50 and 
+                                abs(pos['right'] - line_x) > 50
+                                for pos in last_3_positions
+                            )
                             if all_positions_away:
                                 self.counted_tracks.discard(track_id)
                                 logging.debug(f"PeopleCounter {self.channel_name}: Track ID {track_id} moved away from line, resetting count flag")
-                annotated_frame = r0.plot() if r0 is not None else frame
+                
+                # Always work with a fresh copy to prevent cross-contamination with other processors
+                if r0 is not None:
+                    # r0.plot() returns a new frame, but ensure we have our own copy
+                    annotated_frame = r0.plot().copy()
+                else:
+                    # If no detections, use a fresh copy of the frame
+                    annotated_frame = frame.copy()
+                
                 line_x = int(annotated_frame.shape[1] * 0.5)
                 cv2.line(annotated_frame, (line_x, 0), (line_x, annotated_frame.shape[0]), (0, 255, 0), 2)
                 # Display both total daily count and current hour count (matching DB)
@@ -1081,18 +1182,18 @@ class PeopleCounterProcessor(threading.Thread):
                 # Fetch current hour counts from database (updated in real-time)
                 hourly_in_current = 0
                 hourly_out_current = 0
-                    try:
-                        with SessionLocal() as db:
-                            saved_hourly = db.query(HourlyFootfall).filter_by(
-                                channel_id=self.channel_id,
-                                report_date=current_date_ist,
-                                hour=current_hour_ist
-                            ).first()
-                            if saved_hourly:
-                                hourly_in_current = saved_hourly.in_count
-                                hourly_out_current = saved_hourly.out_count
-                    except Exception as e:
-                        logging.warning(f"Could not fetch hourly count from DB: {e}")
+                try:
+                    with SessionLocal() as db:
+                        saved_hourly = db.query(HourlyFootfall).filter_by(
+                            channel_id=self.channel_id,
+                            report_date=current_date_ist,
+                            hour=current_hour_ist
+                        ).first()
+                        if saved_hourly:
+                            hourly_in_current = saved_hourly.in_count
+                            hourly_out_current = saved_hourly.out_count
+                except Exception as e:
+                    logging.warning(f"Could not fetch hourly count from DB: {e}")
                 
                 # Display total daily counts
                 cv2.putText(annotated_frame, f"TOTAL - IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
