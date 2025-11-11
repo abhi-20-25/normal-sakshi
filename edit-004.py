@@ -78,10 +78,10 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
     'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
-    'PeopleCounter': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
-    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'yolov8n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
-    'OccupancyMonitor': {'model_path': 'yolov8n.pt', 'confidence': 0.15}
+    'PeopleCounter': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
+    'QueueMonitor': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'yolo11n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
+    'OccupancyMonitor': {'model_path': 'yolo11n.pt', 'confidence': 0.15}
 }
 
 # --- YOLO tracking helper (CPU-only mode) ---
@@ -614,10 +614,11 @@ class PeopleCounterProcessor(threading.Thread):
         self.socketio = socketio
         self.is_running, self.lock = True, threading.Lock()
         
-        # Simple zone-based counting - no tracking IDs needed
-        self.left_zone_occupied = False
-        self.right_zone_occupied = False
-        self.last_state_change = 0
+        # LINE CROSSING APPROACH - Simple & Reliable!
+        self.previous_centroids = []  # List of (x, y) from previous frame
+        self.counting_line_position = 0.45  # Line at 45% (LEFT=0-45%, RIGHT=45-100%)
+        self.cooldown_zones = {}  # {(approx_x, approx_y): timestamp} to prevent double counting
+        self.cooldown_duration = 0.8  # 800ms cooldown per zone
         
         self.counts = {'in': 0, 'out': 0}
         self.current_hour = datetime.now(IST).hour
@@ -742,31 +743,28 @@ class PeopleCounterProcessor(threading.Thread):
                 enhanced_frame = cv2.merge([l_equalized, a, b])
                 enhanced_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_LAB2BGR)
                 
-                # Robust tracker call; falls back to predict on errors
-                # Increased confidence (0.30) to reduce false positives
-                results = safe_track_persons(self.model, enhanced_frame, conf=0.30, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
+                # Use YOLO predict (no tracking needed for line-crossing!)
+                results = safe_track_persons(self.model, enhanced_frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
                 consecutive_errors = 0  # Reset on successful frame
                 r0 = results[0] if (results and len(results) > 0) else None
                 
-                # Define two detection zones: LEFT BOX (40%) and RIGHT BOX (60%)
-                # Frame divided with left zone at 40% and right zone at 60%
+                # LINE CROSSING DETECTION - Counting line at 55%
                 frame_width = frame.shape[1]
-                center_line = int(frame_width * 0.4)  # 40% - left zone boundary
+                frame_height = frame.shape[0]
+                counting_line_x = int(frame_width * self.counting_line_position)  # 55% line
                 
                 if r0 is not None and getattr(r0, 'boxes', None) is not None:
                     boxes_xyxy = r0.boxes.xyxy.cpu()
                     boxes_conf = r0.boxes.conf.cpu()
                     
-                    # Count people in each zone (NO TRACKING NEEDED)
-                    # Add size filtering to exclude small objects (plants, furniture, etc.)
-                    current_left_occupied = False
-                    current_right_occupied = False
-                    
                     # Calculate frame dimensions for size filtering
-                    frame_area = frame_width * frame.shape[0]
-                    min_box_area = frame_area * 0.003  # Minimum 0.3% of frame area (more lenient)
+                    frame_area = frame_width * frame_height
+                    min_box_area = frame_area * 0.003  # Minimum 0.3% of frame area
                     max_box_area = frame_area * 0.9    # Maximum 90% of frame area
-                    min_confidence = 0.15  # Higher threshold to reduce false positives
+                    min_confidence = 0.20  # Balanced threshold
+                    
+                    # Collect current frame centroids
+                    current_centroids = []
                     
                     for i, box in enumerate(boxes_xyxy):
                         # Get box dimensions
@@ -776,57 +774,72 @@ class PeopleCounterProcessor(threading.Thread):
                         box_area = box_width * box_height
                         confidence = float(boxes_conf[i])
                         
-                        # Filter out detections that are:
-                        # 1. Too small (plants, small objects)
-                        # 2. Too large (walls, large objects)
-                        # 3. Wrong aspect ratio (not person-shaped)
-                        # 4. Low confidence
+                        # Filter: person-shaped, valid size, high confidence
                         aspect_ratio = box_height / box_width if box_width > 0 else 0
-                        
-                        # Person typically has aspect ratio between 1.2 and 4.0 (height > width)
                         is_person_shaped = 1.2 <= aspect_ratio <= 4.0
                         is_valid_size = min_box_area <= box_area <= max_box_area
                         is_confident = confidence >= min_confidence
                         
-                        # Only count if it looks like a person
                         if is_person_shaped and is_valid_size and is_confident:
+                            # Calculate centroid (center point)
                             center_x = int((x1 + x2) / 2)
-                            
-                            # Check which zone this person is in
-                            if center_x < center_line:
-                                current_left_occupied = True
-                            else:
-                                current_right_occupied = True
+                            center_y = int((y1 + y2) / 2)
+                            current_centroids.append((center_x, center_y))
                     
+                    # LINE CROSSING DETECTION
                     current_time = time.time()
                     
-                    # Simplified counting logic:
-                    # If person was in LEFT and now in RIGHT (regardless of still in left) = IN
-                    # If person was in RIGHT and now in LEFT (regardless of still in right) = OUT
+                    # Clean up old cooldown zones
+                    expired_zones = [zone for zone, timestamp in self.cooldown_zones.items() 
+                                    if current_time - timestamp > self.cooldown_duration]
+                    for zone in expired_zones:
+                        del self.cooldown_zones[zone]
                     
-                    # IN detection: Was in LEFT, now detected in RIGHT
-                    if self.left_zone_occupied and current_right_occupied and not self.right_zone_occupied:
-                        if current_time - self.last_state_change > 0.5:
-                            with self.lock:
-                                self.counts['in'] += 1
-                            self._update_hourly_count_realtime('in')
-                            self._update_and_log_counts()
-                            self.last_state_change = current_time
-                            logging.info(f"✅ PeopleCounter {self.channel_name}: IN detected - LEFT→RIGHT zone. Total IN: {self.counts['in']}")
+                    # For each current centroid, find closest match in previous frame
+                    for curr_x, curr_y in current_centroids:
+                        # Find closest previous centroid (within 100px threshold)
+                        closest_prev = None
+                        min_distance = float('inf')
+                        
+                        for prev_x, prev_y in self.previous_centroids:
+                            distance = ((curr_x - prev_x)**2 + (curr_y - prev_y)**2)**0.5
+                            if distance < min_distance and distance < 100:  # Max 100px movement per frame
+                                min_distance = distance
+                                closest_prev = (prev_x, prev_y)
+                        
+                        # Check if line was crossed
+                        if closest_prev is not None:
+                            prev_x, prev_y = closest_prev
+                            
+                            # Check cooldown zone (approximate location to prevent double-counting)
+                            zone_key = (int(curr_x / 80) * 80, int(curr_y / 80) * 80)  # 80px grid
+                            if zone_key in self.cooldown_zones:
+                                continue  # Skip - recently counted in this area
+                            
+                            # Detect crossing: previous position on one side, current on other
+                            crossed_left_to_right = prev_x < counting_line_x and curr_x >= counting_line_x
+                            crossed_right_to_left = prev_x >= counting_line_x and curr_x < counting_line_x
+                            
+                            if crossed_left_to_right:
+                                # Person entered (LEFT → RIGHT)
+                                with self.lock:
+                                    self.counts['in'] += 1
+                                self._update_hourly_count_realtime('in')
+                                self._update_and_log_counts()
+                                self.cooldown_zones[zone_key] = current_time
+                                logging.info(f"✅ IN: Person crossed line LEFT→RIGHT at ({curr_x},{curr_y}). Total IN: {self.counts['in']}")
+                            
+                            elif crossed_right_to_left:
+                                # Person exited (RIGHT → LEFT)
+                                with self.lock:
+                                    self.counts['out'] += 1
+                                self._update_hourly_count_realtime('out')
+                                self._update_and_log_counts()
+                                self.cooldown_zones[zone_key] = current_time
+                                logging.info(f"✅ OUT: Person crossed line RIGHT→LEFT at ({curr_x},{curr_y}). Total OUT: {self.counts['out']}")
                     
-                    # OUT detection: Was in RIGHT, now detected in LEFT
-                    elif self.right_zone_occupied and current_left_occupied and not self.left_zone_occupied:
-                        if current_time - self.last_state_change > 0.5:
-                            with self.lock:
-                                self.counts['out'] += 1
-                            self._update_hourly_count_realtime('out')
-                            self._update_and_log_counts()
-                            self.last_state_change = current_time
-                            logging.info(f"✅ PeopleCounter {self.channel_name}: OUT detected - RIGHT→LEFT zone. Total OUT: {self.counts['out']}")
-                    
-                    # Update zone occupation states (boolean: is anyone in that zone?)
-                    self.left_zone_occupied = current_left_occupied
-                    self.right_zone_occupied = current_right_occupied
+                    # Update previous centroids for next frame
+                    self.previous_centroids = current_centroids
                 
                 # Create a completely fresh annotated frame to prevent cross-contamination
                 # Start with a deep copy of the original frame
@@ -868,8 +881,18 @@ class PeopleCounterProcessor(threading.Thread):
                             reason = "Small" if box_area < min_box_area else "Large" if box_area > max_box_area else "Shape" if not is_person_shaped else "LowConf"
                             cv2.putText(annotated_frame, f"X {reason}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                 
-                # Draw the TWO detection zones: LEFT BOX (45% - blue) and RIGHT BOX (55% - red)
-                # Frame divided with 45% left and 55% right
+                # Draw counting line and zones
+                # Counting line at 45% (LEFT zone: 0-45%, RIGHT zone: 45-100%)
+                cv2.line(annotated_frame, (counting_line_x, 0), (counting_line_x, frame_height), (0, 255, 255), 2)  # Yellow line
+                cv2.putText(annotated_frame, "COUNTING LINE (45%)", (counting_line_x + 10, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                
+                # Draw LEFT zone label
+                cv2.putText(annotated_frame, "LEFT (45%)", (20, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                # Draw RIGHT zone label
+                cv2.putText(annotated_frame, "RIGHT (55%)", (counting_line_x + 20, frame_height - 20), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
                 frame_height = annotated_frame.shape[0]
                 frame_width = annotated_frame.shape[1]
                 center_line = int(frame_width * 0.45)  # 45% boundary
@@ -1425,10 +1448,10 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.SessionLocal = SessionLocal
         self.send_notification = send_notification
         
-        # Auto-detect device (CUDA if available, else CPU)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # FORCE CPU MODE - Disable CUDA to avoid GPU errors on server
+        self.device = 'cpu'
         self.model.to(self.device)
-        logging.info(f"🎯 Using device: {self.device.upper()}")
+        logging.info(f"🎯 Using device: {self.device.upper()} (FORCED)")
         
         self.is_running = True
         self.lock = threading.Lock()
