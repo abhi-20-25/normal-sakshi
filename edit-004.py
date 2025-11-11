@@ -1448,10 +1448,10 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.SessionLocal = SessionLocal
         self.send_notification = send_notification
         
-        # FORCE CPU MODE - Disable CUDA to avoid GPU errors on server
+        # FORCE CPU MODE - Disable all CUDA usage
         self.device = 'cpu'
         self.model.to(self.device)
-        logging.info(f"🎯 Using device: {self.device.upper()} (FORCED)")
+        logging.info(f"🎯 Using device: {self.device.upper()} (FORCED CPU-ONLY)")
         
         self.is_running = True
         self.lock = threading.Lock()
@@ -1561,7 +1561,7 @@ class OccupancyMonitorProcessor(threading.Thread):
                     imgsz=640,
                     max_det=100,
                     agnostic_nms=True,
-                    half=(self.device == 'cuda')
+                    half=False  # CPU mode - no FP16
                 )
             person_count = 0
             detections = []
@@ -1957,22 +1957,11 @@ def video_feed(app_name, channel_id):
         _ensure_initialized(background=True)
         # Wait a bit for initialization if still in progress
         if _initialization_thread and _initialization_thread.is_alive():
-            _initialization_thread.join(timeout=5.0)  # Increased timeout to 5 seconds
+            _initialization_thread.join(timeout=2.0)  # Wait max 2 seconds
     
     processors = stream_processors.get(channel_id)
     if not processors:
-        # Log more diagnostic information
-        all_channel_ids = list(stream_processors.keys())
-        # Check if channel exists but has empty processor list
-        if channel_id in stream_processors:
-            processor_types = [type(p).__name__ for p in stream_processors[channel_id]]
-            logging.warning(f"Video feed requested for channel {channel_id} but processor list is EMPTY. "
-                           f"Channel exists but no processors were started. "
-                           f"Expected: {app_name}, Found processors: {processor_types if processor_types else 'NONE'}. "
-                           f"Available channels: {all_channel_ids[:10]}{'...' if len(all_channel_ids) > 10 else ''}")
-        else:
-            logging.warning(f"Video feed requested for channel {channel_id} but channel not found. "
-                           f"Initialized: {_initialized}, Available channels: {all_channel_ids[:10]}{'...' if len(all_channel_ids) > 10 else ''}")
+        logging.warning(f"Video feed requested for channel {channel_id} but processors not found")
         return (f"Stream not found for channel {channel_id}", 404)
     
     target_processor, target_class = None, None
@@ -2294,35 +2283,6 @@ def download_schedule_template():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/processor_status', methods=['GET'])
-def processor_status():
-    """Diagnostic endpoint to check processor status - No authentication required"""
-    try:
-        status = {
-            'initialized': _initialized,
-            'total_channels': len(stream_processors),
-            'channels': {}
-        }
-        
-        for channel_id, processors in stream_processors.items():
-            proc_info = []
-            for p in processors:
-                proc_info.append({
-                    'type': type(p).__name__,
-                    'is_alive': p.is_alive() if hasattr(p, 'is_alive') else False,
-                    'is_running': getattr(p, 'is_running', None)
-                })
-            
-            status['channels'][channel_id] = {
-                'processor_count': len(processors),
-                'processors': proc_info if proc_info else 'NONE (empty list)'
-            }
-        
-        return jsonify(status)
-    except Exception as e:
-        logging.error(f"Error getting processor status: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/api/restart_gunicorn', methods=['GET'])
 def restart_gunicorn():
     """API endpoint to restart gunicorn.service - No authentication required"""
@@ -2521,146 +2481,76 @@ def start_streams():
                 stream_assignments[link]['apps'].update(app_names)
                 stream_assignments[link]['name'] = name
                 stream_assignments[link]['id'] = channel_id
-    
-    logging.info(f"Starting streams for {len(stream_assignments)} channels from {RTSP_LINKS_FILE}")
-    total_started = 0
     for link, assignment in stream_assignments.items():
         channel_id, channel_name, app_names = assignment['id'], assignment['name'], list(assignment['apps'])
-        try:
-            if channel_id not in stream_processors: stream_processors[channel_id] = []
-            active_app_names = app_names[:]
-            logging.info(f"Initializing channel {channel_id} ({channel_name}) with apps: {app_names}")
-            # Start a shared FrameHub per link
-            try:
-                hub = FrameHub(link, channel_name)
-                hub.start()
-                atexit.register(hub.stop)
-                logging.debug(f"Started FrameHub for {channel_id} ({channel_name})")
-            except Exception as e:
-                logging.error(f"Failed to start FrameHub for {channel_id} ({channel_name}): {e}", exc_info=True)
-                logging.warning(f"Skipping channel {channel_id} - FrameHub failed, no processors will be started")
-                continue  # Skip this channel if FrameHub fails
-            
-            if 'PeopleCounter' in active_app_names:
-                try:
-                    model_path = APP_TASKS_CONFIG['PeopleCounter']['model_path']
-                    logging.debug(f"Loading PeopleCounter model from {model_path} for {channel_id}")
-                    model_obj = load_model(model_path)
-                    if model_obj:
-                        logging.debug(f"Model loaded successfully, creating PeopleCounter processor for {channel_id}")
-                        pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
-                        pc_processor.frame_hub = hub
-                        stream_processors[channel_id].append(pc_processor)
-                        pc_processor.start()
-                        total_started += 1
-                        logging.info(f"Started PeopleCounter for {channel_id} ({channel_name}).")
-                        atexit.register(pc_processor.shutdown)
-                        active_app_names.remove('PeopleCounter')
-                    else:
-                        logging.error(f"Failed to load model for PeopleCounter on {channel_id} ({channel_name}) - load_model returned None")
-                except Exception as e:
-                    logging.error(f"Error starting PeopleCounter for {channel_id} ({channel_name}): {e}", exc_info=True)
-            if 'QueueMonitor' in active_app_names:
-                try:
-                    model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
-                    if model_obj:
-                        qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj)
-                        qm_processor.frame_hub = hub
-                        stream_processors[channel_id].append(qm_processor)
-                        qm_processor.start()
-                        total_started += 1
-                        logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
-                        atexit.register(qm_processor.shutdown)
-                        active_app_names.remove('QueueMonitor')
-                    else:
-                        logging.error(f"Failed to load model for QueueMonitor on {channel_id} ({channel_name})")
-                except Exception as e:
-                    logging.error(f"Error starting QueueMonitor for {channel_id} ({channel_name}): {e}", exc_info=True)
-            if 'KitchenCompliance' in active_app_names:
-                try:
-                    config = APP_TASKS_CONFIG['KitchenCompliance']
-                    general_model = load_model(config['model_path'])
-                    apron_cap_model = load_model(config['apron_cap_model'])
-                    gloves_model = load_model(config['gloves_model'])
-                    if general_model and apron_cap_model and gloves_model:
-                        kc_processor = KitchenComplianceProcessor(
-                            link, channel_id, channel_name, SessionLocal, socketio, 
-                            send_telegram_notification, handle_detection
-                        )
-                        # KitchenComplianceProcessor should read frames from hub if implemented to do so.
-                        if hasattr(kc_processor, 'frame_hub'):
-                            kc_processor.frame_hub = hub
-                        stream_processors[channel_id].append(kc_processor)
-                        kc_processor.start()
-                        total_started += 1
-                        logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
-                        atexit.register(kc_processor.shutdown)
-                        active_app_names.remove('KitchenCompliance')
-                    else:
-                        logging.error(f"Failed to load models for KitchenCompliance on {channel_id} ({channel_name})")
-                except Exception as e:
-                    logging.error(f"Error starting KitchenCompliance for {channel_id} ({channel_name}): {e}", exc_info=True)
-            if 'OccupancyMonitor' in active_app_names:
-                try:
-                    model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'])
-                    if model_obj:
-                        om_processor = OccupancyMonitorProcessor(
-                            link, channel_id, channel_name, model_obj, socketio, 
-                            SessionLocal, send_telegram_notification
-                        )
-                        om_processor.frame_hub = hub
-                        stream_processors[channel_id].append(om_processor)
-                        om_processor.start()
-                        total_started += 1
-                        logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
-                        atexit.register(om_processor.shutdown)
-                        active_app_names.remove('OccupancyMonitor')
-                    else:
-                        logging.error(f"Failed to load model for OccupancyMonitor on {channel_id} ({channel_name})")
-                except Exception as e:
-                    logging.error(f"Error starting OccupancyMonitor for {channel_id} ({channel_name}): {e}", exc_info=True)
-            if active_app_names:
-                tasks_for_multi_model = []
-                for app_name in active_app_names:
-                    config = APP_TASKS_CONFIG.get(app_name)
-                    if config and 'model_path' in config:
-                        model_obj = load_model(config['model_path'])
-                        if model_obj: tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
-                        else: logging.warning(f"Skipping '{app_name}' for {channel_id}; model failed to load.")
-                if tasks_for_multi_model:
-                    try:
-                        multi_processor = MultiModelProcessor(link, channel_id, channel_name, tasks_for_multi_model, handle_detection)
-                        multi_processor.frame_hub = hub
-                        stream_processors[channel_id].append(multi_processor)
-                        multi_processor.start()
-                        total_started += 1
-                        task_names = [t['app_name'] for t in tasks_for_multi_model]
-                        logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
-                        atexit.register(multi_processor.shutdown)
-                    except Exception as e:
-                        logging.error(f"Error starting MultiModel for {channel_id} ({channel_name}): {e}", exc_info=True)
-        except Exception as e:
-            logging.error(f"Unexpected error processing channel {channel_id} ({channel_name}): {e}", exc_info=True)
-            continue
-    
-    # Log summary of what was started
-    total_channels = len(stream_processors)
-    total_processors = sum(len(procs) for procs in stream_processors.values())
-    # Log detailed status for each channel
-    empty_channels = []
-    for ch_id, procs in stream_processors.items():
-        proc_types = [type(p).__name__ for p in procs]
-        if not procs:
-            empty_channels.append(ch_id)
-            logging.warning(f"⚠️  Channel {ch_id} has NO processors (empty list) - check initialization logs above for errors")
-        else:
-            logging.info(f"✓ Channel {ch_id} has {len(procs)} processor(s): {proc_types}")
-    
-    if empty_channels:
-        logging.error(f"⚠️  WARNING: {len(empty_channels)} channel(s) have no processors: {empty_channels}. "
-                     f"Check logs above for model loading errors or processor initialization failures.")
-    logging.info(f"Stream initialization complete: {total_started} processors started across {total_channels} channels. "
-                f"Channel IDs: {list(stream_processors.keys())[:10]}{'...' if len(stream_processors) > 10 else ''}")
+        if channel_id not in stream_processors: stream_processors[channel_id] = []
+        active_app_names = app_names[:]
+        # Start a shared FrameHub per link
+        hub = FrameHub(link, channel_name)
+        hub.start()
+        atexit.register(hub.stop)
+        if 'PeopleCounter' in active_app_names:
+            model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
+            if model_obj:
+                pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
+                pc_processor.frame_hub = hub
+                stream_processors[channel_id].append(pc_processor); pc_processor.start()
+                logging.info(f"Started PeopleCounter for {channel_id} ({channel_name}).")
+                atexit.register(pc_processor.shutdown); active_app_names.remove('PeopleCounter')
+        if 'QueueMonitor' in active_app_names:
+            model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
+            if model_obj:
+                qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj)
+                qm_processor.frame_hub = hub
+                stream_processors[channel_id].append(qm_processor); qm_processor.start()
+                logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
+                atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
+        if 'KitchenCompliance' in active_app_names:
+            config = APP_TASKS_CONFIG['KitchenCompliance']
+            general_model = load_model(config['model_path'])
+            apron_cap_model = load_model(config['apron_cap_model'])
+            gloves_model = load_model(config['gloves_model'])
+            if general_model and apron_cap_model and gloves_model:
+                kc_processor = KitchenComplianceProcessor(
+                    link, channel_id, channel_name, SessionLocal, socketio, 
+                    send_telegram_notification, handle_detection
+                )
+                # KitchenComplianceProcessor should read frames from hub if implemented to do so.
+                if hasattr(kc_processor, 'frame_hub'):
+                    kc_processor.frame_hub = hub
+                stream_processors[channel_id].append(kc_processor)
+                kc_processor.start()
+                logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
+                atexit.register(kc_processor.shutdown)
+                active_app_names.remove('KitchenCompliance')
+        if 'OccupancyMonitor' in active_app_names:
+            model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'])
+            if model_obj:
+                om_processor = OccupancyMonitorProcessor(
+                    link, channel_id, channel_name, model_obj, socketio, 
+                    SessionLocal, send_telegram_notification
+                )
+                om_processor.frame_hub = hub
+                stream_processors[channel_id].append(om_processor)
+                om_processor.start()
+                logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
+                atexit.register(om_processor.shutdown)
+                active_app_names.remove('OccupancyMonitor')
+        if active_app_names:
+            tasks_for_multi_model = []
+            for app_name in active_app_names:
+                config = APP_TASKS_CONFIG.get(app_name)
+                if config and 'model_path' in config:
+                    model_obj = load_model(config['model_path'])
+                    if model_obj: tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
+                    else: logging.warning(f"Skipping '{app_name}' for {channel_id}; model failed to load.")
+            if tasks_for_multi_model:
+                multi_processor = MultiModelProcessor(link, channel_id, channel_name, tasks_for_multi_model, handle_detection)
+                multi_processor.frame_hub = hub
+                stream_processors[channel_id].append(multi_processor); multi_processor.start()
+                task_names = [t['app_name'] for t in tasks_for_multi_model]
+                logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
+                atexit.register(multi_processor.shutdown)
 
 
 def restart_processor(processor_info):
