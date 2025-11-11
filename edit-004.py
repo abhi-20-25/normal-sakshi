@@ -32,13 +32,18 @@ import pandas as pd
 from queue import Queue, Empty
 
 # --- CUDA/Backend Tuning ---
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-if DEVICE == 'cuda':
-    torch.backends.cudnn.benchmark = True
-    try:
-        torch.set_float32_matmul_precision('high')
-    except Exception:
-        pass
+# FORCE CPU MODE - Disable CUDA to avoid GPU errors on server
+DEVICE = 'cpu'
+logging.info("🚫 CUDA DISABLED - Running in CPU-only mode for stability")
+
+# Keep CUDA code commented out for future use
+# DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+# if DEVICE == 'cuda':
+#     torch.backends.cudnn.benchmark = True
+#     try:
+#         torch.set_float32_matmul_precision('high')
+#     except Exception:
+#         pass
 
 # --- Frame Downscale Settings ---
 # Reduce resolution early in the pipeline to speed up processing/streaming
@@ -79,80 +84,7 @@ APP_TASKS_CONFIG = {
     'OccupancyMonitor': {'model_path': 'yolov8n.pt', 'confidence': 0.15}
 }
 
-# Global CUDA error tracking for auto-restart
-_cuda_error_count = {}
-_cuda_error_lock = threading.Lock()
-_last_cuda_reset_time = 0
-
-def reset_cuda_device():
-    """Reset CUDA device completely - last resort recovery"""
-    global _last_cuda_reset_time
-    current_time = time.time()
-    # Don't reset more than once every 60 seconds
-    if current_time - _last_cuda_reset_time < 60:
-        return False
-    
-    if DEVICE == 'cuda' and torch.cuda.is_available():
-        try:
-            logging.warning("Attempting full CUDA device reset...")
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-            # Reset all CUDA contexts
-            torch.cuda.reset_peak_memory_stats()
-            _last_cuda_reset_time = current_time
-            logging.info("CUDA device reset completed")
-            return True
-        except Exception as e:
-            logging.error(f"Failed to reset CUDA device: {e}")
-            return False
-    return False
-
-def track_cuda_error(processor_name):
-    """Track CUDA errors and trigger restart if threshold exceeded"""
-    global _cuda_error_count, _last_cuda_reset_time
-    with _cuda_error_lock:
-        if processor_name not in _cuda_error_count:
-            _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
-        
-        current_time = time.time()
-        # Check if a manual reset just happened (within last 90 seconds)
-        time_since_reset = current_time - _last_cuda_reset_time if _last_cuda_reset_time > 0 else 999
-        
-        _cuda_error_count[processor_name]['count'] += 1
-        _cuda_error_count[processor_name]['last_error'] = current_time
-        
-        error_count = _cuda_error_count[processor_name]['count']
-        last_error = _cuda_error_count[processor_name]['last_error']
-        
-        # If a reset just happened, be much more lenient - don't disable immediately
-        if time_since_reset < 90:
-            logging.warning(f"CUDA error for {processor_name} but reset happened {time_since_reset:.0f}s ago. Being lenient - not disabling yet.")
-            # Reduce count instead of increasing it to avoid rapid re-disabling
-            _cuda_error_count[processor_name]['count'] = max(1, error_count - 1)
-            return False
-        
-        # If more than 3 errors in 30 seconds, trigger reset and disable CUDA for this processor
-        if error_count >= 3 and (current_time - last_error) < 30:
-            logging.error(f"CUDA error threshold exceeded for {processor_name}: {error_count} errors. Triggering CUDA reset and disabling CUDA for this processor.")
-            reset_cuda_device()
-            disable_cuda_for_processor(processor_name)
-            # Reset counter after reset
-            _cuda_error_count[processor_name]['count'] = 0
-            return True  # Indicates reset was triggered
-        
-        # If more than 5 errors total, disable CUDA for this processor (but not if reset just happened)
-        if error_count >= 5:
-            logging.error(f"Too many CUDA errors ({error_count}) for {processor_name}. Disabling CUDA for this processor.")
-            disable_cuda_for_processor(processor_name)
-            _cuda_error_count[processor_name]['count'] = 0
-        
-        # Reset counter if no errors for 60 seconds
-        if error_count > 0 and (current_time - last_error) > 60:
-            _cuda_error_count[processor_name]['count'] = 0
-    
-    return False
-
-# --- YOLO tracking helper (robust to tracker failures) ---
+# --- YOLO tracking helper (CPU-only mode) ---
 def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
     # Validate frame before processing
     if frame is None:
@@ -179,14 +111,13 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
         logging.warning(f"safe_track_persons: frame too small (h={h}, w={w}), returning empty result")
         return []
     
-    # Check if CUDA is disabled for this processor
+    # FORCE CPU MODE - Disable all CUDA usage
     proc_name = processor_name if processor_name else 'unknown'
-    cuda_disabled = is_cuda_disabled_for_processor(proc_name)
-    use_cuda = DEVICE == 'cuda' and not cuda_disabled
-    device_to_use = 'cuda' if use_cuda else 'cpu'
+    device_to_use = 'cpu'
+    use_half = False  # No half precision on CPU
     
-    with torch.inference_mode():
-        try:
+    try:
+        with torch.inference_mode():
             result = model.track(
                 frame,
                 persist=True,
@@ -195,98 +126,31 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
                 iou=iou,
                 verbose=False,
                 device=device_to_use,
-                half=use_cuda
+                half=use_half
                 # Removed tracker='bytetrack.yaml' - use default tracker to fix tracking ID generation
             )
-            # Track successful CPU operation for recovery
-            if not use_cuda and cuda_disabled:
-                track_cuda_success(proc_name)
             return result
-        except RuntimeError as e:
-            # Handle CUDA errors specifically
-            error_msg = str(e)
-            if 'CUDA' in error_msg or 'cuda' in error_msg or 'index out of bounds' in error_msg.lower():
-                logging.error(f"CUDA error in safe_track_persons: {e}. Frame shape: {frame.shape}")
-                
-                # Track error and potentially trigger reset
-                if processor_name:
-                    track_cuda_error(processor_name)
-                
-                # Check if CUDA is disabled now (may have been disabled by track_cuda_error)
-                cuda_now_disabled = is_cuda_disabled_for_processor(proc_name)
-                if cuda_now_disabled:
-                    device_to_use = 'cpu'
-                    use_cuda = False
-                    logging.info(f"Using CPU mode for {proc_name} due to CUDA errors")
-                
-                # If CUDA is still enabled, try recovery
-                if use_cuda:
-                    try:
-                        torch.cuda.empty_cache()
-                        torch.cuda.synchronize()
-                        # If error count is high, try full reset
-                        if processor_name and _cuda_error_count.get(processor_name, {}).get('count', 0) >= 2:
-                            reset_cuda_device()
-                    except Exception as recovery_error:
-                        logging.error(f"CUDA recovery failed: {recovery_error}")
-                
-                logging.warning(f"Falling back to predict() after CUDA error (device: {device_to_use})")
-                try:
-                    result = model.predict(
-                        frame,
-                        classes=[0],
-                        conf=conf,
-                        iou=iou,
-                        verbose=False,
-                        device=device_to_use,
-                        half=use_cuda
-                    )
-                    # Track successful CPU operation for recovery
-                    if not use_cuda:
-                        track_cuda_success(proc_name)
-                    return result
-                except Exception as predict_error:
-                    logging.error(f"predict() also failed after CUDA error: {predict_error}")
-                    # If predict also fails, skip this frame
-                    return []
-            else:
-                logging.warning(f"track() failed with non-CUDA error, fallback to predict(): {e}")
-                try:
-                    result = model.predict(
-                        frame,
-                        classes=[0],
-                        conf=conf,
-                        iou=iou,
-                        verbose=False,
-                        device=device_to_use,
-                        half=use_cuda
-                    )
-                    # Track successful CPU operation for recovery
-                    if not use_cuda:
-                        track_cuda_success(proc_name)
-                    return result
-                except Exception as predict_error:
-                    logging.error(f"predict() also failed: {predict_error}")
-                    return []
-        except Exception as e:
-            logging.warning(f"track() failed, fallback to predict(): {e}")
-            try:
-                result = model.predict(
-                    frame,
-                    classes=[0],
-                    conf=conf,
-                    iou=iou,
-                    verbose=False,
-                    device=device_to_use,
-                    half=use_cuda
-                )
-                # Track successful CPU operation for recovery
-                if not use_cuda:
-                    track_cuda_success(proc_name)
-                return result
-            except Exception as predict_error:
-                logging.error(f"Both track() and predict() failed: {predict_error}")
-                return []
+    except RuntimeError as e:
+        # CPU-only mode - no CUDA error handling needed
+        logging.warning(f"Runtime error in safe_track_persons: {e}")
+        logging.warning("Attempting fallback to predict() instead of track()")
+        try:
+            fallback_result = model.predict(
+                frame,
+                classes=[0],
+                conf=conf,
+                iou=iou,
+                verbose=False,
+                device='cpu',
+                half=False
+            )
+            return fallback_result
+        except Exception as fallback_e:
+            logging.error(f"Fallback predict() also failed: {fallback_e}")
+            return []
+    except Exception as e:
+        logging.error(f"Unexpected error in safe_track_persons: {e}")
+        return []
 
 
 # --- QUEUE MONITOR CONFIGURATION ---
@@ -670,67 +534,26 @@ class MultiModelProcessor(threading.Thread):
                         if task.get('target_class_id') is not None:
                             model_args['classes'] = task['target_class_id']
 
-                        # Check if CUDA is disabled for this processor
-                        processor_name = f"{self.channel_name}-MultiModel-{app_name}"
-                        use_cuda = DEVICE == 'cuda' and not is_cuda_disabled_for_processor(processor_name)
-                        device_to_use = 'cuda' if use_cuda else 'cpu'
-                        
+                        # CPU-only mode
                         try:
                             with torch.inference_mode():
                                 results = task['model'](
                                     frame,
-                                    device=device_to_use,
-                                    half=use_cuda,
+                                    device='cpu',
+                                    half=False,
                                     **model_args
                                 )
                             self.consecutive_errors = 0  # Reset on success
                         except RuntimeError as e:
                             error_msg = str(e)
-                            if 'CUDA' in error_msg or 'cuda' in error_msg or 'index out of bounds' in error_msg.lower():
-                                self.consecutive_errors += 1
-                                logging.error(f"CUDA error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}. Error count: {self.consecutive_errors}")
-                                
-                                # Track error globally
-                                track_cuda_error(processor_name)
-                                
-                                # If too many errors, disable CUDA for this processor
-                                if self.consecutive_errors >= self.max_consecutive_errors:
-                                    logging.error(f"Too many CUDA errors for {self.channel_name} MultiModel. Disabling CUDA.")
-                                    disable_cuda_for_processor(processor_name)
-                                    reset_cuda_device()
-                                    self.consecutive_errors = 0
-                                    # Try with CPU
-                                    device_to_use = 'cpu'
-                                    use_cuda = False
-                                    try:
-                                        with torch.inference_mode():
-                                            results = task['model'](
-                                                frame,
-                                                device='cpu',
-                                                half=False,
-                                                **model_args
-                                            )
-                                        continue
-                                    except Exception as cpu_error:
-                                        logging.error(f"CPU fallback also failed: {cpu_error}")
-                                        break
-                                
-                                # Try to reset CUDA state
-                                if use_cuda:
-                                    try:
-                                        torch.cuda.empty_cache()
-                                        torch.cuda.synchronize()
-                                    except:
-                                        pass
-                                
-                                # Reset expected frame shape to force revalidation
-                                self.expected_frame_shape = None
-                                self.consecutive_invalid_frames = 0
-                                # Skip this frame and continue
-                                break
-                            else:
-                                logging.warning(f"Model inference error in MultiModel {self.channel_name} for {app_name}: {e}")
-                                break
+                            self.consecutive_errors += 1
+                            logging.error(f"Runtime error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}. Error count: {self.consecutive_errors}")
+                            
+                            # If too many errors, log and continue
+                            if self.consecutive_errors >= self.max_consecutive_errors:
+                                logging.error(f"Too many errors for {self.channel_name} MultiModel. Resetting counter.")
+                                self.consecutive_errors = 0
+                            continue
                         except Exception as e:
                             logging.error(f"Unexpected error in MultiModel {self.channel_name} for {app_name}: {e}")
                             break
@@ -757,30 +580,17 @@ class MultiModelProcessor(threading.Thread):
                                     
                                     # Run detection on this frame to get annotated version
                                     try:
-                                        # Use same device as main detection
-                                        gif_processor_name = f"{self.channel_name}-MultiModel-{app_name}"
-                                        gif_use_cuda = DEVICE == 'cuda' and not is_cuda_disabled_for_processor(gif_processor_name)
-                                        gif_device_to_use = 'cuda' if gif_use_cuda else 'cpu'
-                                        
+                                        # CPU-only mode
                                         with torch.inference_mode():
                                             gif_results = task['model'](
                                                 frame_gif,
-                                                device=gif_device_to_use,
-                                                half=gif_use_cuda,
+                                                device='cpu',
+                                                half=False,
                                                 **model_args
                                             )
                                         if gif_results and len(gif_results[0].boxes) > 0:
                                             gif_frames.append(gif_results[0].plot())
                                         else:
-                                            gif_frames.append(frame_gif.copy())
-                                    except RuntimeError as e:
-                                        error_msg = str(e)
-                                        if 'CUDA' in error_msg or 'cuda' in error_msg:
-                                            logging.error(f"CUDA error processing GIF frame for {app_name}: {e}")
-                                            # Use frame without annotation
-                                            gif_frames.append(frame_gif.copy())
-                                        else:
-                                            logging.warning(f"Error processing GIF frame: {e}")
                                             gif_frames.append(frame_gif.copy())
                                     except Exception as e:
                                         logging.warning(f"Error processing GIF frame: {e}")
@@ -803,9 +613,12 @@ class PeopleCounterProcessor(threading.Thread):
         self.channel_name, self.app_name = channel_name, "PeopleCounter"
         self.socketio = socketio
         self.is_running, self.lock = True, threading.Lock()
-        self.track_history = defaultdict(list)
-        self.counted_tracks = set()  # Track IDs that have already been counted to prevent double counting
-        self.track_last_seen = {}  # Track when each ID was last seen - for cleanup
+        
+        # Simple zone-based counting - no tracking IDs needed
+        self.left_zone_occupied = False
+        self.right_zone_occupied = False
+        self.last_state_change = 0
+        
         self.counts = {'in': 0, 'out': 0}
         self.current_hour = datetime.now(IST).hour
         self.tracking_date = datetime.now(IST).date()
@@ -919,116 +732,158 @@ class PeopleCounterProcessor(threading.Thread):
                     continue
                 # Ensure we have a fresh copy to prevent any cross-contamination with other processors
                 frame = frame.copy()
+                
+                # Apply adaptive histogram equalization for better detection in varying lighting
+                # Convert to LAB color space and equalize the L channel
+                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+                l, a, b = cv2.split(lab)
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                l_equalized = clahe.apply(l)
+                enhanced_frame = cv2.merge([l_equalized, a, b])
+                enhanced_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_LAB2BGR)
+                
                 # Robust tracker call; falls back to predict on errors
-                # Lower confidence (0.15) to match config and improve detection consistency
-                results = safe_track_persons(self.model, frame, conf=0.15, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
+                # Increased confidence (0.30) to reduce false positives
+                results = safe_track_persons(self.model, enhanced_frame, conf=0.30, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
                 consecutive_errors = 0  # Reset on successful frame
                 r0 = results[0] if (results and len(results) > 0) else None
                 
-                if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-                    # Use xyxy format to get bounding box coordinates (x1, y1, x2, y2)
-                    boxes_xyxy, track_ids = r0.boxes.xyxy.cpu(), r0.boxes.id.int().cpu().tolist()
+                # Define two detection zones: LEFT BOX (40%) and RIGHT BOX (60%)
+                # Frame divided with left zone at 40% and right zone at 60%
+                frame_width = frame.shape[1]
+                center_line = int(frame_width * 0.4)  # 40% - left zone boundary
+                
+                if r0 is not None and getattr(r0, 'boxes', None) is not None:
+                    boxes_xyxy = r0.boxes.xyxy.cpu()
+                    boxes_conf = r0.boxes.conf.cpu()
                     
-                    # Define two detection zones: LEFT BOX and RIGHT BOX
-                    # Frame divided into 2 equal parts at center line
-                    frame_width = frame.shape[1]
-                    center_line = int(frame_width * 0.5)  # 50% - center of frame
+                    # Count people in each zone (NO TRACKING NEEDED)
+                    # Add size filtering to exclude small objects (plants, furniture, etc.)
+                    current_left_occupied = False
+                    current_right_occupied = False
                     
-                    current_track_ids = set(track_ids)
+                    # Calculate frame dimensions for size filtering
+                    frame_area = frame_width * frame.shape[0]
+                    min_box_area = frame_area * 0.003  # Minimum 0.3% of frame area (more lenient)
+                    max_box_area = frame_area * 0.9    # Maximum 90% of frame area
+                    min_confidence = 0.15  # Higher threshold to reduce false positives
                     
-                    # Log tracking info
-                    if len(track_ids) > 0:
-                        logging.info(f"PeopleCounter {self.channel_name}: Tracking {len(track_ids)} persons with IDs: {track_ids}")
-                    
-                    # Clean up track history and counted tracks for IDs that are no longer detected
-                    # This allows re-counting if a person re-enters (useful for multiple entries/exits)
-                    track_ids_to_clean = set(self.track_history.keys()) - current_track_ids
-                    current_time_for_cleanup = time.time()
-                    for tid in track_ids_to_clean:
-                        # Remove from history if track has been gone
-                        self.track_history.pop(tid, None)
-                        # If track was counted and hasn't been seen for 5 seconds, allow re-counting
-                        # Reduced from 10 seconds to allow faster re-entry detection
-                        if tid in self.counted_tracks:
-                            last_seen = self.track_last_seen.get(tid, 0)
-                            if current_time_for_cleanup - last_seen > 5:
-                                self.counted_tracks.discard(tid)
-                                logging.debug(f"PeopleCounter {self.channel_name}: Removed track ID {tid} from counted_tracks (not seen for >5s)")
-                    
-                    # Update last_seen time for currently tracked IDs
-                    for tid in current_track_ids:
-                        self.track_last_seen[tid] = current_time_for_cleanup
-                    
-                    for box, track_id in zip(boxes_xyxy, track_ids):
-                        # Calculate centroid (center point) of bounding box
+                    for i, box in enumerate(boxes_xyxy):
+                        # Get box dimensions
                         x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
-                        center_x = int((x1 + x2) / 2)
-                        center_y = int((y1 + y2) / 2)
+                        box_width = float(x2 - x1)
+                        box_height = float(y2 - y1)
+                        box_area = box_width * box_height
+                        confidence = float(boxes_conf[i])
                         
-                        # Get or create history for this track - stores zone info: 'left' or 'right'
-                        history = self.track_history[track_id]
+                        # Filter out detections that are:
+                        # 1. Too small (plants, small objects)
+                        # 2. Too large (walls, large objects)
+                        # 3. Wrong aspect ratio (not person-shaped)
+                        # 4. Low confidence
+                        aspect_ratio = box_height / box_width if box_width > 0 else 0
                         
-                        # Determine which zone the person is in - ONLY TWO ZONES
-                        if center_x < center_line:
-                            current_zone = 'left'
+                        # Person typically has aspect ratio between 1.2 and 4.0 (height > width)
+                        is_person_shaped = 1.2 <= aspect_ratio <= 4.0
+                        is_valid_size = min_box_area <= box_area <= max_box_area
+                        is_confident = confidence >= min_confidence
+                        
+                        # Only count if it looks like a person
+                        if is_person_shaped and is_valid_size and is_confident:
+                            center_x = int((x1 + x2) / 2)
+                            
+                            # Check which zone this person is in
+                            if center_x < center_line:
+                                current_left_occupied = True
+                            else:
+                                current_right_occupied = True
+                    
+                    current_time = time.time()
+                    
+                    # Simplified counting logic:
+                    # If person was in LEFT and now in RIGHT (regardless of still in left) = IN
+                    # If person was in RIGHT and now in LEFT (regardless of still in right) = OUT
+                    
+                    # IN detection: Was in LEFT, now detected in RIGHT
+                    if self.left_zone_occupied and current_right_occupied and not self.right_zone_occupied:
+                        if current_time - self.last_state_change > 0.5:
+                            with self.lock:
+                                self.counts['in'] += 1
+                            self._update_hourly_count_realtime('in')
+                            self._update_and_log_counts()
+                            self.last_state_change = current_time
+                            logging.info(f"✅ PeopleCounter {self.channel_name}: IN detected - LEFT→RIGHT zone. Total IN: {self.counts['in']}")
+                    
+                    # OUT detection: Was in RIGHT, now detected in LEFT
+                    elif self.right_zone_occupied and current_left_occupied and not self.left_zone_occupied:
+                        if current_time - self.last_state_change > 0.5:
+                            with self.lock:
+                                self.counts['out'] += 1
+                            self._update_hourly_count_realtime('out')
+                            self._update_and_log_counts()
+                            self.last_state_change = current_time
+                            logging.info(f"✅ PeopleCounter {self.channel_name}: OUT detected - RIGHT→LEFT zone. Total OUT: {self.counts['out']}")
+                    
+                    # Update zone occupation states (boolean: is anyone in that zone?)
+                    self.left_zone_occupied = current_left_occupied
+                    self.right_zone_occupied = current_right_occupied
+                
+                # Create a completely fresh annotated frame to prevent cross-contamination
+                # Start with a deep copy of the original frame
+                annotated_frame = frame.copy()
+                
+                # Draw only valid person detections on our own copy (filtered)
+                if r0 is not None and getattr(r0, 'boxes', None) is not None:
+                    boxes = r0.boxes
+                    frame_area = frame.shape[0] * frame.shape[1]
+                    min_box_area = frame_area * 0.003  # Match counting filter
+                    max_box_area = frame_area * 0.9    # Match counting filter
+                    min_confidence = 0.30              # Match counting filter
+                    
+                    for i in range(len(boxes)):
+                        box = boxes.xyxy[i].cpu().numpy()
+                        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                        conf = float(boxes.conf[i].cpu())
+                        
+                        # Apply same filtering as counting logic
+                        box_width = x2 - x1
+                        box_height = y2 - y1
+                        box_area = box_width * box_height
+                        aspect_ratio = box_height / box_width if box_width > 0 else 0
+                        
+                        is_person_shaped = 1.2 <= aspect_ratio <= 4.0
+                        is_valid_size = min_box_area <= box_area <= max_box_area
+                        is_confident = conf >= min_confidence
+                        
+                        # Only draw if it passes person filters
+                        if is_person_shaped and is_valid_size and is_confident:
+                            # Draw bounding box (GREEN for valid person)
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            # Draw confidence label
+                            label = f"Person {conf:.2f}"
+                            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         else:
-                            current_zone = 'right'
-                        
-                        # Counting logic: LEFT → RIGHT = IN, RIGHT → LEFT = OUT
-                        if track_id not in self.counted_tracks and len(history) > 0:
-                            prev_zone = history[-1]
-                            
-                            # IN: Person moved from LEFT zone to RIGHT zone
-                            if prev_zone == 'left' and current_zone == 'right':
-                                with self.lock:
-                                    self.counts['in'] += 1
-                                self.counted_tracks.add(track_id)
-                                self.track_last_seen[track_id] = current_time_for_cleanup
-                                self._update_hourly_count_realtime('in')
-                                self._update_and_log_counts()  # Update DB immediately
-                                logging.info(f"✅ PeopleCounter {self.channel_name}: IN detected - Track ID: {track_id}, moved from LEFT→RIGHT zone. Total IN: {self.counts['in']}")
-                            
-                            # OUT: Person moved from RIGHT zone to LEFT zone
-                            elif prev_zone == 'right' and current_zone == 'left':
-                                with self.lock:
-                                    self.counts['out'] += 1
-                                self.counted_tracks.add(track_id)
-                                self.track_last_seen[track_id] = current_time_for_cleanup
-                                self._update_hourly_count_realtime('out')
-                                self._update_and_log_counts()  # Update DB immediately
-                                logging.info(f"✅ PeopleCounter {self.channel_name}: OUT detected - Track ID: {track_id}, moved from RIGHT→LEFT zone. Total OUT: {self.counts['out']}")
-                        
-                        # Update history with current zone
-                        history.append(current_zone)
-                        
-                        # Keep only last 5 positions for better tracking
-                        if len(history) > 5:
-                            history.pop(0)
+                            # Draw rejected detections in RED with reason
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 1)
+                            reason = "Small" if box_area < min_box_area else "Large" if box_area > max_box_area else "Shape" if not is_person_shaped else "LowConf"
+                            cv2.putText(annotated_frame, f"X {reason}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
                 
-                # Always work with a fresh copy to prevent cross-contamination with other processors
-                if r0 is not None:
-                    # r0.plot() returns a new frame, but ensure we have our own copy
-                    annotated_frame = r0.plot().copy()
-                else:
-                    # If no detections, use a fresh copy of the frame
-                    annotated_frame = frame.copy()
-                
-                # Draw the TWO detection zones: LEFT BOX (blue) and RIGHT BOX (red)
-                # Frame divided exactly in half at center line
+                # Draw the TWO detection zones: LEFT BOX (45% - blue) and RIGHT BOX (55% - red)
+                # Frame divided with 45% left and 55% right
                 frame_height = annotated_frame.shape[0]
                 frame_width = annotated_frame.shape[1]
-                center_line = int(frame_width * 0.5)
-                
+                center_line = int(frame_width * 0.45)  # 45% boundary
+
                 # Draw CENTER LINE (GREEN) to separate the two zones
                 cv2.line(annotated_frame, (center_line, 0), (center_line, frame_height), (0, 255, 0), 3)
                 
-                # Draw LEFT ZONE (BLUE) border
+                # Draw LEFT ZONE (BLUE) border - 40% of frame
                 cv2.rectangle(annotated_frame, (0, 0), (center_line, frame_height), (255, 0, 0), 3)
-                cv2.putText(annotated_frame, "LEFT", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                cv2.putText(annotated_frame, "LEFT 45%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
                 
-                # Draw RIGHT ZONE (RED) border
+                # Draw RIGHT ZONE (RED) border - 60% of frame
                 cv2.rectangle(annotated_frame, (center_line, 0), (frame_width, frame_height), (0, 0, 255), 3)
-                cv2.putText(annotated_frame, "RIGHT", (center_line + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, "RIGHT 55%", (center_line + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 
                 # Display both total daily count and current hour count (matching DB)
                 current_hour_ist = datetime.now(IST).hour
@@ -1065,24 +920,15 @@ class PeopleCounterProcessor(threading.Thread):
                 with self.lock: self.latest_frame = annotated_frame.copy()
                 socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
             except RuntimeError as e:
-                error_msg = str(e)
-                if 'CUDA' in error_msg or 'cuda' in error_msg:
-                    consecutive_errors += 1
-                    logging.error(f"CUDA error in PeopleCounter {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
-                    
-                    # Track error globally
-                    track_cuda_error(f"{self.channel_name}-PeopleCounter")
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        logging.error(f"Too many consecutive CUDA errors for {self.channel_name}. Pausing for recovery...")
-                        reset_cuda_device()
-                        time.sleep(10)  # Pause for recovery
-                        consecutive_errors = 0
-                    else:
-                        time.sleep(2)  # Short pause before retry
+                logging.error(f"Runtime error in PeopleCounter {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
+                
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing for recovery...")
+                    time.sleep(10)  # Pause for recovery
+                    consecutive_errors = 0
                 else:
-                    logging.error(f"Runtime error in PeopleCounter {self.channel_name}: {e}")
-                    time.sleep(1)
+                    time.sleep(2)  # Short pause before retry
             except Exception as e:
                 logging.error(f"Unexpected error in PeopleCounter {self.channel_name}: {e}")
                 consecutive_errors += 1
@@ -1254,20 +1100,15 @@ class QueueMonitorProcessor(threading.Thread):
                     last_error_time = time.time()
                     logging.error(f"CUDA error in QueueMonitor {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
                     
-                    # Track error globally
-                    track_cuda_error(f"{self.channel_name}-QueueMonitor")
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        logging.error(f"Too many consecutive CUDA errors for {self.channel_name}. Disabling CUDA and pausing for recovery...")
-                        disable_cuda_for_processor(f"{self.channel_name}-QueueMonitor")
-                        reset_cuda_device()
-                        time.sleep(15)  # Longer pause for recovery
-                        consecutive_errors = 0
-                    else:
-                        time.sleep(3)  # Short pause before retry
+                logging.error(f"Runtime error in QueueMonitor {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
+                
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing for recovery...")
+                    time.sleep(15)  # Longer pause for recovery
+                    consecutive_errors = 0
                 else:
-                    logging.error(f"Runtime error in QueueMonitor {self.channel_name}: {e}")
-                    time.sleep(1)
+                    time.sleep(3)  # Short pause before retry
             except Exception as e:
                 logging.error(f"Unexpected error in QueueMonitor {self.channel_name}: {e}")
                 consecutive_errors += 1
@@ -2419,81 +2260,6 @@ def download_schedule_template():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/reset_cuda', methods=['POST'])
-def reset_cuda_errors():
-    """API endpoint to reset all CUDA errors and re-enable CUDA for all processors"""
-    try:
-        count = reset_all_cuda_errors()
-        # Verify reset worked
-        with _cuda_disabled_lock:
-            remaining = len(_cuda_disabled_processors)
-        
-        if remaining > 0:
-            logging.warning(f"Warning: {remaining} processors still marked as disabled after reset. Force-clearing...")
-            with _cuda_disabled_lock:
-                _cuda_disabled_processors.clear()
-        
-        return jsonify({
-            "success": True,
-            "message": f"CUDA errors reset. {count} processor(s) re-enabled for CUDA mode.",
-            "disabled_before": count,
-            "disabled_after": remaining
-        })
-    except Exception as e:
-        logging.error(f"Error resetting CUDA: {e}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/reset_cuda/<processor_name>', methods=['POST'])
-def reset_cuda_for_processor(processor_name):
-    """API endpoint to reset CUDA errors for a specific processor"""
-    try:
-        if enable_cuda_for_processor(processor_name):
-            return jsonify({
-                "success": True,
-                "message": f"CUDA re-enabled for {processor_name}"
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "message": f"Processor {processor_name} not found in disabled list"
-            }), 404
-    except Exception as e:
-        logging.error(f"Error resetting CUDA for {processor_name}: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/cuda_status', methods=['GET'])
-def get_cuda_status():
-    """API endpoint to get CUDA status for all processors"""
-    try:
-        with _cuda_disabled_lock:
-            disabled_list = list(_cuda_disabled_processors.keys())
-            disabled_details = {
-                name: {
-                    'disabled_time': info.get('disabled_time', 0),
-                    'time_disabled_seconds': int(time.time() - info.get('disabled_time', time.time())),
-                    'success_count': info.get('success_count', 0)
-                }
-                for name, info in _cuda_disabled_processors.items()
-            }
-            error_counts = {
-                name: info.get('count', 0) 
-                for name, info in _cuda_error_count.items()
-            }
-        return jsonify({
-            "success": True,
-            "disabled_processors": disabled_list,
-            "disabled_details": disabled_details,
-            "error_counts": error_counts,
-            "cuda_available": DEVICE == 'cuda' and torch.cuda.is_available(),
-            "last_cuda_reset": _last_cuda_reset_time,
-            "time_since_reset": int(time.time() - _last_cuda_reset_time) if _last_cuda_reset_time > 0 else None
-        })
-    except Exception as e:
-        logging.error(f"Error getting CUDA status: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
 @app.route('/api/restart_gunicorn', methods=['GET'])
 def restart_gunicorn():
     """API endpoint to restart gunicorn.service - No authentication required"""
@@ -2651,26 +2417,26 @@ def load_model(model_path: str):
         return None
     try:
         model = YOLO(model_path)
-        model.to(DEVICE)
-        try:
-            model.fuse()
-        except Exception:
-            pass
-        if DEVICE == 'cuda':
-            try:
-                model.model.half()
-            except Exception:
-                pass
-        # Warmup to remove first-frame CUDA lag
+        # FORCE CPU MODE - No CUDA
+        model.to('cpu')
+        
+        # No half precision or fuse on CPU
+        # try:
+        #     model.fuse()
+        # except Exception:
+        #     pass
+        
+        # Warmup with CPU
         try:
             import numpy as _np
             dummy = _np.zeros((640, 640, 3), dtype=_np.uint8)
             with torch.inference_mode():
-                for _ in range(3):
-                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=DEVICE, verbose=False)
+                for _ in range(2):  # Reduced warmup iterations for CPU
+                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device='cpu', verbose=False)
         except Exception:
             pass
-        logging.info(f"Loaded '{model_path}' on {DEVICE} (half={DEVICE=='cuda'})")
+        
+        logging.info(f"Loaded '{model_path}' on cpu (half=False)")
         _MODEL_CACHE[model_path] = model
         return model
     except Exception as e:
@@ -2763,99 +2529,6 @@ def start_streams():
                 logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
                 atexit.register(multi_processor.shutdown)
 
-# Global flag to temporarily disable CUDA for failed processors
-_cuda_disabled_processors = {}  # {processor_name: {'disabled_time': timestamp, 'success_count': count}}
-_cuda_disabled_lock = threading.Lock()
-CUDA_RECOVERY_COOLDOWN = 300  # 5 minutes before trying CUDA again
-CUDA_SUCCESS_THRESHOLD = 50  # Need 50 successful CPU frames before trying CUDA again
-
-def disable_cuda_for_processor(processor_name):
-    """Temporarily disable CUDA for a processor after repeated failures"""
-    global _cuda_disabled_processors
-    with _cuda_disabled_lock:
-        _cuda_disabled_processors[processor_name] = {
-            'disabled_time': time.time(),
-            'success_count': 0
-        }
-        logging.warning(f"CUDA disabled for {processor_name} due to repeated errors. Switching to CPU mode.")
-        return True
-
-def is_cuda_disabled_for_processor(processor_name):
-    """Check if CUDA is disabled for a processor"""
-    with _cuda_disabled_lock:
-        if processor_name not in _cuda_disabled_processors:
-            return False
-        
-        # Check if recovery period has passed and we've had enough successes
-        disabled_info = _cuda_disabled_processors[processor_name]
-        time_disabled = time.time() - disabled_info['disabled_time']
-        
-        # If enough time has passed AND enough successful frames, try CUDA again
-        if time_disabled >= CUDA_RECOVERY_COOLDOWN and disabled_info['success_count'] >= CUDA_SUCCESS_THRESHOLD:
-            # Auto-re-enable CUDA for recovery attempt
-            logging.info(f"Attempting to re-enable CUDA for {processor_name} after {time_disabled:.0f}s and {disabled_info['success_count']} successful CPU frames")
-            del _cuda_disabled_processors[processor_name]
-            # Reset error count when re-enabling
-            if processor_name in _cuda_error_count:
-                _cuda_error_count[processor_name]['count'] = 0
-            return False
-        
-        return True
-
-def enable_cuda_for_processor(processor_name):
-    """Manually re-enable CUDA for a processor after recovery"""
-    global _cuda_disabled_processors, _cuda_error_count
-    with _cuda_disabled_lock:
-        if processor_name in _cuda_disabled_processors:
-            del _cuda_disabled_processors[processor_name]
-            logging.info(f"CUDA manually re-enabled for {processor_name}")
-            # Reset error count completely
-            if processor_name in _cuda_error_count:
-                _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
-            # Force CUDA reset to clear any lingering state
-            reset_cuda_device()
-            return True
-        else:
-            # Even if not in disabled list, reset error count
-            if processor_name in _cuda_error_count:
-                _cuda_error_count[processor_name] = {'count': 0, 'last_error': 0}
-            logging.info(f"CUDA error count reset for {processor_name} (was not in disabled list)")
-            return True  # Return True even if not disabled, to indicate count was reset
-    return False
-
-def track_cuda_success(processor_name):
-    """Track successful CPU operations to enable gradual CUDA recovery"""
-    global _cuda_disabled_processors
-    with _cuda_disabled_lock:
-        if processor_name in _cuda_disabled_processors:
-            _cuda_disabled_processors[processor_name]['success_count'] += 1
-
-def reset_all_cuda_errors():
-    """Reset all CUDA error states - allows all processors to use CUDA again"""
-    global _cuda_disabled_processors, _cuda_error_count, _last_cuda_reset_time
-    with _cuda_disabled_lock:
-        count = len(_cuda_disabled_processors)
-        disabled_names = list(_cuda_disabled_processors.keys())
-        _cuda_disabled_processors.clear()
-        _cuda_error_count.clear()
-        
-        # Force a full CUDA device reset
-        if DEVICE == 'cuda' and torch.cuda.is_available():
-            try:
-                logging.warning("Performing full CUDA device reset...")
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-                # Try to reset CUDA state more aggressively
-                for i in range(torch.cuda.device_count()):
-                    torch.cuda.empty_cache(i)
-                torch.cuda.reset_peak_memory_stats()
-                _last_cuda_reset_time = time.time()
-                logging.info("CUDA device reset completed")
-            except Exception as e:
-                logging.error(f"Error during CUDA reset: {e}")
-        
-        logging.warning(f"All CUDA errors reset. {count} processor(s) re-enabled for CUDA mode: {disabled_names}")
-        return count
 
 def restart_processor(processor_info):
     """Restart a failed processor"""
@@ -2909,27 +2582,6 @@ def restart_processor(processor_info):
         logging.error(f"Failed to restart {processor_type} for {channel_name}: {e}")
         return False
     
-    return False
-
-def periodic_cuda_recovery():
-    """Periodically attempt to re-enable CUDA for processors that have been running successfully in CPU mode"""
-    global _cuda_disabled_processors
-    current_time = time.time()
-    processors_to_enable = []
-    
-    with _cuda_disabled_lock:
-        for processor_name, info in list(_cuda_disabled_processors.items()):
-            time_disabled = current_time - info['disabled_time']
-            success_count = info['success_count']
-            
-            # If enough time passed and enough successful frames, try re-enabling
-            if time_disabled >= CUDA_RECOVERY_COOLDOWN and success_count >= CUDA_SUCCESS_THRESHOLD:
-                processors_to_enable.append(processor_name)
-    
-    # Re-enable outside lock to avoid deadlock
-    for processor_name in processors_to_enable:
-        if enable_cuda_for_processor(processor_name):
-            logging.info(f"Periodic recovery: Re-enabled CUDA for {processor_name} after successful CPU operation")
 
 # Global flag to track if initialization has been done
 _initialized = False
@@ -2951,11 +2603,9 @@ def initialize_app():
         if db_connected:
             scheduler = BackgroundScheduler(timezone=str(IST))
             # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
-            # Add periodic CUDA recovery check every 5 minutes
-            scheduler.add_job(periodic_cuda_recovery, 'interval', minutes=5, id='cuda_recovery')
             scheduler.start()
             atexit.register(lambda: scheduler.shutdown())
-            logging.info("CUDA recovery scheduler started - will attempt to re-enable CUDA every 5 minutes")
+            logging.info("Scheduler started (CPU-only mode - no CUDA recovery needed)")
         else:
             logging.warning("Database not connected, scheduler not started")
         
@@ -2964,9 +2614,6 @@ def initialize_app():
         
         _initialized = True
         logging.info("✓ Application initialized successfully - processors and scheduler started")
-        logging.info("CUDA Reset API: POST /api/reset_cuda to reset all CUDA errors")
-        logging.info("CUDA Status API: GET /api/cuda_status to check CUDA status")
-        logging.info("CUDA Reset per processor: POST /api/reset_cuda/<processor_name> to reset specific processor")
         
         # Log processor status
         total_processors = sum(len(procs) for procs in stream_processors.values())
