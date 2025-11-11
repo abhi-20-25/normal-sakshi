@@ -1963,8 +1963,16 @@ def video_feed(app_name, channel_id):
     if not processors:
         # Log more diagnostic information
         all_channel_ids = list(stream_processors.keys())
-        logging.warning(f"Video feed requested for channel {channel_id} but processors not found. "
-                       f"Initialized: {_initialized}, Available channels: {all_channel_ids[:10]}{'...' if len(all_channel_ids) > 10 else ''}")
+        # Check if channel exists but has empty processor list
+        if channel_id in stream_processors:
+            processor_types = [type(p).__name__ for p in stream_processors[channel_id]]
+            logging.warning(f"Video feed requested for channel {channel_id} but processor list is EMPTY. "
+                           f"Channel exists but no processors were started. "
+                           f"Expected: {app_name}, Found processors: {processor_types if processor_types else 'NONE'}. "
+                           f"Available channels: {all_channel_ids[:10]}{'...' if len(all_channel_ids) > 10 else ''}")
+        else:
+            logging.warning(f"Video feed requested for channel {channel_id} but channel not found. "
+                           f"Initialized: {_initialized}, Available channels: {all_channel_ids[:10]}{'...' if len(all_channel_ids) > 10 else ''}")
         return (f"Stream not found for channel {channel_id}", 404)
     
     target_processor, target_class = None, None
@@ -2492,6 +2500,7 @@ def start_streams():
         try:
             if channel_id not in stream_processors: stream_processors[channel_id] = []
             active_app_names = app_names[:]
+            logging.info(f"Initializing channel {channel_id} ({channel_name}) with apps: {app_names}")
             # Start a shared FrameHub per link
             try:
                 hub = FrameHub(link, channel_name)
@@ -2604,6 +2613,13 @@ def start_streams():
     # Log summary of what was started
     total_channels = len(stream_processors)
     total_processors = sum(len(procs) for procs in stream_processors.values())
+    # Log detailed status for each channel
+    for ch_id, procs in stream_processors.items():
+        proc_types = [type(p).__name__ for p in procs]
+        if not procs:
+            logging.warning(f"Channel {ch_id} has NO processors (empty list)")
+        else:
+            logging.info(f"Channel {ch_id} has {len(procs)} processor(s): {proc_types}")
     logging.info(f"Stream initialization complete: {total_started} processors started across {total_channels} channels. "
                 f"Channel IDs: {list(stream_processors.keys())[:10]}{'...' if len(stream_processors) > 10 else ''}")
 
