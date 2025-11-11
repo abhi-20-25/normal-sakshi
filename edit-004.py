@@ -2294,6 +2294,35 @@ def download_schedule_template():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/processor_status', methods=['GET'])
+def processor_status():
+    """Diagnostic endpoint to check processor status - No authentication required"""
+    try:
+        status = {
+            'initialized': _initialized,
+            'total_channels': len(stream_processors),
+            'channels': {}
+        }
+        
+        for channel_id, processors in stream_processors.items():
+            proc_info = []
+            for p in processors:
+                proc_info.append({
+                    'type': type(p).__name__,
+                    'is_alive': p.is_alive() if hasattr(p, 'is_alive') else False,
+                    'is_running': getattr(p, 'is_running', None)
+                })
+            
+            status['channels'][channel_id] = {
+                'processor_count': len(processors),
+                'processors': proc_info if proc_info else 'NONE (empty list)'
+            }
+        
+        return jsonify(status)
+    except Exception as e:
+        logging.error(f"Error getting processor status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/restart_gunicorn', methods=['GET'])
 def restart_gunicorn():
     """API endpoint to restart gunicorn.service - No authentication required"""
@@ -2509,12 +2538,16 @@ def start_streams():
                 logging.debug(f"Started FrameHub for {channel_id} ({channel_name})")
             except Exception as e:
                 logging.error(f"Failed to start FrameHub for {channel_id} ({channel_name}): {e}", exc_info=True)
+                logging.warning(f"Skipping channel {channel_id} - FrameHub failed, no processors will be started")
                 continue  # Skip this channel if FrameHub fails
             
             if 'PeopleCounter' in active_app_names:
                 try:
-                    model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
+                    model_path = APP_TASKS_CONFIG['PeopleCounter']['model_path']
+                    logging.debug(f"Loading PeopleCounter model from {model_path} for {channel_id}")
+                    model_obj = load_model(model_path)
                     if model_obj:
+                        logging.debug(f"Model loaded successfully, creating PeopleCounter processor for {channel_id}")
                         pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
                         pc_processor.frame_hub = hub
                         stream_processors[channel_id].append(pc_processor)
@@ -2524,7 +2557,7 @@ def start_streams():
                         atexit.register(pc_processor.shutdown)
                         active_app_names.remove('PeopleCounter')
                     else:
-                        logging.error(f"Failed to load model for PeopleCounter on {channel_id} ({channel_name})")
+                        logging.error(f"Failed to load model for PeopleCounter on {channel_id} ({channel_name}) - load_model returned None")
                 except Exception as e:
                     logging.error(f"Error starting PeopleCounter for {channel_id} ({channel_name}): {e}", exc_info=True)
             if 'QueueMonitor' in active_app_names:
@@ -2614,12 +2647,18 @@ def start_streams():
     total_channels = len(stream_processors)
     total_processors = sum(len(procs) for procs in stream_processors.values())
     # Log detailed status for each channel
+    empty_channels = []
     for ch_id, procs in stream_processors.items():
         proc_types = [type(p).__name__ for p in procs]
         if not procs:
-            logging.warning(f"Channel {ch_id} has NO processors (empty list)")
+            empty_channels.append(ch_id)
+            logging.warning(f"⚠️  Channel {ch_id} has NO processors (empty list) - check initialization logs above for errors")
         else:
-            logging.info(f"Channel {ch_id} has {len(procs)} processor(s): {proc_types}")
+            logging.info(f"✓ Channel {ch_id} has {len(procs)} processor(s): {proc_types}")
+    
+    if empty_channels:
+        logging.error(f"⚠️  WARNING: {len(empty_channels)} channel(s) have no processors: {empty_channels}. "
+                     f"Check logs above for model loading errors or processor initialization failures.")
     logging.info(f"Stream initialization complete: {total_started} processors started across {total_channels} channels. "
                 f"Channel IDs: {list(stream_processors.keys())[:10]}{'...' if len(stream_processors) > 10 else ''}")
 
