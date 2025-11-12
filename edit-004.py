@@ -1292,6 +1292,13 @@ class QueueMonitorProcessor(threading.Thread):
             valid_secondary_count == 0 and  # No person in counter (requirement 2)
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
+        
+        # Screenshot trigger 3: ANY person in queue (SIMPLIFIED - for testing/demo)
+        # Take screenshot every 10 seconds if there's anyone in the queue
+        should_screenshot_any_queue = (
+            valid_queue_count > 0 and
+            (current_time - self.last_screenshot_time) > 10.0  # 10-second cooldown
+        )
 
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
         should_alert = (
@@ -1383,12 +1390,26 @@ class QueueMonitorProcessor(threading.Thread):
                 logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
         
         # Take screenshot if queue count > 3
-        if should_screenshot_high_count:
+        elif should_screenshot_high_count:
             self.last_screenshot_time = current_time
             high_count_message = f"High queue count: {valid_queue_count} people in queue. Counter: {valid_secondary_count}"
             logging.warning(f"HIGH QUEUE COUNT SCREENSHOT on {self.channel_name}: {high_count_message}")
             try:
                 media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], high_count_message, is_gif=False)
+                if media_path:
+                    logging.info(f"Screenshot saved successfully: {media_path}")
+                else:
+                    logging.error(f"Failed to save screenshot for {self.channel_name}")
+            except Exception as e:
+                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
+        
+        # Take screenshot for any person in queue (simplified trigger)
+        elif should_screenshot_any_queue:
+            self.last_screenshot_time = current_time
+            simple_message = f"Queue active: {valid_queue_count} people in queue, {valid_secondary_count} at counter"
+            logging.info(f"SIMPLE QUEUE SCREENSHOT on {self.channel_name}: {simple_message}")
+            try:
+                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], simple_message, is_gif=False)
                 if media_path:
                     logging.info(f"Screenshot saved successfully: {media_path}")
                 else:

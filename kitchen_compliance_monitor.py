@@ -19,13 +19,13 @@ Base = declarative_base()
 # --- Model Paths (Standardized) ---
 APRON_CAP_MODEL_PATH = 'apron-cap.pt'
 GLOVES_MODEL_PATH = 'gloves.pt'
-GENERAL_MODEL_PATH = 'yolov8n.pt'
+GENERAL_MODEL_PATH = 'yolo11n.pt'  # Updated to YOLO 11
 
 # --- Detection Configuration ---
 CONFIDENCE_THRESHOLD = 0.50
 FRAME_SKIP_RATE = 5
 PHONE_PERSISTENCE_SECONDS = 3
-ALERT_COOLDOWN_SECONDS = 60
+ALERT_COOLDOWN_SECONDS = 20  # Reduced from 60 to capture more violations
 
 # --- Uniform Color Ranges (HSV) ---
 YELLOW_LOWER = np.array([18, 80, 80])
