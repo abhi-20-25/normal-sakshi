@@ -1277,26 +1277,23 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
                     persons_in_queue_5sec.append(track_id)
         
-        # Screenshot trigger 1: person in queue > 5 seconds AND no one in counter area AND queue count > 0
+        # Screenshot trigger 1: person waiting > 5 seconds (HIGHEST PRIORITY)
         should_screenshot_5sec = (
-            len(persons_in_queue_5sec) > 0 and
-            valid_queue_count > 0 and  # At least 1 person in queue (requirement 1)
-            valid_secondary_count == 0 and  # No person in counter (requirement 1 & 2)
+            len(persons_in_queue_5sec) > 0 and  # Someone waited > 5 seconds
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
         
-        # Screenshot trigger 2: queue count > 3 AND no person in counter area (requirement 2)
+        # Screenshot trigger 2: queue count > 3 (MEDIUM PRIORITY)
         should_screenshot_high_count = (
-            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3 (requirement 2)
-            valid_queue_count > 0 and  # Ensure queue is not empty
-            valid_secondary_count == 0 and  # No person in counter (requirement 2)
+            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
         
-        # Screenshot trigger 3: ANY person in queue (SIMPLIFIED - for testing/demo)
-        # Take screenshot every 10 seconds if there's anyone in the queue
-        should_screenshot_any_queue = (
-            valid_queue_count > 0 and
+        # Screenshot trigger 3: counter is empty AND queue has people (FALLBACK)
+        # Take screenshot every 10 seconds if counter empty and queue has people
+        should_screenshot_counter_empty = (
+            valid_queue_count > 0 and  # Queue has people
+            valid_secondary_count == 0 and  # Counter is empty
             (current_time - self.last_screenshot_time) > 10.0  # 10-second cooldown
         )
 
@@ -1375,11 +1372,11 @@ class QueueMonitorProcessor(threading.Thread):
         else:
             logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
         
-        # Take screenshot if person in queue > 5 seconds with no counter
+        # Take screenshot if person in queue > 5 seconds
         if should_screenshot_5sec:
             self.last_screenshot_time = current_time
-            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Counter area is empty. Queue count: {valid_queue_count}"
-            logging.warning(f"QUEUE SCREENSHOT TRIGGER on {self.channel_name}: {screenshot_message}")
+            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Queue count: {valid_queue_count}, Counter: {valid_secondary_count}"
+            logging.warning(f"5-SEC WAIT SCREENSHOT on {self.channel_name}: {screenshot_message}")
             try:
                 media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], screenshot_message, is_gif=False)
                 if media_path:
@@ -1403,13 +1400,13 @@ class QueueMonitorProcessor(threading.Thread):
             except Exception as e:
                 logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
         
-        # Take screenshot for any person in queue (simplified trigger)
-        elif should_screenshot_any_queue:
+        # Take screenshot if counter empty and queue has people
+        elif should_screenshot_counter_empty:
             self.last_screenshot_time = current_time
-            simple_message = f"Queue active: {valid_queue_count} people in queue, {valid_secondary_count} at counter"
-            logging.info(f"SIMPLE QUEUE SCREENSHOT on {self.channel_name}: {simple_message}")
+            counter_empty_message = f"Counter is empty but queue has {valid_queue_count} people waiting"
+            logging.info(f"COUNTER EMPTY SCREENSHOT on {self.channel_name}: {counter_empty_message}")
             try:
-                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], simple_message, is_gif=False)
+                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], counter_empty_message, is_gif=False)
                 if media_path:
                     logging.info(f"Screenshot saved successfully: {media_path}")
                 else:
