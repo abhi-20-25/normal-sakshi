@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sakshi.ai — Retail Dashboard</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    /* -------------------- Basic reset -------------------- */
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body,#app{height:100%}
+    body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial; background:#0f1112;color:#ddd}
+
+    /* -------------------- Layout -------------------- */
+    .container{display:grid;grid-template-columns:260px 1fr;gap:24px;height:100vh;padding:18px}
+    .sidebar{background:#121314;border-radius:8px;padding:18px;display:flex;flex-direction:column;gap:18px}
+    .brand{display:flex;align-items:center;gap:12px}
+    .brand .logo{width:44px;height:44px;border-radius:10px;background:linear-gradient(135deg,#6d5af8 0%, #e55fd4 100%);display:flex;align-items:center;justify-content:center;color:white;font-weight:700}
+    .brand h1{font-size:16px;color:#fff}
+    .nav{margin-top:6px;display:flex;flex-direction:column;gap:8px}
+    .nav .section-title{font-size:12px;color:#8a8f96;margin:8px 6px}
+    .nav a{display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;color:#d7d8da;text-decoration:none;cursor:pointer}
+    .nav a.active{background:linear-gradient(90deg,#1640ff,#2b3bff);color:white;box-shadow:0 6px 18px rgba(40,55,255,0.08)}
+    .nav a .icon{width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center;font-size:18px}
+    .sidebar .version{margin-top:auto;color:#666;font-size:12px}
+
+    /* -------------------- Main area -------------------- */
+    .main{overflow:auto;padding:8px 6px}
+    .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px}
+    .title h2{font-size:30px;color:#f1f3f5}
+    .sub{color:#9aa0a6;font-size:13px}
+
+    /* metrics row */
+    .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;padding:10px 6px}
+    .card{background:#17181a;padding:20px;border-radius:12px;box-shadow:0 2px 0 rgba(255,255,255,0.01);min-height:110px}
+    .card h3{color:#9aa0a6;font-size:13px;margin-bottom:6px}
+    .big{font-size:28px;font-weight:700;color:#fff}
+    .muted{color:#6d7377;font-size:13px}
+    .stat-change{margin-top:8px;font-size:13px}
+
+    /* Content sections */
+    .section{display:none}
+    .section.active{display:block}
+
+    /* CCTV Feeds */
+    .cctv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin-top:20px;padding:0 6px}
+    .cam{background:#10131a;border-radius:12px;overflow:hidden}
+    .cam .preview{height:280px;background:#000;display:flex;align-items:center;justify-content:center;color:#9aa0a6;position:relative}
+    .cam .preview img{width:100%;height:100%;object-fit:cover}
+    .cam .meta{padding:12px}
+    .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,0.03);font-size:12px}
+
+    /* Report section */
+    .report-card{background:#17181a;padding:20px;border-radius:12px;margin-top:12px}
+    .report-controls{display:flex;gap:10px;margin-bottom:20px;flex-wrap:wrap}
+    .report-controls input{background:#0f1112;border:1px solid #2a2d31;color:#ddd;padding:8px 12px;border-radius:6px}
+    .report-controls button{background:linear-gradient(90deg,#1640ff,#2b3bff);color:white;padding:8px 16px;border:none;border-radius:6px;cursor:pointer}
+    .report-controls button:hover{opacity:0.9}
+
+    /* Table */
+    table{width:100%;border-collapse:collapse;margin-top:15px}
+    th,td{border:1px solid #2a2d31;padding:10px;text-align:left;font-size:13px}
+    th{background:#121314;color:#9aa0a6}
+    td{background:#17181a}
+
+    /* History grid */
+    .history-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:15px;margin-top:15px;padding:0 6px}
+    .history-item{border:1px solid #2a2d31;border-radius:8px;overflow:hidden;background:#17181a;cursor:pointer;transition:transform 0.2s}
+    .history-item:hover{transform:translateY(-4px)}
+    .history-item img{width:100%;aspect-ratio:4/3;object-fit:cover;background:#000}
+    .history-item-info{padding:10px;font-size:12px}
+    .history-item-info p{margin:4px 0;color:#9aa0a6}
+
+    /* Pagination */
+    .pagination{margin-top:20px;text-align:center}
+    .pagination button{padding:8px 16px;margin:0 5px;background:#17181a;color:#ddd;border:1px solid #2a2d31;border-radius:6px;cursor:pointer}
+    .pagination button:hover{background:#1f2123}
+    .pagination button:disabled{opacity:0.5;cursor:not-allowed}
+
+    /* Modal */
+    .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.85)}
+    .modal.show{display:flex;align-items:center;justify-content:center}
+    .modal-content{background:#17181a;padding:25px;border-radius:12px;width:90%;max-width:900px;max-height:90vh;overflow:auto}
+    .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
+    .modal-header h2{color:#fff}
+    .close-btn{color:#9aa0a6;font-size:28px;cursor:pointer}
+    .close-btn:hover{color:#fff}
+
+    /* Lightbox */
+    .lightbox{display:none;position:fixed;z-index:2000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,0.95)}
+    .lightbox.show{display:flex;align-items:center;justify-content:center}
+    .lightbox img{max-width:90%;max-height:90%;object-fit:contain}
+    .lightbox-close{position:absolute;top:20px;right:35px;color:#fff;font-size:40px;cursor:pointer}
+
+    /* Responsive */
+    @media (max-width:1100px){
+      .metrics{grid-template-columns:repeat(2,1fr)}
+      .cctv-grid{grid-template-columns:1fr}
+    }
+    @media (max-width:680px){
+      .container{grid-template-columns:1fr}
+      .sidebar{display:none}
+    }
+
+    /* Helpers */
+    .pill{padding:6px 10px;border-radius:8px;font-size:12px}
+    .right{display:flex;align-items:center;gap:8px}
+    .hidden{display:none!important}
+  </style>
+</head>
+<body>
+  <div id="app" class="container">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">S</div>
+        <div>
+          <h1>Sakshi.ai</h1>
+          <div style="font-size:12px;color:#7b8087">Retail Intelligence</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <div class="section-title">APPLICATIONS</div>
+        <a href="#" data-section="people-counter" class="nav-link active">
+          <div class="icon">👥</div>
+          <div>People Counter</div>
+        </a>
+        <a href="#" data-section="queue-monitor" class="nav-link">
+          <div class="icon">⏱️</div>
+          <div>Queue Monitor</div>
+        </a>
+        <a href="#" data-section="kitchen-compliance" class="nav-link">
+          <div class="icon">👨‍🍳</div>
+          <div>Kitchen Compliance</div>
+        </a>
+        <a href="#" data-section="occupancy" class="nav-link">
+          <div class="icon">📊</div>
+          <div>Occupancy Monitor</div>
+        </a>
+        <a href="#" data-section="generic" class="nav-link">
+          <div class="icon">🎯</div>
+          <div>Generic Detection</div>
+        </a>
+      </nav>
+
+      <div class="version">v1.0.0 | Powered by YOLO11</div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main">
+      <div class="topbar">
+        <div class="title">
+          <h2 id="page-title">People Counter</h2>
+          <div class="sub" id="page-subtitle">Real-time footfall analytics</div>
+        </div>
+        <div class="right">
+          <div class="pill" style="background:#131415;color:#fff">
+            🔔<span style="margin-left:6px;color:#ff6b6b" id="notification-count">0</span>
+          </div>
+          <a href="/logout" class="pill" style="background:linear-gradient(90deg,#23c17a,#2bd08a);color:#04260e;text-decoration:none">Logout</a>
+        </div>
+      </div>
+
+      <!-- People Counter Section -->
+      <div id="people-counter-section" class="section active">
+        <!-- Metrics -->
+        <section class="metrics">
+          <div class="card">
+            <h3>IN Count</h3>
+            <div class="big"><span id="in-count">0</span> <span style="font-size:14px;color:#8c8f93;font-weight:500">visitors</span></div>
+            <div class="stat-change" style="color:#26a44b">Entering</div>
+          </div>
+
+          <div class="card">
+            <h3>OUT Count</h3>
+            <div class="big"><span id="out-count">0</span> <span style="font-size:14px;color:#8c8f93">visitors</span></div>
+            <div class="stat-change" style="color:#e04b4b">Exiting</div>
+          </div>
+
+          <div class="card">
+            <h3>Net Count</h3>
+            <div class="big"><span id="net-count">0</span> <span style="font-size:14px;color:#8c8f93">people</span></div>
+            <div class="muted">Currently inside</div>
+          </div>
+
+          <div class="card">
+            <h3>Status</h3>
+            <div class="big" style="font-size:18px">🟢 <span style="font-size:20px">Active</span></div>
+            <div class="muted">Real-time tracking</div>
+          </div>
+        </section>
+
+        <!-- Live Feed -->
+        <h3 style="margin:16px 6px 8px;color:#e6e8ea">Live Video Feed</h3>
+        <div class="cctv-grid" style="grid-template-columns:1fr">
+          <div class="cam">
+            <div class="preview">
+              <img id="people-counter-feed" src="" alt="Loading feed...">
+            </div>
+            <div class="meta">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div><strong id="people-counter-camera">Main Entrance</strong><div class="muted">Real-time stream with line-crossing detection</div></div>
+                <div style="margin-left:8px;align-self:flex-start" class="badge" id="people-counter-channel">CAM-001</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Report -->
+        <div class="report-card">
+          <h3 style="color:#e6e8ea;margin-bottom:15px">📊 Daily Report</h3>
+          <div class="report-controls">
+            <input type="date" id="people-counter-date" />
+            <button onclick="loadPeopleCounterReport()">Load Report</button>
+          </div>
+          <div id="people-counter-report"></div>
+        </div>
+
+        <!-- History -->
+        <div class="report-card">
+          <h3 style="color:#e6e8ea;margin-bottom:15px">📜 Detection History</h3>
+          <div class="history-grid" id="people-counter-history"></div>
+          <div class="pagination" id="people-counter-pagination"></div>
+        </div>
+      </div>
+
+      <!-- Queue Monitor Section -->
+      <div id="queue-monitor-section" class="section">
+        <h3 style="margin:16px 6px 8px;color:#e6e8ea">Live Video Feed</h3>
+        <div class="cctv-grid" style="grid-template-columns:1fr">
+          <div class="cam">
+            <div class="preview">
+              <img id="queue-monitor-feed" src="" alt="Loading feed...">
+            </div>
+            <div class="meta">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div><strong>Checkout Queue</strong><div class="muted">Real-time queue length monitoring</div></div>
+                <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-002</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="report-card">
+          <h3 style="color:#e6e8ea;margin-bottom:15px">📜 Detection History</h3>
+          <div class="history-grid" id="queue-monitor-history"></div>
+          <div class="pagination" id="queue-monitor-pagination"></div>
+        </div>
+      </div>
+
+      <!-- Kitchen Compliance Section -->
+      <div id="kitchen-compliance-section" class="section">
+        <h3 style="margin:16px 6px 8px;color:#e6e8ea">Live Video Feed</h3>
+        <div class="cctv-grid" style="grid-template-columns:1fr">
+          <div class="cam">
+            <div class="preview">
+              <img id="kitchen-compliance-feed" src="" alt="Loading feed...">
+            </div>
+            <div class="meta">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div><strong>Kitchen Camera</strong><div class="muted">Hygiene & safety compliance monitoring</div></div>
+                <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-003</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="report-card">
+          <h3 style="color:#e6e8ea;margin-bottom:15px">📜 Detection History</h3>
+          <div class="history-grid" id="kitchen-compliance-history"></div>
+          <div class="pagination" id="kitchen-compliance-pagination"></div>
+        </div>
+      </div>
+
+      <!-- Occupancy Monitor Section -->
+      <div id="occupancy-section" class="section">
+        <h3 style="margin:16px 6px 8px;color:#e6e8ea">Live Video Feed</h3>
+        <div class="cctv-grid" style="grid-template-columns:1fr">
+          <div class="cam">
+            <div class="preview">
+              <img id="occupancy-feed" src="" alt="Loading feed...">
+            </div>
+            <div class="meta">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div><strong>Kitchen Area</strong><div class="muted">Real-time occupancy tracking</div></div>
+                <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-004</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="report-card">
+          <h3 style="color:#e6e8ea;margin-bottom:15px">📜 Detection History</h3>
+          <div class="history-grid" id="occupancy-history"></div>
+          <div class="pagination" id="occupancy-pagination"></div>
+        </div>
+      </div>
+
+      <!-- Generic Detection Section -->
+      <div id="generic-section" class="section">
+        <h3 style="margin:16px 6px 8px;color:#e6e8ea">Live Video Feed</h3>
+        <div class="cctv-grid" style="grid-template-columns:1fr">
+          <div class="cam">
+            <div class="preview">
+              <img id="generic-feed" src="" alt="Loading feed...">
+            </div>
+            <div class="meta">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div><strong>Secondary Camera</strong><div class="muted">Multi-class object detection</div></div>
+                <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-005</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="report-card">
+          <h3 style="color:#e6e8ea;margin-bottom:15px">📜 Detection History</h3>
+          <div class="history-grid" id="generic-history"></div>
+          <div class="pagination" id="generic-pagination"></div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- Lightbox -->
+  <div id="lightbox" class="lightbox" onclick="closeLightbox()">
+    <span class="lightbox-close">&times;</span>
+    <img id="lightbox-img" src="" alt="">
+  </div>
+
+  <!-- Modal -->
+  <div id="report-modal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Report Details</h2>
+        <span class="close-btn" onclick="closeModal()">&times;</span>
+      </div>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script>
+    // Global variables
+    let socket;
+    let currentChannelIds = {};
+    let historyPages = {};
+
+    // Initialize socket.io
+    function initSocket() {
+      socket = io();
+      
+      socket.on('connect', () => {
+        console.log('Connected to server');
+      });
+
+      socket.on('count_update', (data) => {
+        if (data.channel_id === currentChannelIds['PeopleCounter']) {
+          document.getElementById('in-count').textContent = data.in_count || 0;
+          document.getElementById('out-count').textContent = data.out_count || 0;
+          document.getElementById('net-count').textContent = (data.in_count - data.out_count) || 0;
+        }
+      });
+
+      socket.on('detection_alert', (data) => {
+        console.log('Detection alert:', data);
+        updateNotificationCount();
+      });
+    }
+
+    // Navigation
+    document.querySelectorAll('.nav-link').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const section = link.getAttribute('data-section');
+        switchSection(section);
+        
+        // Update active state
+        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+        link.classList.add('active');
+      });
+    });
+
+    function switchSection(section) {
+      // Hide all sections
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      
+      // Show selected section
+      const sectionMap = {
+        'people-counter': { id: 'people-counter-section', title: 'People Counter', subtitle: 'Real-time footfall analytics' },
+        'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue length and wait time tracking' },
+        'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Hygiene & safety monitoring' },
+        'occupancy': { id: 'occupancy-section', title: 'Occupancy Monitor', subtitle: 'Real-time occupancy tracking' },
+        'generic': { id: 'generic-section', title: 'Generic Detection', subtitle: 'Multi-class object detection' }
+      };
+
+      const sec = sectionMap[section];
+      if (sec) {
+        document.getElementById(sec.id).classList.add('active');
+        document.getElementById('page-title').textContent = sec.title;
+        document.getElementById('page-subtitle').textContent = sec.subtitle;
+        
+        // Load feeds and history
+        loadFeeds(section);
+        loadHistory(section);
+      }
+    }
+
+    // Load video feeds
+    function loadFeeds(section) {
+      const feedMap = {
+        'people-counter': { app: 'PeopleCounter', channel: 'cam_3df702bb28', feedId: 'people-counter-feed' },
+        'queue-monitor': { app: 'QueueMonitor', channel: 'cam_f822b0bf4e', feedId: 'queue-monitor-feed' },
+        'kitchen-compliance': { app: 'KitchenCompliance', channel: 'cam_c6ef0fb589', feedId: 'kitchen-compliance-feed' },
+        'occupancy': { app: 'OccupancyMonitor', channel: 'cam_d77ace3828', feedId: 'occupancy-feed' },
+        'generic': { app: 'Generic', channel: 'cam_f948cba9d4', feedId: 'generic-feed' }
+      };
+
+      const feed = feedMap[section];
+      if (feed) {
+        const img = document.getElementById(feed.feedId);
+        img.src = `/video_feed/${feed.app}/${feed.channel}`;
+        currentChannelIds[feed.app] = feed.channel;
+      }
+    }
+
+    // Load history
+    function loadHistory(section, page = 1) {
+      const historyMap = {
+        'people-counter': { app: 'PeopleCounter', channel: 'cam_3df702bb28', historyId: 'people-counter-history', paginationId: 'people-counter-pagination' },
+        'queue-monitor': { app: 'QueueMonitor', channel: 'cam_f822b0bf4e', historyId: 'queue-monitor-history', paginationId: 'queue-monitor-pagination' },
+        'kitchen-compliance': { app: 'KitchenCompliance', channel: 'cam_c6ef0fb589', historyId: 'kitchen-compliance-history', paginationId: 'kitchen-compliance-pagination' },
+        'occupancy': { app: 'OccupancyMonitor', channel: 'cam_d77ace3828', historyId: 'occupancy-history', paginationId: 'occupancy-pagination' },
+        'generic': { app: 'Generic', channel: 'cam_f948cba9d4', historyId: 'generic-history', paginationId: 'generic-pagination' }
+      };
+
+      const hist = historyMap[section];
+      if (!hist) return;
+
+      fetch(`/history/${hist.app}?page=${page}&limit=12&channel_id=${hist.channel}`)
+        .then(res => res.json())
+        .then(data => {
+          const historyDiv = document.getElementById(hist.historyId);
+          const paginationDiv = document.getElementById(hist.paginationId);
+          
+          historyDiv.innerHTML = '';
+          
+          if (data.detections && data.detections.length > 0) {
+            data.detections.forEach(det => {
+              const item = document.createElement('div');
+              item.className = 'history-item';
+              item.onclick = () => openLightbox(det.file_path);
+              
+              item.innerHTML = `
+                <img src="${det.file_path}" alt="Detection" loading="lazy">
+                <div class="history-item-info">
+                  <p><strong>${det.label || 'Detection'}</strong></p>
+                  <p>Time: ${new Date(det.timestamp).toLocaleString()}</p>
+                  ${det.confidence ? `<p>Confidence: ${(det.confidence * 100).toFixed(1)}%</p>` : ''}
+                </div>
+              `;
+              
+              historyDiv.appendChild(item);
+            });
+
+            // Pagination
+            paginationDiv.innerHTML = `
+              <button ${page === 1 ? 'disabled' : ''} onclick="loadHistory('${section}', ${page - 1})">Previous</button>
+              <span style="color:#9aa0a6;padding:0 10px">Page ${page} of ${data.total_pages}</span>
+              <button ${page === data.total_pages ? 'disabled' : ''} onclick="loadHistory('${section}', ${page + 1})">Next</button>
+            `;
+          } else {
+            historyDiv.innerHTML = '<p style="color:#9aa0a6;padding:20px">No detections found</p>';
+            paginationDiv.innerHTML = '';
+          }
+        })
+        .catch(err => {
+          console.error('Error loading history:', err);
+          document.getElementById(hist.historyId).innerHTML = '<p style="color:#e04b4b;padding:20px">Error loading history</p>';
+        });
+    }
+
+    // Load People Counter Report
+    function loadPeopleCounterReport() {
+      const date = document.getElementById('people-counter-date').value || new Date().toISOString().split('T')[0];
+      const channel = currentChannelIds['PeopleCounter'];
+      
+      fetch(`/report/${channel}/${date}`)
+        .then(res => res.json())
+        .then(data => {
+          const reportDiv = document.getElementById('people-counter-report');
+          
+          if (data.daily || data.hourly) {
+            let html = '<table><thead><tr><th>Time</th><th>IN</th><th>OUT</th><th>Net</th></tr></thead><tbody>';
+            
+            if (data.daily) {
+              html += `<tr><td><strong>Daily Total</strong></td><td>${data.daily.in_count}</td><td>${data.daily.out_count}</td><td>${data.daily.in_count - data.daily.out_count}</td></tr>`;
+            }
+            
+            if (data.hourly && data.hourly.length > 0) {
+              data.hourly.forEach(h => {
+                html += `<tr><td>${h.hour}:00</td><td>${h.in_count}</td><td>${h.out_count}</td><td>${h.in_count - h.out_count}</td></tr>`;
+              });
+            }
+            
+            html += '</tbody></table>';
+            reportDiv.innerHTML = html;
+          } else {
+            reportDiv.innerHTML = '<p style="color:#9aa0a6">No data available for this date</p>';
+          }
+        })
+        .catch(err => {
+          console.error('Error loading report:', err);
+          document.getElementById('people-counter-report').innerHTML = '<p style="color:#e04b4b">Error loading report</p>';
+        });
+    }
+
+    // Lightbox
+    function openLightbox(src) {
+      const lightbox = document.getElementById('lightbox');
+      const img = document.getElementById('lightbox-img');
+      img.src = src;
+      lightbox.classList.add('show');
+    }
+
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('show');
+    }
+
+    // Modal
+    function closeModal() {
+      document.getElementById('report-modal').classList.remove('show');
+    }
+
+    // Notification count
+    function updateNotificationCount() {
+      const countEl = document.getElementById('notification-count');
+      const current = parseInt(countEl.textContent) || 0;
+      countEl.textContent = current + 1;
+    }
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', () => {
+      initSocket();
+      
+      // Set today's date
+      document.getElementById('people-counter-date').valueAsDate = new Date();
+      
+      // Load initial section
+      loadFeeds('people-counter');
+      loadHistory('people-counter');
+      loadPeopleCounterReport();
+    });
+  </script>
+</body>
+</html>

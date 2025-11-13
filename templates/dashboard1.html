@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sakshi.ai — Retail Dashboard (Demo)</title>
+  <style>
+    /* -------------------- Basic reset -------------------- */
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body,#app{height:100%}
+    body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial; background:#0f1112;color:#ddd}
+
+    /* -------------------- Layout -------------------- */
+    .container{display:grid;grid-template-columns:260px 1fr;gap:24px;height:100vh;padding:18px}
+    .sidebar{background:#121314;border-radius:8px;padding:18px;display:flex;flex-direction:column;gap:18px}
+    .brand{display:flex;align-items:center;gap:12px}
+    .brand .logo{width:44px;height:44px;border-radius:10px;background:linear-gradient(135deg,#6d5af8 0%, #e55fd4 100%);display:flex;align-items:center;justify-content:center;color:white;font-weight:700}
+    .brand h1{font-size:16px;color:#fff}
+    .nav{margin-top:6px;display:flex;flex-direction:column;gap:8px}
+    .nav .section-title{font-size:12px;color:#8a8f96;margin:8px 6px}
+    .nav a{display:flex;align-items:center;gap:12px;padding:12px;border-radius:12px;color:#d7d8da;text-decoration:none}
+    .nav a.active{background:linear-gradient(90deg,#1640ff,#2b3bff);color:white;box-shadow:0 6px 18px rgba(40,55,255,0.08)}
+    .nav a .icon{width:34px;height:34;border-radius:8px;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:center}
+    .sidebar .version{margin-top:auto;color:#666;font-size:12px}
+
+    /* -------------------- Main area -------------------- */
+    .main{overflow:auto;padding:8px 6px}
+    .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px}
+    .title h2{font-size:30px;color:#f1f3f5}
+    .sub{color:#9aa0a6;font-size:13px}
+
+    /* metrics row */
+    .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;padding:10px 6px}
+    .card{background:#17181a;padding:20px;border-radius:12px;box-shadow:0 2px 0 rgba(255,255,255,0.01);min-height:110px}
+    .card h3{color:#9aa0a6;font-size:13px;margin-bottom:6px}
+    .big{font-size:28px;font-weight:700;color:#fff}
+    .muted{color:#6d7377;font-size:13px}
+    .stat-change{margin-top:8px;font-size:13px}
+
+    /* Active Alerts + Quick Stats layout */
+    .content-grid{display:grid;grid-template-columns:2fr 380px;gap:18px;padding:10px 6px}
+    .alerts{display:flex;flex-direction:column;gap:12px}
+    .alert{padding:18px;border-radius:12px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(0,0,0,0.02));border:1px solid rgba(255,255,255,0.02)}
+    .alert.yellow{border-color:rgba(255,200,20,0.12);background:linear-gradient(180deg,rgba(255,200,20,0.02),rgba(0,0,0,0.02))}
+    .alert.red{border-color:rgba(255,60,80,0.12)}
+    .alert.blue{border-color:rgba(20,110,255,0.06)}
+
+    .quick{background:#121213;padding:18px;border-radius:12px}
+    .quick h4{color:#e6e8ea;margin-bottom:12px}
+    .progress-row{margin-bottom:14px}
+    .progress-title{display:flex;justify-content:space-between;font-size:13px;color:#9aa0a6;margin-bottom:6px}
+    .bar-wrap{height:10px;background:#202125;border-radius:12px}
+    .bar{height:10px;border-radius:12px}
+
+    /* SOP compliance card */
+    .sop{background:#121213;padding:20px;border-radius:12px;margin-top:6px}
+    .sop h3{color:#e6e8ea}
+    .sop .item{background:#161718;padding:18px;border-radius:12px;margin-top:12px}
+
+    /* CCTV section */
+    .cctv-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px}
+    .cam{background:#10131a;border-radius:12px;overflow:hidden}
+    .cam .preview{height:140px;background:linear-gradient(180deg,#0f2536,#132133);display:flex;align-items:center;justify-content:center;color:#9aa0a6}
+    .cam .meta{padding:12px}
+    .badge{display:inline-block;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,0.03);font-size:12px}
+
+    /* responsive */
+    @media (max-width:1100px){ .metrics{grid-template-columns:repeat(2,1fr);} .content-grid{grid-template-columns:1fr} .cctv-grid{grid-template-columns:repeat(2,1fr)} }
+    @media (max-width:680px){ .container{grid-template-columns:1fr} .sidebar{display:none} }
+
+    /* small helpers */
+    .pill{padding:6px 10px;border-radius:8px;font-size:12px}
+    .right{display:flex;align-items:center;gap:8px}
+  </style>
+</head>
+<body>
+  <div id="app" class="container">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">S</div>
+        <div>
+          <h1>Sakshi.ai</h1>
+          <div style="font-size:12px;color:#7b8087">Retail Intelligence</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <div class="section-title">INDUSTRY</div>
+        <a href="#" class="active"><div class="icon">🏬</div> <div>Retail Chain</div></a>
+        <a href="#"><div class="icon">🏦</div> <div>Banking</div></a>
+        <a href="#"><div class="icon">🏭</div> <div>Manufacturing</div></a>
+        <a href="#"><div class="icon">📦</div> <div>Warehouse</div></a>
+      </nav>
+
+      <div class="version">v1.0.0</div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="title">
+          <h2>Dashboard</h2>
+          <div class="sub">Retail Chain Analytics</div>
+        </div>
+        <div class="right">
+          <div class="pill" style="background:#131415;color:#fff">🔔<span style="margin-left:6px;color:#ff6b6b">2</span></div>
+          <div class="pill" style="background:linear-gradient(90deg,#23c17a,#2bd08a);color:#04260e">A</div>
+        </div>
+      </div>
+
+      <!-- metrics -->
+      <section class="metrics">
+        <div class="card">
+          <h3>Unique Footfall Today</h3>
+          <div class="big">2,847 <span style="font-size:14px;color:#8c8f93;font-weight:500">visitors</span></div>
+          <div class="stat-change" style="color:#26a44b">▲ +12% vs yesterday</div>
+        </div>
+
+        <div class="card">
+          <h3>Avg Wait Time</h3>
+          <div class="big">3.2 <span style="font-size:14px;color:#8c8f93">minutes</span></div>
+          <div class="stat-change" style="color:#e04b4b">▼ -0.8 min vs yesterday</div>
+        </div>
+
+        <div class="card">
+          <h3>Theft Incidents</h3>
+          <div class="big">2 <span style="font-size:14px;color:#8c8f93">detected</span></div>
+          <div class="muted">Within normal range</div>
+        </div>
+
+        <div class="card">
+          <h3>Peak Hour Traffic</h3>
+          <div class="big">6:30 PM <span style="font-size:14px;color:#8c8f93">today</span></div>
+          <div class="stat-change" style="color:#26a44b">▲ Expected 450+ visitors</div>
+        </div>
+      </section>
+
+      <!-- alerts + quick stats -->
+      <section class="content-grid">
+        <div>
+          <h3 style="margin:12px 6px;color:#e6e8ea">Active Alerts</h3>
+          <div class="alerts">
+            <div class="alert yellow">
+              <strong>⚠️ High Footfall Detected</strong>
+              <div class="muted" style="margin-top:6px">Main entrance experiencing 40% above average traffic</div>
+              <div style="margin-top:8px;color:#9aa0a6;font-size:12px">2 minutes ago</div>
+            </div>
+
+            <div class="alert red">
+              <strong>❗ Potential Theft Alert</strong>
+              <div class="muted" style="margin-top:6px">Suspicious activity detected near electronics section</div>
+              <div style="margin-top:8px;color:#9aa0a6;font-size:12px">Just now</div>
+            </div>
+
+            <div class="alert blue">
+              <strong>ℹ️ Staff Shortage Alert</strong>
+              <div class="muted" style="margin-top:6px">Checkout area requires additional staff assistance</div>
+              <div style="margin-top:8px;color:#9aa0a6;font-size:12px">5 minutes ago</div>
+            </div>
+          </div>
+
+          <!-- SOP compliance card -->
+          <div class="sop">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div>
+                <h3>SOP Compliance - Retail Operations</h3>
+                <div class="muted">Overall Compliance</div>
+              </div>
+              <div style="font-weight:700;color:#fff">50%</div>
+            </div>
+            <div style="margin-top:12px" class="bar-wrap"><div class="bar" style="width:50%;background:#2ecc71"></div></div>
+
+            <div class="item">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <strong>Checkout Counter Staffing</strong>
+                  <div class="muted">Updated 5 mins ago</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="pill" style="background:#113d1f;color:#9ff5b8">Completed</div>
+                  <div style="font-weight:700;margin-top:8px">100%</div>
+                </div>
+              </div>
+              <div style="margin-top:12px" class="bar-wrap"><div class="bar" style="width:100%;background:#12b76a;height:8px;border-radius:6px"></div></div>
+            </div>
+
+            <div class="item">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <strong>Customer Service Response Time</strong>
+                  <div class="muted">Updated 2 mins ago</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="pill" style="background:#0b2f59;color:#cfe9ff">In Progress</div>
+                  <div style="font-weight:700;margin-top:8px">75%</div>
+                </div>
+              </div>
+              <div style="margin-top:12px" class="bar-wrap"><div class="bar" style="width:75%;background:#2563eb;height:8px;border-radius:6px"></div></div>
+            </div>
+
+            <div class="item">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <strong>Store Cleanliness Standards</strong>
+                  <div class="muted">Updated 10 mins ago</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="pill" style="background:#113d1f;color:#9ff5b8">Completed</div>
+                  <div style="font-weight:700;margin-top:8px">95%</div>
+                </div>
+              </div>
+              <div style="margin-top:12px" class="bar-wrap"><div class="bar" style="width:95%;background:#12b76a;height:8px;border-radius:6px"></div></div>
+            </div>
+
+            <div class="item">
+              <div style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                  <strong>Shelf Restocking Schedule</strong>
+                  <div class="muted">Updated 15 mins ago</div>
+                </div>
+                <div style="text-align:right">
+                  <div class="pill" style="background:#4b2d00;color:#ffd88c">Pending</div>
+                  <div style="font-weight:700;margin-top:8px">40%</div>
+                </div>
+              </div>
+              <div style="margin-top:12px" class="bar-wrap"><div class="bar" style="width:40%;background:#d97706;height:8px;border-radius:6px"></div></div>
+            </div>
+
+          </div>
+
+          <!-- Live CCTV -->
+          <h3 style="margin:16px 6px 8px;color:#e6e8ea">Live CCTV Feeds</h3>
+          <div class="cctv-grid">
+            <div class="cam">
+              <div class="preview">Video Feed</div>
+              <div class="meta">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div><strong>Main Entrance</strong><div class="muted">Real-time stream</div></div>
+                  <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-001</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cam">
+              <div class="preview">Video Feed</div>
+              <div class="meta">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div><strong>Checkout Area</strong><div class="muted">Real-time stream</div></div>
+                  <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-002</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="cam">
+              <div class="preview">Video Feed</div>
+              <div class="meta">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div><strong>Inventory Section</strong><div class="muted">Real-time stream</div></div>
+                  <div style="margin-left:8px;align-self:flex-start" class="badge">CAM-003</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
+        <aside class="quick">
+          <h4>Quick Stats</h4>
+          <div class="progress-row">
+            <div class="progress-title"><span>Store Occupancy</span><strong>68%</strong></div>
+            <div class="bar-wrap"><div class="bar" style="width:68%;background:#2b6ef6"></div></div>
+          </div>
+
+          <div class="progress-row">
+            <div class="progress-title"><span>Checkout Efficiency</span><strong>92%</strong></div>
+            <div class="bar-wrap"><div class="bar" style="width:92%;background:#12b76a"></div></div>
+          </div>
+
+          <div class="progress-row">
+            <div class="progress-title"><span>Security Status</span><strong>Good</strong></div>
+            <div class="bar-wrap"><div class="bar" style="width:60%;background:#f59e0b"></div></div>
+          </div>
+
+        </aside>
+      </section>
+
+    </main>
+  </div>
+
+  <script>
+    // small demo: animate bars on load
+    document.addEventListener('DOMContentLoaded',()=>{
+      document.querySelectorAll('.bar').forEach(el=>{
+        const w = el.style.width || '0%';
+        el.style.width = '0%';
+        setTimeout(()=>el.style.transition='width 800ms ease',20);
+        setTimeout(()=>el.style.width = w,50);
+      })
+    })
+  </script>
+</body>
+</html>

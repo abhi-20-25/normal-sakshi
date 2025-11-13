@@ -11,6 +11,7 @@ import pytz
 import numpy as np
 from sqlalchemy import Column, Integer, String, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
+from concurrent.futures import ThreadPoolExecutor
 
 # --- Basic Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -87,6 +88,7 @@ class KitchenComplianceProcessor(threading.Thread):
         self.last_gloves_results = []
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self.last_socketio_emit = 0  # Track last SocketIO emit time
+        self.alert_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="KitchenAlert")  # Limit concurrent alerts
 
     @staticmethod
     def initialize_tables(engine):
@@ -102,6 +104,8 @@ class KitchenComplianceProcessor(threading.Thread):
     def shutdown(self):
         logging.info(f"Shutting down Kitchen Compliance processor for {self.channel_name}.")
         self.is_running = False
+        if hasattr(self, 'alert_executor'):
+            self.alert_executor.shutdown(wait=False)
 
     def get_frame(self):
         with self.lock:
@@ -139,13 +143,23 @@ class KitchenComplianceProcessor(threading.Thread):
 
     def _trigger_alert(self, frame, violation_type, details):
         logging.warning(f"ALERT on {self.channel_name}: {details}")
-        telegram_message = f"🚨 Kitchen Alert: {self.channel_name}\nViolation: {violation_type}\nDetails: {details}"
-        self.send_telegram_notification(telegram_message)
-        media_path = self.handle_main_detection(
-            'KitchenCompliance', self.channel_id, [frame], details, is_gif=False
-        )
-        if media_path:
-            self._save_violation_to_db(violation_type, details, media_path)
+        
+        # Run telegram and screenshot saving in background thread pool to avoid blocking
+        def async_alert():
+            try:
+                telegram_message = f"🚨 Kitchen Alert: {self.channel_name}\nViolation: {violation_type}\nDetails: {details}"
+                self.send_telegram_notification(telegram_message)
+                media_path = self.handle_main_detection(
+                    'KitchenCompliance', self.channel_id, [frame], details, is_gif=False
+                )
+                if media_path:
+                    self._save_violation_to_db(violation_type, details, media_path)
+                logging.info(f"Kitchen: Alert saved for {violation_type}")
+            except Exception as e:
+                logging.error(f"Kitchen alert background task failed: {e}")
+        
+        # Submit alert to thread pool (max 2 concurrent alerts)
+        self.alert_executor.submit(async_alert)
 
     def run(self):
         logging.info(f"🚀 Kitchen Compliance thread starting for {self.channel_name}")
@@ -206,9 +220,9 @@ class KitchenComplianceProcessor(threading.Thread):
             current_time = time.time()
             annotated_frame = frame.copy()
             
-            # Log every 300 frames (about every 10 seconds at 30 FPS)
-            if frame_count % 300 == 0:
-                logging.info(f"Kitchen {self.channel_name}: Processing frame {frame_count}")
+            # Log every 100 frames (about every 3 seconds at 30 FPS)
+            if frame_count % 100 == 0:
+                logging.info(f"Kitchen {self.channel_name}: ✅ ALIVE - Processing frame {frame_count}")
 
             # --- Run Inferences ---
             try:
@@ -219,12 +233,13 @@ class KitchenComplianceProcessor(threading.Thread):
                     self.last_apron_cap_results = self.apron_cap_model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
                     self.last_gloves_results = self.gloves_model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
                 
-                # Log detection results every 300 frames
-                if frame_count % 300 == 0:
+                # Log detection results every 100 frames
+                if frame_count % 100 == 0:
                     person_count = len(person_results[0].boxes) if person_results and person_results[0].boxes is not None else 0
-                    logging.info(f"Kitchen {self.channel_name}: Detected {person_count} people in frame {frame_count}")
+                    has_ids = person_results and person_results[0].boxes.id is not None if person_results and person_results[0].boxes is not None else False
+                    logging.info(f"Kitchen {self.channel_name}: Detected {person_count} people (IDs: {has_ids}) in frame {frame_count}")
             except Exception as e:
-                logging.error(f"Model inference error: {e}")
+                logging.error(f"❌ Kitchen {self.channel_name}: Model inference error at frame {frame_count}: {e}")
                 person_results = None
                 phone_results = None
 
@@ -420,8 +435,13 @@ class KitchenComplianceProcessor(threading.Thread):
             
             # Emit SocketIO update only every 10 seconds to avoid overwhelming the system
             if current_time - self.last_socketio_emit >= 10.0:
-                self.socketio.emit('kitchen_update', current_metrics)
-                self.last_socketio_emit = current_time
+                try:
+                    # Use namespace=None and broadcast=False for better performance
+                    self.socketio.emit('kitchen_update', current_metrics, namespace='/')
+                    self.last_socketio_emit = current_time
+                    logging.debug(f"Kitchen: Emitted update for {self.channel_name}")
+                except Exception as e:
+                    logging.error(f"Kitchen: SocketIO emit failed for {self.channel_name}: {e}")
 
             # --- 4. Detect and Track Mobile Phones ---
             if phone_results and phone_results[0].boxes is not None:

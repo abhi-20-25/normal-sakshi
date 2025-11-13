@@ -54,19 +54,7 @@ TARGET_HEIGHT = 360
 from kitchen_compliance_monitor import KitchenComplianceProcessor
 
 # --- Basic Logging Setup ---
-import sys
-logging.basicConfig(
-    level=logging.INFO, 
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    stream=sys.stdout,  # Force to stdout instead of stderr
-    force=True  # Override any existing config
-)
-# Force flush after each log
-for handler in logging.root.handlers:
-    handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-    if hasattr(handler.stream, 'reconfigure'):
-        handler.stream.reconfigure(line_buffering=True)
-        
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logging.getLogger('ultralytics').setLevel(logging.WARNING)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
@@ -91,8 +79,8 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 APP_TASKS_CONFIG = {
     'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
     'PeopleCounter': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
-    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'yolov8n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
+    'QueueMonitor': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'yolo11n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
     'OccupancyMonitor': {'model_path': 'yolo11n.pt', 'confidence': 0.15}
 }
 
@@ -169,16 +157,13 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
 # THIS IS NOW A FALLBACK if no ROI is in the database.
 QUEUE_MONITOR_ROI_CONFIG = {
     "Checkout Queue": {
-        "roi_points": [[0.391,0.206],[0.732,0.553],[0.356,0.668],[0.247,0.311]], #[[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
-        "secondary_roi_points":[[0.451,0.273],[0.598,0.214],[0.803,0.371],[0.635,0.508]],#[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
+        "roi_points": [[0.391,0.206],[0.732,0.553],[0.356,0.668],[0.247,0.311]],
+        "secondary_roi_points":[[0.451,0.273],[0.598,0.214],[0.803,0.371],[0.635,0.508]],
     }
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
-QUEUE_SCREENSHOT_DWELL_TIME_SEC = 5.0  # How long a person must stay in queue to trigger screenshot (5 seconds)
-QUEUE_ALERT_THRESHOLD = 3          # Regular alert: 2+ people with NO cashier
+QUEUE_ALERT_THRESHOLD = 2          # Regular alert: 2+ people with NO cashier
 QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
-QUEUE_HIGH_COUNT_THRESHOLD = 3     # Screenshot threshold: queue count > 3
-QUEUE_COUNTER_PERSISTENCE_SEC = 8.0  # How long to keep counter as "occupied" after last detection (8 seconds)
 QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
 
 # --- Flask and SocketIO Setup ---
@@ -1256,12 +1241,16 @@ class QueueMonitorProcessor(threading.Thread):
                 if entry_time > 0 and (current_time - entry_time) >= QUEUE_DWELL_TIME_SEC:
                     valid_secondary_count += 1
         
+        # Store the ACTUAL secondary count (without persistence) for screenshot decisions
+        actual_secondary_count = valid_secondary_count
+        
         # Persistence mechanism: If no one is currently detected in counter but someone was detected
         # within the persistence window, still consider counter as occupied to prevent false alerts
+        # NOTE: This persistence only applies to alerts, NOT to screenshot decisions
         if valid_secondary_count == 0 and self.last_counter_detection_time > 0:
             time_since_last_detection = current_time - self.last_counter_detection_time
             if time_since_last_detection <= QUEUE_COUNTER_PERSISTENCE_SEC:
-                valid_secondary_count = 1  # Assume counter is still occupied
+                valid_secondary_count = 1  # Assume counter is still occupied FOR ALERTS
                 logging.debug(f"Counter area persistence active: last detection was {time_since_last_detection:.1f}s ago (within {QUEUE_COUNTER_PERSISTENCE_SEC}s window)")
             else:
                 # Reset if persistence window expired
@@ -1289,24 +1278,22 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
                     persons_in_queue_5sec.append(track_id)
         
-        # Screenshot trigger 1: person waiting > 5 seconds (HIGHEST PRIORITY)
+        # Screenshot trigger 1: person in queue > 5 seconds AND no one in counter area AND queue count > 0
+        # Use actual_secondary_count (without persistence) for screenshot decisions
         should_screenshot_5sec = (
-            len(persons_in_queue_5sec) > 0 and  # Someone waited > 5 seconds
+            len(persons_in_queue_5sec) > 0 and
+            valid_queue_count > 0 and  # At least 1 person in queue (requirement 1)
+            actual_secondary_count == 0 and  # No person ACTUALLY in counter (no persistence applied)
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
         
-        # Screenshot trigger 2: queue count > 3 (MEDIUM PRIORITY)
+        # Screenshot trigger 2: queue count > 3 AND no person in counter area (requirement 2)
+        # Use actual_secondary_count (without persistence) for screenshot decisions
         should_screenshot_high_count = (
-            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3
+            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3 (requirement 2)
+            valid_queue_count > 0 and  # Ensure queue is not empty
+            actual_secondary_count == 0 and  # No person ACTUALLY in counter (no persistence applied)
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
-        )
-        
-        # Screenshot trigger 3: counter is empty AND queue has people (FALLBACK)
-        # Take screenshot every 10 seconds if counter empty and queue has people
-        should_screenshot_counter_empty = (
-            valid_queue_count > 0 and  # Queue has people
-            valid_secondary_count == 0 and  # Counter is empty
-            (current_time - self.last_screenshot_time) > 10.0  # 10-second cooldown
         )
 
         # Alert when cashier area is empty and queue has 2+ people (with cooldown)
@@ -1384,11 +1371,11 @@ class QueueMonitorProcessor(threading.Thread):
         else:
             logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
         
-        # Take screenshot if person in queue > 5 seconds
+        # Take screenshot if person in queue > 5 seconds with no counter
         if should_screenshot_5sec:
             self.last_screenshot_time = current_time
-            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Queue count: {valid_queue_count}, Counter: {valid_secondary_count}"
-            logging.warning(f"5-SEC WAIT SCREENSHOT on {self.channel_name}: {screenshot_message}")
+            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Counter area is empty. Queue count: {valid_queue_count}"
+            logging.warning(f"QUEUE SCREENSHOT TRIGGER on {self.channel_name}: {screenshot_message}")
             try:
                 media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], screenshot_message, is_gif=False)
                 if media_path:
@@ -1399,26 +1386,12 @@ class QueueMonitorProcessor(threading.Thread):
                 logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
         
         # Take screenshot if queue count > 3
-        elif should_screenshot_high_count:
+        if should_screenshot_high_count:
             self.last_screenshot_time = current_time
             high_count_message = f"High queue count: {valid_queue_count} people in queue. Counter: {valid_secondary_count}"
             logging.warning(f"HIGH QUEUE COUNT SCREENSHOT on {self.channel_name}: {high_count_message}")
             try:
                 media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], high_count_message, is_gif=False)
-                if media_path:
-                    logging.info(f"Screenshot saved successfully: {media_path}")
-                else:
-                    logging.error(f"Failed to save screenshot for {self.channel_name}")
-            except Exception as e:
-                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
-        
-        # Take screenshot if counter empty and queue has people
-        elif should_screenshot_counter_empty:
-            self.last_screenshot_time = current_time
-            counter_empty_message = f"Counter is empty but queue has {valid_queue_count} people waiting"
-            logging.info(f"COUNTER EMPTY SCREENSHOT on {self.channel_name}: {counter_empty_message}")
-            try:
-                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], counter_empty_message, is_gif=False)
                 if media_path:
                     logging.info(f"Screenshot saved successfully: {media_path}")
                 else:
@@ -1698,29 +1671,6 @@ class OccupancyMonitorProcessor(threading.Thread):
         except Exception as e:
             logging.error(f"Error logging occupancy: {e}")
         
-        # Calculate today's statistics
-        max_today = self.live_count  # Default to current
-        avg_today = self.live_count  # Default to current
-        
-        try:
-            with SessionLocal() as db:
-                today = datetime.now(IST).date()
-                today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
-                today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=IST)
-                
-                logs = db.query(OccupancyLog).filter(
-                    OccupancyLog.channel_id == self.channel_id,
-                    OccupancyLog.timestamp >= today_start,
-                    OccupancyLog.timestamp <= today_end
-                ).all()
-                
-                if logs:
-                    counts = [log.live_count for log in logs]
-                    max_today = max(counts) if counts else self.live_count
-                    avg_today = round(sum(counts) / len(counts)) if counts else self.live_count
-        except Exception as e:
-            logging.debug(f"Error calculating occupancy stats: {e}")
-        
         # Emit to dashboard via SocketIO
         self.socketio.emit('occupancy_update', {
             'channel_id': self.channel_id,
@@ -1728,9 +1678,7 @@ class OccupancyMonitorProcessor(threading.Thread):
             'time_slot': self.current_time_slot,
             'live_count': self.live_count,
             'required_count': self.required_count,
-            'status': status,
-            'max_today': max_today,
-            'avg_today': avg_today
+            'status': status
         })
         
         return status
@@ -1984,6 +1932,11 @@ def logout():
 def dashboard(): 
     return render_template('dashboard.html', app_configs=get_app_configs())
 
+@app.route('/dashboard/new')
+@login_required
+def dashboard_new(): 
+    return render_template('dashboard_new.html', app_configs=get_app_configs())
+
 def gen_video_feed(processor):
     """Generator function for video feed - works with both direct run and gunicorn"""
     while True:
@@ -2202,46 +2155,6 @@ def get_queue_report(channel_id):
         if hourly_counts: peak_hour = datetime.strptime(str(max({h: sum(c)/len(c) for h, c in hourly_counts.items()}, key=lambda h: sum(hourly_counts[h])/len(hourly_counts[h]))), '%H').strftime('%I %p')
         summary = { 'max_queue_length': max_queue, 'avg_queue_length': avg_queue, 'peak_hour': peak_hour }
         return jsonify({'labels': labels, 'data': data, 'summary': summary})
-
-@app.route('/api/occupancy/today/<channel_id>')
-@login_required
-def get_occupancy_today(channel_id):
-    """Get today's occupancy statistics"""
-    if not db_connected: return jsonify({"error": "Database not connected"}), 500
-    try:
-        with SessionLocal() as db:
-            today = datetime.now(IST).date()
-            today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
-            today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=IST)
-            
-            # Get all logs for today
-            logs = db.query(OccupancyLog).filter(
-                OccupancyLog.channel_id == channel_id,
-                OccupancyLog.timestamp >= today_start,
-                OccupancyLog.timestamp <= today_end
-            ).all()
-            
-            if not logs:
-                return jsonify({
-                    "max_today": 0,
-                    "avg_today": 0,
-                    "current": 0
-                })
-            
-            # Calculate statistics
-            counts = [log.live_count for log in logs]
-            max_today = max(counts) if counts else 0
-            avg_today = round(sum(counts) / len(counts)) if counts else 0
-            current = logs[-1].live_count if logs else 0
-            
-            return jsonify({
-                "max_today": max_today,
-                "avg_today": avg_today,
-                "current": current
-            })
-    except Exception as e:
-        logging.error(f"Error getting occupancy stats: {e}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/occupancy/schedule/<channel_id>')
 @login_required
@@ -2528,6 +2441,15 @@ def handle_connect(): logging.info('Frontend client connected')
 _MODEL_CACHE = {}
 
 def load_model(model_path: str):
+    """
+    Load YOLO model for standard use cases (PeopleCounter, QueueMonitor, OccupancyMonitor)
+    
+    IMPORTANT: This function FORCES CPU-ONLY mode for stability
+    - PeopleCounter: CPU only
+    - QueueMonitor: CPU only  
+    - OccupancyMonitor: CPU only (explicitly set in class)
+    - KitchenCompliance: Uses its own GPU/CUDA loading (not this function)
+    """
     if model_path in _MODEL_CACHE:
         return _MODEL_CACHE[model_path]
     if not os.path.exists(model_path):
@@ -2535,7 +2457,7 @@ def load_model(model_path: str):
         return None
     try:
         model = YOLO(model_path)
-        # FORCE CPU MODE - No CUDA
+        # FORCE CPU MODE - No CUDA for standard use cases
         model.to('cpu')
         
         # No half precision or fuse on CPU
@@ -2716,15 +2638,6 @@ def initialize_app():
         
         # Initialize database
         initialize_database()
-        
-        # Initialize Kitchen Compliance tables (separate Base object)
-        if db_connected:
-            try:
-                from kitchen_compliance_monitor import KitchenComplianceProcessor
-                KitchenComplianceProcessor.initialize_tables(engine)
-                logging.info("Kitchen Compliance tables initialized")
-            except Exception as e:
-                logging.error(f"Failed to initialize Kitchen tables: {e}")
         
         # Start the scheduler if database is connected
         if db_connected:
