@@ -1030,6 +1030,12 @@ class QueueMonitorProcessor(threading.Thread):
         self.roi_poly = Polygon([])
         self.secondary_roi_poly = Polygon([])
         self._load_roi_from_db()
+        
+        # Cache for queue stats to avoid frequent DB queries
+        self.cached_served_today = 0
+        self.cached_peak_count = 0
+        self.last_stats_update = 0
+        self.stats_update_interval = 30  # Update stats every 30 seconds
 
     # def _load_roi_from_db(self):
     #     with SessionLocal() as db:
@@ -1094,7 +1100,13 @@ class QueueMonitorProcessor(threading.Thread):
         self.is_running = False
 
     def _get_queue_stats(self):
-        """Get served count and peak count for today"""
+        """Get served count and peak count for today with caching"""
+        current_time = time.time()
+        
+        # Return cached values if updated recently
+        if current_time - self.last_stats_update < self.stats_update_interval:
+            return self.cached_served_today, self.cached_peak_count
+        
         served_today = 0
         peak_count = 0
         
@@ -1118,14 +1130,24 @@ class QueueMonitorProcessor(threading.Thread):
                     # Calculate peak count
                     peak_count = max(record.queue_count for record in records)
                     
-                    # Calculate served count (transitions from >0 to 0)
+                    # Calculate served count (count people who entered counter area)
+                    # Count transitions where queue decreases
                     prev_count = 0
                     for record in records:
-                        if prev_count > 0 and record.queue_count == 0:
-                            served_today += prev_count  # All people in previous queue were served
+                        if prev_count > 0 and record.queue_count < prev_count:
+                            # People moved from queue (likely to counter)
+                            served_today += (prev_count - record.queue_count)
                         prev_count = record.queue_count
+                    
+                    logging.debug(f"Queue stats for {self.channel_name}: Served={served_today}, Peak={peak_count}, Records={len(records)}")
+                
+                # Update cache
+                self.cached_served_today = served_today
+                self.cached_peak_count = peak_count
+                self.last_stats_update = current_time
+                
         except Exception as e:
-            logging.error(f"Failed to get queue stats: {e}")
+            logging.error(f"Failed to get queue stats for {self.channel_name}: {e}")
         
         return served_today, peak_count
 
@@ -1316,6 +1338,8 @@ class QueueMonitorProcessor(threading.Thread):
         if self.current_queue_count != valid_queue_count:
             self.current_queue_count = valid_queue_count
             updated = True
+            # Persist queue count to database for statistics
+            self._persist_queue_count(valid_queue_count)
 
         # Validate secondary (counter area) count with dwell
         valid_secondary_count = 0
@@ -1339,6 +1363,8 @@ class QueueMonitorProcessor(threading.Thread):
         if self.current_secondary_count != valid_secondary_count:
             self.current_secondary_count = valid_secondary_count
             updated = True
+            # Persist queue count whenever it changes
+            self._persist_queue_count(self.current_queue_count)
             # No screenshot when counter area becomes occupied - only when queue present and counter empty
 
         # Emit live counts (no DB persistence) if either changed
