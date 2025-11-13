@@ -639,7 +639,13 @@ class PeopleCounterProcessor(threading.Thread):
         
         self._load_initial_counts()
 
-        self.socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
+        hourly_data = self._get_hourly_data()
+        self.socketio.emit('count_update', {
+            'channel_id': self.channel_id, 
+            'in_count': self.counts['in'], 
+            'out_count': self.counts['out'],
+            'hourly_data': hourly_data
+        })
 
     def stop(self): self.is_running = False
     def shutdown(self):
@@ -654,6 +660,27 @@ class PeopleCounterProcessor(threading.Thread):
                 cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
                 _, jpeg = cv2.imencode('.jpg', placeholder); return jpeg.tobytes()
             _, jpeg = cv2.imencode('.jpg', self.latest_frame); return jpeg.tobytes()
+
+    def _get_hourly_data(self):
+        """Get today's hourly IN counts for the bar chart"""
+        hourly_data = [0] * 24  # Initialize 24 hours with 0
+        if not db_connected: return hourly_data
+        
+        with SessionLocal() as db:
+            try:
+                today_ist = datetime.now(IST).date()
+                records = db.query(HourlyFootfall).filter_by(
+                    channel_id=self.channel_id, 
+                    report_date=today_ist
+                ).all()
+                
+                for record in records:
+                    if 0 <= record.hour < 24:
+                        hourly_data[record.hour] = record.in_count
+            except Exception as e:
+                logging.error(f"Failed to fetch hourly data: {e}")
+        
+        return hourly_data
 
     def _load_initial_counts(self):
         if not db_connected: return
@@ -953,7 +980,13 @@ class PeopleCounterProcessor(threading.Thread):
                 #cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - OUT: {hourly_out_current}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                 
                 with self.lock: self.latest_frame = annotated_frame.copy()
-                socketio.emit('count_update', {'channel_id': self.channel_id, 'in_count': self.counts['in'], 'out_count': self.counts['out']})
+                hourly_data = self._get_hourly_data()
+                socketio.emit('count_update', {
+                    'channel_id': self.channel_id, 
+                    'in_count': self.counts['in'], 
+                    'out_count': self.counts['out'],
+                    'hourly_data': hourly_data
+                })
             except RuntimeError as e:
                 logging.error(f"Runtime error in PeopleCounter {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
                 
@@ -1059,6 +1092,42 @@ class QueueMonitorProcessor(threading.Thread):
     def shutdown(self):
         logging.info(f"Shutting down QueueMonitor for {self.channel_name}.")
         self.is_running = False
+
+    def _get_queue_stats(self):
+        """Get served count and peak count for today"""
+        served_today = 0
+        peak_count = 0
+        
+        if not db_connected:
+            return served_today, peak_count
+        
+        try:
+            with SessionLocal() as db:
+                today_ist = datetime.now(IST).date()
+                start_of_day = datetime.combine(today_ist, datetime.min.time()).replace(tzinfo=IST)
+                end_of_day = datetime.combine(today_ist, datetime.max.time()).replace(tzinfo=IST)
+                
+                # Get all queue logs for today, ordered by time
+                records = db.query(QueueLog).filter(
+                    QueueLog.channel_id == self.channel_id,
+                    QueueLog.timestamp >= start_of_day,
+                    QueueLog.timestamp <= end_of_day
+                ).order_by(QueueLog.timestamp).all()
+                
+                if records:
+                    # Calculate peak count
+                    peak_count = max(record.queue_count for record in records)
+                    
+                    # Calculate served count (transitions from >0 to 0)
+                    prev_count = 0
+                    for record in records:
+                        if prev_count > 0 and record.queue_count == 0:
+                            served_today += prev_count  # All people in previous queue were served
+                        prev_count = record.queue_count
+        except Exception as e:
+            logging.error(f"Failed to get queue stats: {e}")
+        
+        return served_today, peak_count
 
     def get_frame(self):
         with self.lock:
@@ -1274,11 +1343,14 @@ class QueueMonitorProcessor(threading.Thread):
 
         # Emit live counts (no DB persistence) if either changed
         if updated:
+            served_today, peak_count = self._get_queue_stats()
             socketio.emit('queue_update', {
                 'channel_id': self.channel_id,
                 'queue': self.current_queue_count,
                 'counter': self.current_secondary_count,
-                'count': self.current_queue_count  # backward compat
+                'count': self.current_queue_count,  # backward compat
+                'served_today': served_today,
+                'peak_count': peak_count
             })
 
         # Check for persons who have been in queue for more than 5 seconds with no one in counter area
