@@ -62,8 +62,10 @@ class KitchenComplianceProcessor(threading.Thread):
         self.handle_main_detection = detection_callback
 
         try:
-            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            logging.info(f"Using device: {self.device} for Kitchen channel {self.channel_name}")
+            # FORCE CPU MODE - Disable all CUDA usage for stability
+            self.device = 'cpu'
+            logging.info(f"🚫 CUDA DISABLED - Using CPU-only for Kitchen channel {self.channel_name}")
+            
             for model_path in [APRON_CAP_MODEL_PATH, GLOVES_MODEL_PATH, GENERAL_MODEL_PATH]:
                 if not os.path.exists(model_path):
                     raise FileNotFoundError(f"Missing model file: {model_path}")
@@ -74,7 +76,7 @@ class KitchenComplianceProcessor(threading.Thread):
             self.apron_cap_model.to(self.device)
             self.gloves_model.to(self.device)
             self.general_model.to(self.device)
-            logging.info(f"Successfully loaded Kitchen Compliance models for {self.channel_name}")
+            logging.info(f"Successfully loaded Kitchen Compliance models for {self.channel_name} (CPU mode)")
         except Exception as e:
             self.error_message = f"Model Error: {e}"
             logging.error(f"FATAL: Failed to initialize Kitchen models for {self.channel_name}. Error: {e}")
