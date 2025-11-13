@@ -185,31 +185,37 @@
           
           <div class="card" onclick="switchView('kitchen-compliance')" style="min-height: 280px;">
             <h3 style="font-size: 16px; margin-bottom: 15px;">👨‍🍳 Kitchen Compliance</h3>
-            <div style="display: flex; align-items: center; justify-content: center; margin: 20px 0;">
-              <div style="position: relative; width: 120px; height: 120px;">
-                <svg style="transform: rotate(-90deg);" width="120" height="120">
-                  <circle cx="60" cy="60" r="50" fill="none" stroke="#2a2d31" stroke-width="10"></circle>
-                  <circle id="ov-kitchen-circle" cx="60" cy="60" r="50" fill="none" stroke="#26a44b" stroke-width="10" 
-                    stroke-dasharray="314" stroke-dashoffset="94" stroke-linecap="round" style="transition: all 0.3s ease;"></circle>
-                </svg>
-                <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
-                  <div id="ov-kitchen-percent" style="font-size: 28px; font-weight: 700; color: #fff;">--%</div>
-                  <div style="font-size: 11px; color: #9aa0a6;">Compliance</div>
+            <div style="margin-top: 10px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">🧢</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Chef Cap</span>
                 </div>
+                <span id="ov-kitchen-cap" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
-            </div>
-            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2d31;">
-              <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                <span style="font-size: 13px; color: #9aa0a6;">Chef Cap</span>
-                <span id="ov-kitchen-cap" style="color: #9aa0a6; font-size: 13px;">-- --</span>
+              
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">👔</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Apron</span>
+                </div>
+                <span id="ov-kitchen-apron" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
-              <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
-                <span style="font-size: 13px; color: #9aa0a6;">Apron</span>
-                <span id="ov-kitchen-apron" style="color: #9aa0a6; font-size: 13px;">-- --</span>
+              
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">🧤</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Gloves</span>
+                </div>
+                <span id="ov-kitchen-gloves" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
-              <div style="display: flex; justify-content: space-between;">
-                <span style="font-size: 13px; color: #9aa0a6;">Gloves</span>
-                <span id="ov-kitchen-gloves" style="color: #9aa0a6; font-size: 13px;">-- --</span>
+              
+              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">👕</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Uniform</span>
+                </div>
+                <span id="ov-kitchen-uniform" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
             </div>
             <div style="margin-top:15px;color:#3b82f6;font-size:14px;">Click to view details →</div>
@@ -466,66 +472,65 @@ socket.on('occupancy_update', (data) => {
 // Kitchen Compliance updates
 socket.on('kitchen_update', (data) => {
   if (data.channel_id === channels.KitchenCompliance) {
-    const compliancePercent = data.compliance_percentage || 0;
     const totalPeople = data.total_people || 0;
     const capCompliant = data.cap_compliant || 0;
     const apronCompliant = data.apron_compliant || 0;
     const glovesCompliant = data.gloves_compliant || 0;
-    
-    // Update compliance percentage
-    const percentEl = document.getElementById('ov-kitchen-percent');
-    if (percentEl) percentEl.textContent = compliancePercent + '%';
-    
-    // Update circular progress (SVG circle)
-    const circleEl = document.getElementById('ov-kitchen-circle');
-    if (circleEl) {
-      const circumference = 314; // 2 * PI * 50 (radius)
-      const offset = circumference - (compliancePercent / 100) * circumference;
-      circleEl.setAttribute('stroke-dashoffset', offset);
-      
-      // Change color based on compliance
-      if (compliancePercent >= 80) {
-        circleEl.setAttribute('stroke', '#26a44b'); // Green
-      } else if (compliancePercent >= 50) {
-        circleEl.setAttribute('stroke', '#f59e0b'); // Orange
-      } else {
-        circleEl.setAttribute('stroke', '#e04b4b'); // Red
-      }
-    }
+    const uniformCompliant = data.uniform_compliant || 0;
     
     // Update Chef Cap status
     const capEl = document.getElementById('ov-kitchen-cap');
-    if (capEl && totalPeople > 0) {
-      if (capCompliant === totalPeople) {
-        capEl.textContent = '✓ Compliant';
+    if (capEl) {
+      if (totalPeople === 0) {
+        capEl.textContent = '';
+      } else if (capCompliant === totalPeople) {
+        capEl.textContent = '✓ OK';
         capEl.style.color = '#26a44b';
       } else {
-        capEl.textContent = `✗ ${totalPeople - capCompliant} Violations`;
+        capEl.textContent = '⚠ Violation Detected';
         capEl.style.color = '#e04b4b';
       }
     }
     
     // Update Apron status
     const apronEl = document.getElementById('ov-kitchen-apron');
-    if (apronEl && totalPeople > 0) {
-      if (apronCompliant === totalPeople) {
-        apronEl.textContent = '✓ Compliant';
+    if (apronEl) {
+      if (totalPeople === 0) {
+        apronEl.textContent = '';
+      } else if (apronCompliant === totalPeople) {
+        apronEl.textContent = '✓ OK';
         apronEl.style.color = '#26a44b';
       } else {
-        apronEl.textContent = `✗ ${totalPeople - apronCompliant} Violations`;
+        apronEl.textContent = '⚠ Violation Detected';
         apronEl.style.color = '#e04b4b';
       }
     }
     
     // Update Gloves status
     const glovesEl = document.getElementById('ov-kitchen-gloves');
-    if (glovesEl && totalPeople > 0) {
-      if (glovesCompliant === totalPeople) {
-        glovesEl.textContent = '✓ Compliant';
+    if (glovesEl) {
+      if (totalPeople === 0) {
+        glovesEl.textContent = '';
+      } else if (glovesCompliant === totalPeople) {
+        glovesEl.textContent = '✓ OK';
         glovesEl.style.color = '#26a44b';
       } else {
-        glovesEl.textContent = `✗ ${totalPeople - glovesCompliant} Violations`;
+        glovesEl.textContent = '⚠ Violation Detected';
         glovesEl.style.color = '#e04b4b';
+      }
+    }
+    
+    // Update Uniform status
+    const uniformEl = document.getElementById('ov-kitchen-uniform');
+    if (uniformEl) {
+      if (totalPeople === 0) {
+        uniformEl.textContent = '';
+      } else if (uniformCompliant === totalPeople) {
+        uniformEl.textContent = '✓ OK';
+        uniformEl.style.color = '#26a44b';
+      } else {
+        uniformEl.textContent = '⚠ Violation Detected';
+        uniformEl.style.color = '#e04b4b';
       }
     }
   }
