@@ -1686,6 +1686,29 @@ class OccupancyMonitorProcessor(threading.Thread):
         except Exception as e:
             logging.error(f"Error logging occupancy: {e}")
         
+        # Calculate today's statistics
+        max_today = self.live_count  # Default to current
+        avg_today = self.live_count  # Default to current
+        
+        try:
+            with SessionLocal() as db:
+                today = datetime.now(IST).date()
+                today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
+                today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=IST)
+                
+                logs = db.query(OccupancyLog).filter(
+                    OccupancyLog.channel_id == self.channel_id,
+                    OccupancyLog.timestamp >= today_start,
+                    OccupancyLog.timestamp <= today_end
+                ).all()
+                
+                if logs:
+                    counts = [log.live_count for log in logs]
+                    max_today = max(counts) if counts else self.live_count
+                    avg_today = round(sum(counts) / len(counts)) if counts else self.live_count
+        except Exception as e:
+            logging.debug(f"Error calculating occupancy stats: {e}")
+        
         # Emit to dashboard via SocketIO
         self.socketio.emit('occupancy_update', {
             'channel_id': self.channel_id,
@@ -1693,7 +1716,9 @@ class OccupancyMonitorProcessor(threading.Thread):
             'time_slot': self.current_time_slot,
             'live_count': self.live_count,
             'required_count': self.required_count,
-            'status': status
+            'status': status,
+            'max_today': max_today,
+            'avg_today': avg_today
         })
         
         return status
@@ -2165,6 +2190,46 @@ def get_queue_report(channel_id):
         if hourly_counts: peak_hour = datetime.strptime(str(max({h: sum(c)/len(c) for h, c in hourly_counts.items()}, key=lambda h: sum(hourly_counts[h])/len(hourly_counts[h]))), '%H').strftime('%I %p')
         summary = { 'max_queue_length': max_queue, 'avg_queue_length': avg_queue, 'peak_hour': peak_hour }
         return jsonify({'labels': labels, 'data': data, 'summary': summary})
+
+@app.route('/api/occupancy/today/<channel_id>')
+@login_required
+def get_occupancy_today(channel_id):
+    """Get today's occupancy statistics"""
+    if not db_connected: return jsonify({"error": "Database not connected"}), 500
+    try:
+        with SessionLocal() as db:
+            today = datetime.now(IST).date()
+            today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
+            today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=IST)
+            
+            # Get all logs for today
+            logs = db.query(OccupancyLog).filter(
+                OccupancyLog.channel_id == channel_id,
+                OccupancyLog.timestamp >= today_start,
+                OccupancyLog.timestamp <= today_end
+            ).all()
+            
+            if not logs:
+                return jsonify({
+                    "max_today": 0,
+                    "avg_today": 0,
+                    "current": 0
+                })
+            
+            # Calculate statistics
+            counts = [log.live_count for log in logs]
+            max_today = max(counts) if counts else 0
+            avg_today = round(sum(counts) / len(counts)) if counts else 0
+            current = logs[-1].live_count if logs else 0
+            
+            return jsonify({
+                "max_today": max_today,
+                "avg_today": avg_today,
+                "current": current
+            })
+    except Exception as e:
+        logging.error(f"Error getting occupancy stats: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/occupancy/schedule/<channel_id>')
 @login_required

@@ -246,6 +246,10 @@ class KitchenComplianceProcessor(threading.Thread):
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
 
             if person_results and person_results[0].boxes.id is not None:
+                total_people = len(track_ids)
+                compliant_count = 0
+                violation_types = {'cap': 0, 'apron': 0, 'gloves': 0, 'uniform': 0, 'phone': 0}
+                
                 for person_box, track_id, conf in zip(person_boxes, track_ids, confidences):
                     px1, py1, px2, py2 = map(int, person_box)
                     
@@ -253,6 +257,7 @@ class KitchenComplianceProcessor(threading.Thread):
                     box_color = (0, 255, 0)  # Green
                     status_text = "OK"
                     violations = []
+                    person_compliant = True
                     
                     # 1. Check for Apron/Cap Violations
                     for r in self.last_apron_cap_results:
@@ -263,6 +268,11 @@ class KitchenComplianceProcessor(threading.Thread):
                                     if 'without' in violation_class.lower() or 'no' in violation_class.lower():
                                         violations.append(violation_class)
                                         box_color = (0, 0, 255)  # Red
+                                        person_compliant = False
+                                        if 'cap' in violation_class.lower():
+                                            violation_types['cap'] += 1
+                                        if 'apron' in violation_class.lower():
+                                            violation_types['apron'] += 1
                                         if current_time - self.person_violation_tracker[track_id][violation_class] > ALERT_COOLDOWN_SECONDS:
                                             self.person_violation_tracker[track_id][violation_class] = current_time
                                             details = f"Person ID {track_id} detected with '{violation_class}'."
@@ -284,6 +294,8 @@ class KitchenComplianceProcessor(threading.Thread):
                     if not has_gloves:
                         violations.append("No-Gloves")
                         box_color = (0, 0, 255)  # Red
+                        person_compliant = False
+                        violation_types['gloves'] += 1
                         if current_time - self.person_violation_tracker[track_id]['No-Gloves'] > ALERT_COOLDOWN_SECONDS:
                             self.person_violation_tracker[track_id]['No-Gloves'] = current_time
                             details = f"Person ID {track_id} has no gloves."
@@ -310,6 +322,8 @@ class KitchenComplianceProcessor(threading.Thread):
                             if compliant_ratio < 0.30: # If less than 30% of torso is compliant color
                                 violations.append("Uniform-Violation")
                                 box_color = (0, 0, 255)  # Red
+                                person_compliant = False
+                                violation_types['uniform'] += 1
                                 if current_time - self.person_violation_tracker[track_id]['Uniform-Violation'] > ALERT_COOLDOWN_SECONDS:
                                     self.person_violation_tracker[track_id]['Uniform-Violation'] = current_time
                                     details = f"Person ID {track_id} has a uniform color violation."
@@ -344,6 +358,27 @@ class KitchenComplianceProcessor(threading.Thread):
                     # Show confidence
                     cv2.putText(annotated_frame, f"{conf:.2f}", (px2-50, py1+20),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                    
+                    # Count compliant people
+                    if person_compliant:
+                        compliant_count += 1
+                
+                # Calculate compliance percentage
+                compliance_percentage = int((compliant_count / total_people * 100)) if total_people > 0 else 100
+                
+                # Emit real-time compliance update via SocketIO
+                self.socketio.emit('kitchen_update', {
+                    'channel_id': self.channel_id,
+                    'channel_name': self.channel_name,
+                    'total_people': total_people,
+                    'compliant_count': compliant_count,
+                    'compliance_percentage': compliance_percentage,
+                    'violations': violation_types,
+                    'cap_compliant': total_people - violation_types['cap'],
+                    'apron_compliant': total_people - violation_types['apron'],
+                    'gloves_compliant': total_people - violation_types['gloves'],
+                    'uniform_compliant': total_people - violation_types['uniform']
+                })
 
             # --- 4. Detect and Track Mobile Phones ---
             if phone_results and phone_results[0].boxes is not None:

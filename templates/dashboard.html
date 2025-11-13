@@ -150,12 +150,12 @@
             <h3 style="font-size: 16px; margin-bottom: 15px;">⏱️ Queue Monitor</h3>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px;">
               <div>
-                <div style="color: #fff; font-size: 36px; font-weight: 700;">0</div>
+                <div id="ov-queue-count" style="color: #fff; font-size: 36px; font-weight: 700;">0</div>
                 <div style="color: #9aa0a6; font-size: 13px;">People Waiting</div>
               </div>
               <div>
-                <div style="color: #f59e0b; font-size: 36px; font-weight: 700;">0:00</div>
-                <div style="color: #9aa0a6; font-size: 13px;">Avg Wait Time</div>
+                <div id="ov-counter-count" style="color: #f59e0b; font-size: 36px; font-weight: 700;">0</div>
+                <div style="color: #9aa0a6; font-size: 13px;">At Counter</div>
               </div>
             </div>
             <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2d31;">
@@ -163,20 +163,20 @@
               <div style="background: #121314; border-radius: 6px; padding: 12px;">
                 <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
                   <span style="font-size: 13px;">Current Queue</span>
-                  <span style="color: #26a44b; font-size: 13px;">Normal</span>
+                  <span id="ov-queue-status" style="color: #26a44b; font-size: 13px;">Empty</span>
                 </div>
                 <div style="height: 6px; background: #2a2d31; border-radius: 3px; overflow: hidden;">
-                  <div style="width: 35%; height: 100%; background: #26a44b;"></div>
+                  <div id="ov-queue-bar" style="width: 0%; height: 100%; background: #26a44b; transition: all 0.3s ease;"></div>
                 </div>
               </div>
             </div>
             <div style="margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
               <div style="background: #121314; padding: 10px; border-radius: 6px; text-align: center;">
-                <div style="font-size: 20px; color: #fff; font-weight: 600;">0</div>
+                <div id="ov-queue-served" style="font-size: 20px; color: #fff; font-weight: 600;">0</div>
                 <div style="font-size: 11px; color: #9aa0a6;">Served Today</div>
               </div>
               <div style="background: #121314; padding: 10px; border-radius: 6px; text-align: center;">
-                <div style="font-size: 20px; color: #f59e0b; font-weight: 600;">0</div>
+                <div id="ov-queue-peak" style="font-size: 20px; color: #f59e0b; font-weight: 600;">0</div>
                 <div style="font-size: 11px; color: #9aa0a6;">Peak Count</div>
               </div>
             </div>
@@ -189,11 +189,11 @@
               <div style="position: relative; width: 120px; height: 120px;">
                 <svg style="transform: rotate(-90deg);" width="120" height="120">
                   <circle cx="60" cy="60" r="50" fill="none" stroke="#2a2d31" stroke-width="10"></circle>
-                  <circle cx="60" cy="60" r="50" fill="none" stroke="#26a44b" stroke-width="10" 
-                    stroke-dasharray="314" stroke-dashoffset="94" stroke-linecap="round"></circle>
+                  <circle id="ov-kitchen-circle" cx="60" cy="60" r="50" fill="none" stroke="#26a44b" stroke-width="10" 
+                    stroke-dasharray="314" stroke-dashoffset="94" stroke-linecap="round" style="transition: all 0.3s ease;"></circle>
                 </svg>
                 <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
-                  <div style="font-size: 28px; font-weight: 700; color: #fff;">70%</div>
+                  <div id="ov-kitchen-percent" style="font-size: 28px; font-weight: 700; color: #fff;">--%</div>
                   <div style="font-size: 11px; color: #9aa0a6;">Compliance</div>
                 </div>
               </div>
@@ -201,15 +201,15 @@
             <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2d31;">
               <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
                 <span style="font-size: 13px; color: #9aa0a6;">Chef Cap</span>
-                <span style="color: #26a44b; font-size: 13px;">✓ Compliant</span>
+                <span id="ov-kitchen-cap" style="color: #9aa0a6; font-size: 13px;">-- --</span>
               </div>
               <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
                 <span style="font-size: 13px; color: #9aa0a6;">Apron</span>
-                <span style="color: #26a44b; font-size: 13px;">✓ Compliant</span>
+                <span id="ov-kitchen-apron" style="color: #9aa0a6; font-size: 13px;">-- --</span>
               </div>
               <div style="display: flex; justify-content: space-between;">
                 <span style="font-size: 13px; color: #9aa0a6;">Gloves</span>
-                <span style="color: #e04b4b; font-size: 13px;">✗ Non-Compliant</span>
+                <span id="ov-kitchen-gloves" style="color: #9aa0a6; font-size: 13px;">-- --</span>
               </div>
             </div>
             <div style="margin-top:15px;color:#3b82f6;font-size:14px;">Click to view details →</div>
@@ -218,25 +218,25 @@
           <div class="card" onclick="switchView('occupancy')" style="min-height: 280px;">
             <h3 style="font-size: 16px; margin-bottom: 15px;">📊 Occupancy Monitor</h3>
             <div style="text-align: center; margin: 20px 0;">
-              <div style="color: #fff; font-size: 48px; font-weight: 700;">0</div>
+              <div id="ov-occ-current" style="color: #fff; font-size: 48px; font-weight: 700;">0</div>
               <div style="color: #9aa0a6; font-size: 13px; margin-top: 5px;">Current Occupancy</div>
             </div>
             <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2d31;">
               <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                 <span style="color: #9aa0a6; font-size: 12px;">Capacity</span>
-                <span style="color: #fff; font-size: 12px;">0%</span>
+                <span id="ov-occ-percentage" style="color: #fff; font-size: 12px;">0%</span>
               </div>
               <div style="height: 12px; background: #121314; border-radius: 6px; overflow: hidden;">
-                <div style="width: 0%; height: 100%; background: linear-gradient(90deg, #26a44b, #3b82f6);"></div>
+                <div id="ov-occ-bar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #26a44b, #3b82f6); transition: all 0.3s ease;"></div>
               </div>
             </div>
             <div style="margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
               <div style="background: #121314; padding: 10px; border-radius: 6px; text-align: center;">
-                <div style="font-size: 20px; color: #26a44b; font-weight: 600;">0</div>
+                <div id="ov-occ-max" style="font-size: 20px; color: #26a44b; font-weight: 600;">0</div>
                 <div style="font-size: 11px; color: #9aa0a6;">Max Today</div>
               </div>
               <div style="background: #121314; padding: 10px; border-radius: 6px; text-align: center;">
-                <div style="font-size: 20px; color: #3b82f6; font-weight: 600;">0</div>
+                <div id="ov-occ-avg" style="font-size: 20px; color: #3b82f6; font-weight: 600;">0</div>
                 <div style="font-size: 11px; color: #9aa0a6;">Avg Today</div>
               </div>
             </div>
@@ -356,6 +356,8 @@ const channels = {
 };
 let socket = io();
 socket.on('connect', () => console.log('Connected'));
+
+// People Counter updates
 socket.on('count_update', (data) => {
   if (data.channel_id === channels.PeopleCounter) {
     const inC = data.in_count || 0;
@@ -371,6 +373,164 @@ socket.on('count_update', (data) => {
     document.getElementById('pc-net').textContent = netC;
   }
 });
+
+// Queue Monitor updates
+socket.on('queue_update', (data) => {
+  if (data.channel_id === channels.QueueMonitor) {
+    const queueCount = data.queue || 0;
+    const counterCount = data.counter || 0;
+    
+    // Update queue count
+    const queueCountEl = document.getElementById('ov-queue-count');
+    if (queueCountEl) queueCountEl.textContent = queueCount;
+    
+    // Update counter count
+    const counterCountEl = document.getElementById('ov-counter-count');
+    if (counterCountEl) counterCountEl.textContent = counterCount;
+    
+    // Update queue status text and color
+    const statusEl = document.getElementById('ov-queue-status');
+    const barEl = document.getElementById('ov-queue-bar');
+    
+    if (statusEl && barEl) {
+      let statusText, statusColor, barColor;
+      const percentage = Math.min((queueCount / 10) * 100, 100);
+      
+      if (queueCount === 0) {
+        statusText = 'Empty';
+        statusColor = '#26a44b';
+        barColor = '#26a44b';
+      } else if (queueCount <= 3) {
+        statusText = 'Normal';
+        statusColor = '#26a44b';
+        barColor = '#26a44b';
+      } else if (queueCount <= 6) {
+        statusText = 'Busy';
+        statusColor = '#f59e0b';
+        barColor = '#f59e0b';
+      } else {
+        statusText = 'Crowded';
+        statusColor = '#e04b4b';
+        barColor = '#e04b4b';
+      }
+      
+      statusEl.textContent = statusText;
+      statusEl.style.color = statusColor;
+      barEl.style.width = percentage + '%';
+      barEl.style.background = barColor;
+    }
+  }
+});
+
+// Occupancy Monitor updates
+socket.on('occupancy_update', (data) => {
+  if (data.channel_id === channels.OccupancyMonitor) {
+    const liveCount = data.live_count || 0;
+    const requiredCount = data.required_count || 50;
+    const maxToday = data.max_today || 0;
+    const avgToday = data.avg_today || 0;
+    const percentage = requiredCount > 0 ? Math.round((liveCount / requiredCount) * 100) : 0;
+    
+    // Update current occupancy
+    const currentEl = document.getElementById('ov-occ-current');
+    if (currentEl) currentEl.textContent = liveCount;
+    
+    // Update capacity percentage
+    const percentEl = document.getElementById('ov-occ-percentage');
+    if (percentEl) percentEl.textContent = percentage + '%';
+    
+    // Update max today
+    const maxEl = document.getElementById('ov-occ-max');
+    if (maxEl) maxEl.textContent = maxToday;
+    
+    // Update avg today
+    const avgEl = document.getElementById('ov-occ-avg');
+    if (avgEl) avgEl.textContent = avgToday;
+    
+    // Update progress bar
+    const barEl = document.getElementById('ov-occ-bar');
+    if (barEl) {
+      barEl.style.width = percentage + '%';
+      // Change color based on capacity
+      if (percentage >= 90) {
+        barEl.style.background = 'linear-gradient(90deg, #e04b4b, #f59e0b)';
+      } else if (percentage >= 70) {
+        barEl.style.background = 'linear-gradient(90deg, #f59e0b, #3b82f6)';
+      } else {
+        barEl.style.background = 'linear-gradient(90deg, #26a44b, #3b82f6)';
+      }
+    }
+  }
+});
+
+// Kitchen Compliance updates
+socket.on('kitchen_update', (data) => {
+  if (data.channel_id === channels.KitchenCompliance) {
+    const compliancePercent = data.compliance_percentage || 0;
+    const totalPeople = data.total_people || 0;
+    const capCompliant = data.cap_compliant || 0;
+    const apronCompliant = data.apron_compliant || 0;
+    const glovesCompliant = data.gloves_compliant || 0;
+    
+    // Update compliance percentage
+    const percentEl = document.getElementById('ov-kitchen-percent');
+    if (percentEl) percentEl.textContent = compliancePercent + '%';
+    
+    // Update circular progress (SVG circle)
+    const circleEl = document.getElementById('ov-kitchen-circle');
+    if (circleEl) {
+      const circumference = 314; // 2 * PI * 50 (radius)
+      const offset = circumference - (compliancePercent / 100) * circumference;
+      circleEl.setAttribute('stroke-dashoffset', offset);
+      
+      // Change color based on compliance
+      if (compliancePercent >= 80) {
+        circleEl.setAttribute('stroke', '#26a44b'); // Green
+      } else if (compliancePercent >= 50) {
+        circleEl.setAttribute('stroke', '#f59e0b'); // Orange
+      } else {
+        circleEl.setAttribute('stroke', '#e04b4b'); // Red
+      }
+    }
+    
+    // Update Chef Cap status
+    const capEl = document.getElementById('ov-kitchen-cap');
+    if (capEl && totalPeople > 0) {
+      if (capCompliant === totalPeople) {
+        capEl.textContent = '✓ Compliant';
+        capEl.style.color = '#26a44b';
+      } else {
+        capEl.textContent = `✗ ${totalPeople - capCompliant} Violations`;
+        capEl.style.color = '#e04b4b';
+      }
+    }
+    
+    // Update Apron status
+    const apronEl = document.getElementById('ov-kitchen-apron');
+    if (apronEl && totalPeople > 0) {
+      if (apronCompliant === totalPeople) {
+        apronEl.textContent = '✓ Compliant';
+        apronEl.style.color = '#26a44b';
+      } else {
+        apronEl.textContent = `✗ ${totalPeople - apronCompliant} Violations`;
+        apronEl.style.color = '#e04b4b';
+      }
+    }
+    
+    // Update Gloves status
+    const glovesEl = document.getElementById('ov-kitchen-gloves');
+    if (glovesEl && totalPeople > 0) {
+      if (glovesCompliant === totalPeople) {
+        glovesEl.textContent = '✓ Compliant';
+        glovesEl.style.color = '#26a44b';
+      } else {
+        glovesEl.textContent = `✗ ${totalPeople - glovesCompliant} Violations`;
+        glovesEl.style.color = '#e04b4b';
+      }
+    }
+  }
+});
+
 document.querySelectorAll('.nav-link').forEach(link => {
   link.addEventListener('click', (e) => {
     e.preventDefault();
