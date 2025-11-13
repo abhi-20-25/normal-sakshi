@@ -2640,6 +2640,15 @@ def initialize_app():
         # Initialize database
         initialize_database()
         
+        # Initialize Kitchen Compliance tables (separate Base object)
+        if db_connected:
+            try:
+                from kitchen_compliance_monitor import KitchenComplianceProcessor
+                KitchenComplianceProcessor.initialize_tables(engine)
+                logging.info("Kitchen Compliance tables initialized")
+            except Exception as e:
+                logging.error(f"Failed to initialize Kitchen tables: {e}")
+        
         # Start the scheduler if database is connected
         if db_connected:
             scheduler = BackgroundScheduler(timezone=str(IST))
