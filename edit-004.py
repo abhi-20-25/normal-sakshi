@@ -79,8 +79,8 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 APP_TASKS_CONFIG = {
     'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
     'PeopleCounter': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
-    'QueueMonitor': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'yolo11n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
+    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'yolov8n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
     'OccupancyMonitor': {'model_path': 'yolo11n.pt', 'confidence': 0.15}
 }
 
