@@ -86,6 +86,7 @@ class KitchenComplianceProcessor(threading.Thread):
         self.last_apron_cap_results = []
         self.last_gloves_results = []
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        self.last_socketio_emit = 0  # Track last SocketIO emit time
 
     @staticmethod
     def initialize_tables(engine):
@@ -147,7 +148,10 @@ class KitchenComplianceProcessor(threading.Thread):
             self._save_violation_to_db(violation_type, details, media_path)
 
     def run(self):
-        if self.error_message: return
+        logging.info(f"🚀 Kitchen Compliance thread starting for {self.channel_name}")
+        if self.error_message: 
+            logging.error(f"Kitchen thread exiting early due to error: {self.error_message}")
+            return
         
         # Check for test mode
         use_placeholder = os.environ.get('USE_PLACEHOLDER_FEED', 'false').lower() == 'true'
@@ -201,6 +205,10 @@ class KitchenComplianceProcessor(threading.Thread):
             frame_count += 1
             current_time = time.time()
             annotated_frame = frame.copy()
+            
+            # Log every 300 frames (about every 10 seconds at 30 FPS)
+            if frame_count % 300 == 0:
+                logging.info(f"Kitchen {self.channel_name}: Processing frame {frame_count}")
 
             # --- Run Inferences ---
             try:
@@ -210,6 +218,11 @@ class KitchenComplianceProcessor(threading.Thread):
                 if frame_count % FRAME_SKIP_RATE == 0:
                     self.last_apron_cap_results = self.apron_cap_model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
                     self.last_gloves_results = self.gloves_model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
+                
+                # Log detection results every 300 frames
+                if frame_count % 300 == 0:
+                    person_count = len(person_results[0].boxes) if person_results and person_results[0].boxes is not None else 0
+                    logging.info(f"Kitchen {self.channel_name}: Detected {person_count} people in frame {frame_count}")
             except Exception as e:
                 logging.error(f"Model inference error: {e}")
                 person_results = None
@@ -229,7 +242,8 @@ class KitchenComplianceProcessor(threading.Thread):
                 track_ids = person_results[0].boxes.id.int().cpu().tolist()
                 person_boxes = person_results[0].boxes.xyxy.cpu()
                 confidences = person_results[0].boxes.conf.cpu().numpy()
-                logging.debug(f"Detected {len(track_ids)} people in frame {frame_count}")
+                if frame_count % 300 == 0:
+                    logging.info(f"Kitchen: Detected {len(track_ids)} people with tracking IDs in frame {frame_count}")
 
                 # Get detected gloves boxes (FIXED LOGIC)
                 detected_gloves_boxes = []
@@ -241,7 +255,10 @@ class KitchenComplianceProcessor(threading.Thread):
                                 if 'glove' in class_name.lower() or 'surgical' in class_name.lower():
                                     detected_gloves_boxes.append(box.xyxy[0].cpu().numpy())
             else:
-                # No people detected - show status
+                # No people detected OR no tracking IDs
+                if frame_count % 300 == 0:
+                    has_boxes = person_results and person_results[0].boxes is not None and len(person_results[0].boxes) > 0
+                    logging.info(f"Kitchen frame {frame_count}: No tracking IDs. Has boxes: {has_boxes}")
                 cv2.putText(annotated_frame, "No people detected", (50, h-50), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
 
@@ -249,6 +266,7 @@ class KitchenComplianceProcessor(threading.Thread):
                 total_people = len(track_ids)
                 compliant_count = 0
                 violation_types = {'cap': 0, 'apron': 0, 'gloves': 0, 'uniform': 0, 'phone': 0}
+                logging.info(f"Kitchen: Processing {total_people} people in frame {frame_count}")
                 
                 for person_box, track_id, conf in zip(person_boxes, track_ids, confidences):
                     px1, py1, px2, py2 = map(int, person_box)
@@ -273,7 +291,9 @@ class KitchenComplianceProcessor(threading.Thread):
                                             violation_types['cap'] += 1
                                         if 'apron' in violation_class.lower():
                                             violation_types['apron'] += 1
-                                        if current_time - self.person_violation_tracker[track_id][violation_class] > ALERT_COOLDOWN_SECONDS:
+                                        time_since_last = current_time - self.person_violation_tracker[track_id][violation_class]
+                                        logging.debug(f"{violation_class} detected for ID {track_id}, time since last: {time_since_last:.1f}s (cooldown: {ALERT_COOLDOWN_SECONDS}s)")
+                                        if time_since_last > ALERT_COOLDOWN_SECONDS:
                                             self.person_violation_tracker[track_id][violation_class] = current_time
                                             details = f"Person ID {track_id} detected with '{violation_class}'."
                                             self._trigger_alert(frame.copy(), violation_class, details)
@@ -296,7 +316,9 @@ class KitchenComplianceProcessor(threading.Thread):
                         box_color = (0, 0, 255)  # Red
                         person_compliant = False
                         violation_types['gloves'] += 1
-                        if current_time - self.person_violation_tracker[track_id]['No-Gloves'] > ALERT_COOLDOWN_SECONDS:
+                        time_since_last = current_time - self.person_violation_tracker[track_id]['No-Gloves']
+                        logging.debug(f"Glove violation detected for ID {track_id}, time since last alert: {time_since_last:.1f}s (cooldown: {ALERT_COOLDOWN_SECONDS}s)")
+                        if time_since_last > ALERT_COOLDOWN_SECONDS:
                             self.person_violation_tracker[track_id]['No-Gloves'] = current_time
                             details = f"Person ID {track_id} has no gloves."
                             self._trigger_alert(frame.copy(), "No-Gloves", details)
@@ -324,7 +346,9 @@ class KitchenComplianceProcessor(threading.Thread):
                                 box_color = (0, 0, 255)  # Red
                                 person_compliant = False
                                 violation_types['uniform'] += 1
-                                if current_time - self.person_violation_tracker[track_id]['Uniform-Violation'] > ALERT_COOLDOWN_SECONDS:
+                                time_since_last = current_time - self.person_violation_tracker[track_id]['Uniform-Violation']
+                                logging.debug(f"Uniform violation for ID {track_id}, time since last: {time_since_last:.1f}s (cooldown: {ALERT_COOLDOWN_SECONDS}s)")
+                                if time_since_last > ALERT_COOLDOWN_SECONDS:
                                     self.person_violation_tracker[track_id]['Uniform-Violation'] = current_time
                                     details = f"Person ID {track_id} has a uniform color violation."
                                     self._trigger_alert(frame.copy(), "Uniform-Violation", details)
@@ -366,8 +390,8 @@ class KitchenComplianceProcessor(threading.Thread):
                 # Calculate compliance percentage
                 compliance_percentage = int((compliant_count / total_people * 100)) if total_people > 0 else 100
                 
-                # Emit real-time compliance update via SocketIO
-                self.socketio.emit('kitchen_update', {
+                # Store metrics for SocketIO emit (moved outside to avoid per-frame spam)
+                current_metrics = {
                     'channel_id': self.channel_id,
                     'channel_name': self.channel_name,
                     'total_people': total_people,
@@ -378,7 +402,26 @@ class KitchenComplianceProcessor(threading.Thread):
                     'apron_compliant': total_people - violation_types['apron'],
                     'gloves_compliant': total_people - violation_types['gloves'],
                     'uniform_compliant': total_people - violation_types['uniform']
-                })
+                }
+            else:
+                # No people detected - default metrics
+                current_metrics = {
+                    'channel_id': self.channel_id,
+                    'channel_name': self.channel_name,
+                    'total_people': 0,
+                    'compliant_count': 0,
+                    'compliance_percentage': 100,
+                    'violations': {'cap': 0, 'apron': 0, 'gloves': 0, 'uniform': 0, 'phone': 0},
+                    'cap_compliant': 0,
+                    'apron_compliant': 0,
+                    'gloves_compliant': 0,
+                    'uniform_compliant': 0
+                }
+            
+            # Emit SocketIO update only every 10 seconds to avoid overwhelming the system
+            if current_time - self.last_socketio_emit >= 10.0:
+                self.socketio.emit('kitchen_update', current_metrics)
+                self.last_socketio_emit = current_time
 
             # --- 4. Detect and Track Mobile Phones ---
             if phone_results and phone_results[0].boxes is not None:
@@ -423,4 +466,5 @@ class KitchenComplianceProcessor(threading.Thread):
                 self.latest_frame = annotated_frame.copy()
         
         cap.release()
+        logging.info(f"✅ Kitchen Compliance thread stopped for {self.channel_name}")
 
