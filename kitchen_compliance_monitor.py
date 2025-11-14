@@ -33,8 +33,6 @@ YELLOW_LOWER = np.array([18, 80, 80])
 YELLOW_UPPER = np.array([35, 255, 255])
 BLACK_LOWER = np.array([0, 0, 0])
 BLACK_UPPER = np.array([180, 255, 50])
-BROWN_LOWER = np.array([10, 20, 20])   # Brown apron color (light brown)
-BROWN_UPPER = np.array([20, 200, 200]) # Brown apron color (dark brown)
 
 # --- Database Table Definition ---
 class KitchenViolation(Base):
@@ -383,9 +381,7 @@ class KitchenComplianceProcessor(threading.Thread):
                             
                             mask_yellow = cv2.inRange(hsv_torso, YELLOW_LOWER, YELLOW_UPPER)
                             mask_black = cv2.inRange(hsv_torso, BLACK_LOWER, BLACK_UPPER)
-                            mask_brown = cv2.inRange(hsv_torso, BROWN_LOWER, BROWN_UPPER)
                             compliant_mask = cv2.bitwise_or(mask_yellow, mask_black)
-                            compliant_mask = cv2.bitwise_or(compliant_mask, mask_brown)
                             
                             total_pixels = torso_crop.shape[0] * torso_crop.shape[1]
                             compliant_ratio = np.count_nonzero(compliant_mask) / total_pixels if total_pixels > 0 else 0
