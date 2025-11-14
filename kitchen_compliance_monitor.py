@@ -321,18 +321,41 @@ class KitchenComplianceProcessor(threading.Thread):
                                             details = f"Person detected with '{violation_class}'."
                                             self._trigger_alert(frame.copy(), violation_class, details)
 
-                    # 2. Check for Gloves Violation (FIXED LOGIC)
+                    # 2. Check for Gloves Violation (IMPROVED LOGIC)
                     has_gloves = False
+                    # Define hand region (bottom 40-70% of person box)
+                    hand_region_top = py1 + int((py2 - py1) * 0.4)
+                    hand_region_bottom = py1 + int((py2 - py1) * 0.7)
+                    
                     for g_box in detected_gloves_boxes:
                         gx1, gy1, gx2, gy2 = map(int, g_box)
-                        # Check if glove box overlaps with person box
-                        if (gx1 < px2 and gx2 > px1 and gy1 < py2 and gy2 > py1):
-                            has_gloves = True
-                            # Draw glove indicator
-                            cv2.rectangle(annotated_frame, (gx1, gy1), (gx2, gy2), (0, 255, 0), 2)
-                            cv2.putText(annotated_frame, "GLOVES", (gx1, gy1-5), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
-                            break
+                        
+                        # Calculate glove center point
+                        glove_center_y = (gy1 + gy2) // 2
+                        
+                        # Check if glove is in hand region of this person
+                        if not (hand_region_top <= glove_center_y <= hand_region_bottom):
+                            continue
+                        
+                        # Calculate overlap percentage (how much of glove is inside person box)
+                        overlap_x1 = max(gx1, px1)
+                        overlap_y1 = max(gy1, py1)
+                        overlap_x2 = min(gx2, px2)
+                        overlap_y2 = min(gy2, py2)
+                        
+                        if overlap_x1 < overlap_x2 and overlap_y1 < overlap_y2:
+                            overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
+                            glove_area = (gx2 - gx1) * (gy2 - gy1)
+                            overlap_percentage = overlap_area / glove_area if glove_area > 0 else 0
+                            
+                            # Require at least 60% of glove box to be inside person box
+                            if overlap_percentage >= 0.6:
+                                has_gloves = True
+                                # Draw glove indicator
+                                cv2.rectangle(annotated_frame, (gx1, gy1), (gx2, gy2), (0, 255, 0), 2)
+                                cv2.putText(annotated_frame, f"GLOVES {int(overlap_percentage*100)}%", (gx1, gy1-5), 
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+                                break
                     
                     if not has_gloves:
                         violations.append("No-Gloves")
