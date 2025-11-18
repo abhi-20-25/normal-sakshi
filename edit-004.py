@@ -880,12 +880,36 @@ class PeopleCounterProcessor(threading.Thread):
                     # Update previous centroids for next frame
                     self.previous_centroids = current_centroids
                 
-                # Create a clean frame without annotations for transparent view
+                # Create annotated frame with person bounding boxes only
                 annotated_frame = frame.copy()
                 
-                # Keep detection boxes and text commented out for clean view
-                # All drawing code removed to show transparent feed
-                # Detection logic still works in background
+                # Draw only valid person detections (filtered)
+                if r0 is not None and getattr(r0, 'boxes', None) is not None:
+                    boxes = r0.boxes
+                    frame_area = frame.shape[0] * frame.shape[1]
+                    min_box_area = frame_area * 0.003
+                    max_box_area = frame_area * 0.9
+                    min_confidence = 0.20
+                    
+                    for i in range(len(boxes)):
+                        box = boxes.xyxy[i].cpu().numpy()
+                        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                        conf = float(boxes.conf[i].cpu())
+                        
+                        box_width = x2 - x1
+                        box_height = y2 - y1
+                        box_area = box_width * box_height
+                        aspect_ratio = box_height / box_width if box_width > 0 else 0
+                        
+                        is_person_shaped = 1.2 <= aspect_ratio <= 4.0
+                        is_valid_size = min_box_area <= box_area <= max_box_area
+                        is_confident = conf >= min_confidence
+                        
+                        # Draw only valid person boxes
+                        if is_person_shaped and is_valid_size and is_confident:
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                            label = f"Person {conf:.2f}"
+                            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
                 with self.lock: self.latest_frame = annotated_frame.copy()
                 hourly_data = self._get_hourly_data()
@@ -1329,66 +1353,33 @@ class QueueMonitorProcessor(threading.Thread):
             (current_time - self.last_overqueue_time) > QUEUE_ALERT_COOLDOWN_SEC
         )
 
-        # Create annotated frame - draw bounding boxes with colors based on ROI
+        # Create annotated frame with person bounding boxes
         annotated_frame = frame.copy()
         
-        # Draw bounding boxes with color based on which ROI the person is in
-        if r0 is not None and getattr(r0, 'boxes', None) is not None:
-            boxes = r0.boxes.xyxy.cpu()
-            track_ids = r0.boxes.id.int().cpu().tolist() if getattr(r0.boxes, 'id', None) is not None else []
-            confidences = r0.boxes.conf.cpu() if hasattr(r0.boxes, 'conf') else None
+        # Draw person bounding boxes
+        if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
+            boxes_xyxy = r0.boxes.xyxy.cpu()
+            track_ids = r0.boxes.id.int().cpu().tolist()
             
-            for idx, box in enumerate(boxes):
-                x1, y1, x2, y2 = map(int, box)
-                track_id = track_ids[idx] if idx < len(track_ids) else None
-                
-                # Determine box color based on ROI membership
-                box_color = (255, 255, 255)  # Default white if not in any ROI
-                label_color = (255, 255, 255)
-                
+            for i, track_id in enumerate(track_ids):
                 if track_id is not None:
+                    box = boxes_xyxy[i]
+                    x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                    
+                    # Color based on location: Blue for queue, Green for counter
                     if track_id in current_tracks_in_main_roi:
-                        box_color = (0, 255, 255)  # Yellow (BGR format) for queue area
-                        label_color = (0, 255, 255)
+                        color = (255, 0, 0)  # Blue for queue
+                        label = f"Queue #{track_id}"
                     elif track_id in current_tracks_in_secondary_roi:
-                        box_color = (255, 255, 0)  # Cyan (BGR format) for counter area
-                        label_color = (255, 255, 0)
+                        color = (0, 255, 0)  # Green for counter
+                        label = f"Counter #{track_id}"
                     else:
-                        box_color = (128, 128, 128)  # Gray for persons not in any ROI
-                        label_color = (128, 128, 128)
-                
-                # Draw bounding box
-                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), box_color, 2)
-                
-                # Draw label with track ID and confidence
-                if confidences is not None and idx < len(confidences):
-                    conf = float(confidences[idx])
-                    label = f"ID:{track_id}" if track_id is not None else f"Conf:{conf:.2f}"
-                    if track_id is not None:
-                        label = f"ID:{track_id} ({conf:.2f})"
-                else:
-                    label = f"ID:{track_id}" if track_id is not None else "Person"
-                
-                # Draw label background
-                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-                cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 5), 
-                            (x1 + label_size[0] + 5, y1), box_color, -1)
-                cv2.putText(annotated_frame, label, (x1, y1 - 5), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
-        
-        # Draw main ROI (queue area) - Yellow
-        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-            cv2.polylines(annotated_frame, [np.array(self.roi_poly.exterior.coords, dtype=np.int32)], True, (255, 255, 0), 2)
-            logging.debug(f"Drawing main ROI with {len(self.roi_poly.exterior.coords)} points")
-        else:
-            logging.warning(f"Main ROI is invalid or empty. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
-        
-        # Draw secondary ROI (cashier area) - Cyan
-        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-            cv2.polylines(annotated_frame, [np.array(self.secondary_roi_poly.exterior.coords, dtype=np.int32)], True, (0, 255, 255), 2)
-            logging.debug(f"Drawing secondary ROI with {len(self.secondary_roi_poly.exterior.coords)} points")
-        else:
-            logging.warning(f"Secondary ROI is invalid or empty. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
+                        color = (128, 128, 128)  # Gray for others
+                        label = f"Person #{track_id}"
+                    
+                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(annotated_frame, label, (x1, y1 - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
         
         # Take screenshot if person in queue > 5 seconds
         if should_screenshot_5sec:
@@ -1446,21 +1437,10 @@ class QueueMonitorProcessor(threading.Thread):
             send_telegram_notification(f"⚠️ **Overqueue Alert: {self.channel_name}** ⚠️\n{overqueue_message}")
             handle_detection('QueueMonitor', self.channel_id, [annotated_frame], overqueue_message, is_gif=False)
 
-        # Display counts prominently on the frame with better visibility
-        # Background rectangles for better text visibility
-        cv2.rectangle(annotated_frame, (45, 25), (280, 95), (0, 0, 0), -1)  # Black background
-        cv2.rectangle(annotated_frame, (45, 25), (280, 95), (255, 255, 255), 2)  # White border
-        
-        # Queue count with larger, more visible font - use valid_queue_count for real-time display
-        queue_display_count = valid_queue_count  # Show actual current count (main ROI = queue area)
-        counter_display_count = valid_secondary_count  # Show actual current count (secondary ROI = counter area)
-        
-        cv2.putText(annotated_frame, f"Queue: {queue_display_count}", (50, 55), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)  # Yellow, thicker
-        cv2.putText(annotated_frame, f"Counter: {counter_display_count}", (50, 90), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 0), 3)  # Cyan, thicker
-        
+        # Count display text removed for clean transparent view
         # Log count changes for debugging
+        queue_display_count = valid_queue_count
+        counter_display_count = valid_secondary_count
         if queue_display_count > 0 or counter_display_count > 0:
             logging.info(f"QueueMonitor {self.channel_name}: Queue={queue_display_count}, Counter={counter_display_count}, "
                        f"Tracks in main ROI: {len(current_tracks_in_main_roi)}, "
