@@ -2193,6 +2193,78 @@ def get_queue_report(channel_id):
         summary = { 'max_queue_length': max_queue, 'avg_queue_length': avg_queue, 'peak_hour': peak_hour }
         return jsonify({'labels': labels, 'data': data, 'summary': summary})
 
+@app.route('/api/peak_analytics/<channel_id>')
+@login_required
+def get_peak_analytics(channel_id):
+    """Get peak day (current week) and peak hour (today) with hourly chart data"""
+    if not db_connected: return jsonify({"error": "Database not connected"}), 500
+    try:
+        with SessionLocal() as db:
+            today = date.today()
+            # Current week: Monday to Sunday
+            week_start = today - timedelta(days=today.weekday())
+            week_end = week_start + timedelta(days=6)
+            
+            # Get daily data for current week
+            daily_records = db.query(DailyFootfall).filter(
+                DailyFootfall.channel_id == channel_id,
+                DailyFootfall.report_date.between(week_start, week_end)
+            ).order_by(DailyFootfall.report_date).all()
+            
+            # Calculate peak day of week
+            peak_day_name = "N/A"
+            peak_day_count = 0
+            week_data = []
+            
+            if daily_records:
+                day_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+                for i in range(7):
+                    current_date = week_start + timedelta(days=i)
+                    record = next((r for r in daily_records if r.report_date == current_date), None)
+                    count = record.in_count if record else 0
+                    week_data.append({'day': day_names[i], 'count': count})
+                    
+                    if count > peak_day_count:
+                        peak_day_count = count
+                        peak_day_name = day_names[i]
+            
+            # Get hourly data for today
+            hourly_records = db.query(HourlyFootfall).filter(
+                HourlyFootfall.channel_id == channel_id,
+                HourlyFootfall.report_date == today
+            ).order_by(HourlyFootfall.hour).all()
+            
+            # Calculate peak hour of today
+            peak_hour_label = "N/A"
+            peak_hour_count = 0
+            hourly_data = []
+            
+            if hourly_records:
+                for record in hourly_records:
+                    count = record.in_count
+                    hour_12 = datetime.strptime(str(record.hour), '%H').strftime('%I %p')
+                    hourly_data.append({'hour': hour_12, 'count': count})
+                    
+                    if count > peak_hour_count:
+                        peak_hour_count = count
+                        peak_hour_label = hour_12
+            
+            return jsonify({
+                'peak_day': {
+                    'name': peak_day_name,
+                    'count': peak_day_count,
+                    'week_data': week_data
+                },
+                'peak_hour': {
+                    'label': peak_hour_label,
+                    'count': peak_hour_count,
+                    'hourly_data': hourly_data
+                }
+            })
+    except Exception as e:
+        logging.error(f"Error in peak analytics: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/occupancy/today/<channel_id>')
 @login_required
 def get_occupancy_today(channel_id):
