@@ -880,104 +880,12 @@ class PeopleCounterProcessor(threading.Thread):
                     # Update previous centroids for next frame
                     self.previous_centroids = current_centroids
                 
-                # Create a completely fresh annotated frame to prevent cross-contamination
-                # Start with a deep copy of the original frame
+                # Create a clean frame without annotations for transparent view
                 annotated_frame = frame.copy()
                 
-                # Draw only valid person detections on our own copy (filtered)
-                if r0 is not None and getattr(r0, 'boxes', None) is not None:
-                    boxes = r0.boxes
-                    frame_area = frame.shape[0] * frame.shape[1]
-                    min_box_area = frame_area * 0.003  # Match counting filter
-                    max_box_area = frame_area * 0.9    # Match counting filter
-                    min_confidence = 0.30              # Match counting filter
-                    
-                    for i in range(len(boxes)):
-                        box = boxes.xyxy[i].cpu().numpy()
-                        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                        conf = float(boxes.conf[i].cpu())
-                        
-                        # Apply same filtering as counting logic
-                        box_width = x2 - x1
-                        box_height = y2 - y1
-                        box_area = box_width * box_height
-                        aspect_ratio = box_height / box_width if box_width > 0 else 0
-                        
-                        is_person_shaped = 1.2 <= aspect_ratio <= 4.0
-                        is_valid_size = min_box_area <= box_area <= max_box_area
-                        is_confident = conf >= min_confidence
-                        
-                        # Only draw if it passes person filters
-                        if is_person_shaped and is_valid_size and is_confident:
-                            # Draw bounding box (GREEN for valid person)
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            # Draw confidence label
-                            label = f"Person {conf:.2f}"
-                            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                        else:
-                            # Draw rejected detections in RED with reason
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 1)
-                            reason = "Small" if box_area < min_box_area else "Large" if box_area > max_box_area else "Shape" if not is_person_shaped else "LowConf"
-                            cv2.putText(annotated_frame, f"X {reason}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-                
-                # Draw counting line and zones
-                # Counting line at 45% (LEFT zone: 0-45%, RIGHT zone: 45-100%)
-                cv2.line(annotated_frame, (counting_line_x, 0), (counting_line_x, frame_height), (0, 255, 255), 2)  # Yellow line
-                cv2.putText(annotated_frame, "COUNTING LINE (45%)", (counting_line_x + 10, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                
-                # Draw LEFT zone label
-                cv2.putText(annotated_frame, "LEFT (45%)", (20, 30), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                # Draw RIGHT zone label
-                cv2.putText(annotated_frame, "RIGHT (55%)", (counting_line_x + 20, frame_height - 20), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                frame_height = annotated_frame.shape[0]
-                frame_width = annotated_frame.shape[1]
-                center_line = int(frame_width * 0.45)  # 45% boundary
-
-                # Draw CENTER LINE (GREEN) to separate the two zones
-                cv2.line(annotated_frame, (center_line, 0), (center_line, frame_height), (0, 255, 0), 3)
-                
-                # Draw LEFT ZONE (BLUE) border - 40% of frame
-                cv2.rectangle(annotated_frame, (0, 0), (center_line, frame_height), (255, 0, 0), 3)
-                cv2.putText(annotated_frame, "LEFT 45%", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-                
-                # Draw RIGHT ZONE (RED) border - 60% of frame
-                cv2.rectangle(annotated_frame, (center_line, 0), (frame_width, frame_height), (0, 0, 255), 3)
-                cv2.putText(annotated_frame, "RIGHT 55%", (center_line + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                
-                # Display both total daily count and current hour count (matching DB)
-                current_hour_ist = datetime.now(IST).hour
-                current_date_ist = datetime.now(IST).date()
-                
-                # Update current_hour if hour changed
-                if current_hour_ist != self.current_hour:
-                    self.current_hour = current_hour_ist
-                
-                # Fetch current hour counts from database (updated in real-time)
-                hourly_in_current = 0
-                hourly_out_current = 0
-                try:
-                    with SessionLocal() as db:
-                        saved_hourly = db.query(HourlyFootfall).filter_by(
-                            channel_id=self.channel_id,
-                            report_date=current_date_ist,
-                            hour=current_hour_ist
-                        ).first()
-                        if saved_hourly:
-                            hourly_in_current = saved_hourly.in_count
-                            hourly_out_current = saved_hourly.out_count
-                except Exception as e:
-                    logging.warning(f"Could not fetch hourly count from DB: {e}")
-                
-                # Display total daily counts
-                cv2.putText(annotated_frame, f"TOTAL - IN: {self.counts['in']}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                cv2.putText(annotated_frame, f"TOTAL - OUT: {self.counts['out']}", (50, 90), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
-                
-                # Display current hour counts (matching what's stored in DB for current hour)
-                #cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - IN: {hourly_in_current}", (50, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                #cv2.putText(annotated_frame, f"HOUR {current_hour_ist:02d}:00 - OUT: {hourly_out_current}", (50, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                # Keep detection boxes and text commented out for clean view
+                # All drawing code removed to show transparent feed
+                # Detection logic still works in background
                 
                 with self.lock: self.latest_frame = annotated_frame.copy()
                 hourly_data = self._get_hourly_data()

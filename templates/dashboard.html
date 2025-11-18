@@ -510,15 +510,19 @@ socket.on('occupancy_update', (data) => {
     const requiredCount = data.required_count || 50;
     const maxToday = data.max_today || 0;
     const avgToday = data.avg_today || 0;
-    const percentage = requiredCount > 0 ? Math.round((liveCount / requiredCount) * 100) : 0;
+    
+    // Calculate percentage based on required count as capacity
+    // Cap at 100% maximum for both display and bar
+    const actualPercentage = requiredCount > 0 ? Math.round((liveCount / requiredCount) * 100) : 0;
+    const cappedPercentage = Math.min(actualPercentage, 100);
     
     // Update current occupancy
     const currentEl = document.getElementById('ov-occ-current');
     if (currentEl) currentEl.textContent = liveCount;
     
-    // Update capacity percentage
+    // Update capacity percentage (capped at 100%)
     const percentEl = document.getElementById('ov-occ-percentage');
-    if (percentEl) percentEl.textContent = percentage + '%';
+    if (percentEl) percentEl.textContent = cappedPercentage + '%';
     
     // Update max today
     const maxEl = document.getElementById('ov-occ-max');
@@ -531,14 +535,16 @@ socket.on('occupancy_update', (data) => {
     // Update progress bar
     const barEl = document.getElementById('ov-occ-bar');
     if (barEl) {
-      barEl.style.width = percentage + '%';
-      // Change color based on capacity
-      if (percentage >= 90) {
-        barEl.style.background = 'linear-gradient(90deg, #e04b4b, #f59e0b)';
-      } else if (percentage >= 70) {
-        barEl.style.background = 'linear-gradient(90deg, #f59e0b, #3b82f6)';
+      barEl.style.width = cappedPercentage + '%';
+      // Change color based on actual percentage (before capping)
+      if (actualPercentage >= 100) {
+        barEl.style.background = 'linear-gradient(90deg, #e04b4b, #f59e0b)';  // Red-Orange: Over capacity
+      } else if (actualPercentage >= 80) {
+        barEl.style.background = 'linear-gradient(90deg, #f59e0b, #ef4444)';  // Orange-Red: Near capacity
+      } else if (actualPercentage >= 60) {
+        barEl.style.background = 'linear-gradient(90deg, #3b82f6, #f59e0b)';  // Blue-Orange: Moderate
       } else {
-        barEl.style.background = 'linear-gradient(90deg, #26a44b, #3b82f6)';
+        barEl.style.background = 'linear-gradient(90deg, #26a44b, #3b82f6)';  // Green-Blue: Low occupancy
       }
     }
   }

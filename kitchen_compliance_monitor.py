@@ -63,9 +63,9 @@ class KitchenComplianceProcessor(threading.Thread):
         self.handle_main_detection = detection_callback
 
         try:
-            # FORCE CPU MODE - Disable all CUDA usage for stability
+            # Force CPU mode - CUDA causes "double free" crashes with OpenCV cleanup
             self.device = 'cpu'
-            logging.info(f"🚫 CUDA DISABLED - Using CPU-only for Kitchen channel {self.channel_name}")
+            logging.info(f"Kitchen channel {self.channel_name} using device: CPU")
             
             for model_path in [APRON_CAP_MODEL_PATH, GLOVES_MODEL_PATH, GENERAL_MODEL_PATH]:
                 if not os.path.exists(model_path):
