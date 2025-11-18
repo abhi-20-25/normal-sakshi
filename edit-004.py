@@ -2146,6 +2146,7 @@ def get_history(app_name):
     try:
         page, limit = int(request.args.get('page', 1)), int(request.args.get('limit', 10))
         channel_id, start_date_str, end_date_str = request.args.get('channel_id'), request.args.get('start_date'), request.args.get('end_date')
+        violation_type = request.args.get('violation_type')  # Add violation type filter
     except (ValueError, TypeError): return jsonify({"error": "Invalid page or limit parameter"}), 400
     offset = (page - 1) * limit
     with SessionLocal() as db:
@@ -2157,6 +2158,9 @@ def get_history(app_name):
                     start_date, end_date = datetime.strptime(start_date_str, '%Y-%m-%d').date(), datetime.strptime(end_date_str, '%Y-%m-%d').date()
                     query = query.filter(Detection.timestamp.between(start_date, datetime.combine(end_date, datetime.max.time())))
                 except ValueError: return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
+            # Filter by violation type for Kitchen Compliance
+            if violation_type and app_name == 'KitchenCompliance':
+                query = query.filter(Detection.message.like(f'%{violation_type}%'))
             total_detections, detections = query.count(), query.order_by(Detection.timestamp.desc()).offset(offset).limit(limit).all()
             return jsonify({'detections': [{'timestamp': d.timestamp.strftime("%Y-%m-%d %H:%M:%S"),'message': d.message,'channel_id': d.channel_id,'media_url': url_for('static', filename=d.media_path)} for d in detections],'total': total_detections, 'page': page, 'limit': limit})
         except Exception as e:

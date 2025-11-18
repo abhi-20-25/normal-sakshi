@@ -182,7 +182,7 @@
           <div class="card" onclick="switchView('kitchen-compliance')" style="min-height: 280px;">
             <h3 style="font-size: 16px; margin-bottom: 15px;">👨‍🍳 Kitchen Compliance</h3>
             <div style="margin-top: 10px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px;">
+              <div onclick="filterKitchenViolations('cap')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
                 <div style="display: flex; align-items: center; gap: 10px;">
                   <span style="font-size: 24px;">🧢</span>
                   <span style="font-size: 14px; color: #e0e0e0;">Chef Cap</span>
@@ -190,7 +190,7 @@
                 <span id="ov-kitchen-cap" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
               
-              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px;">
+              <div onclick="filterKitchenViolations('apron')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
                 <div style="display: flex; align-items: center; gap: 10px;">
                   <span style="font-size: 24px;">👔</span>
                   <span style="font-size: 14px; color: #e0e0e0;">Apron</span>
@@ -198,7 +198,7 @@
                 <span id="ov-kitchen-apron" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
               
-              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px;">
+              <div onclick="filterKitchenViolations('gloves')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
                 <div style="display: flex; align-items: center; gap: 10px;">
                   <span style="font-size: 24px;">🧤</span>
                   <span style="font-size: 14px; color: #e0e0e0;">Gloves</span>
@@ -206,7 +206,7 @@
                 <span id="ov-kitchen-gloves" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
               
-              <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px;">
+              <div onclick="filterKitchenViolations('uniform')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
                 <div style="display: flex; align-items: center; gap: 10px;">
                   <span style="font-size: 24px;">👕</span>
                   <span style="font-size: 14px; color: #e0e0e0;">Uniform</span>
@@ -322,7 +322,10 @@
           </div>
         </div>
         <div class="report-section">
-          <h3>History</h3>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="margin: 0;">History</h3>
+            <button id="clear-filter-btn" onclick="clearKitchenFilter()" style="display: none; padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Clear Filter</button>
+          </div>
           <div class="history-grid" id="kc-history"></div>
           <div class="pagination" id="kc-pagination"></div>
         </div>
@@ -614,6 +617,23 @@ document.querySelectorAll('.nav-link').forEach(link => {
     switchView(link.getAttribute('data-view'));
   });
 });
+function filterKitchenViolations(violationType) {
+  currentViolationFilter = violationType;
+  switchView('kitchen-compliance');
+  loadHistory('kitchen-compliance', 1, violationType);
+  // Show clear filter button
+  const clearBtn = document.getElementById('clear-filter-btn');
+  if (clearBtn) clearBtn.style.display = 'block';
+}
+
+function clearKitchenFilter() {
+  currentViolationFilter = null;
+  loadHistory('kitchen-compliance', 1, null);
+  // Hide clear filter button
+  const clearBtn = document.getElementById('clear-filter-btn');
+  if (clearBtn) clearBtn.style.display = 'none';
+}
+
 function switchView(view) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
@@ -630,11 +650,21 @@ function switchView(view) {
     document.querySelector('[data-view="' + view + '"]').classList.add('active');
     document.getElementById('page-title').textContent = config.title;
     document.getElementById('page-subtitle').textContent = config.subtitle;
-    if (view !== 'overview') loadHistory(view);
+    if (view !== 'overview') {
+      // Reset filter when switching views normally (not from filterKitchenViolations)
+      if (view !== 'kitchen-compliance') {
+        currentViolationFilter = null;
+        const clearBtn = document.getElementById('clear-filter-btn');
+        if (clearBtn) clearBtn.style.display = 'none';
+      }
+      loadHistory(view);
+    }
     if (view === 'people-counter') loadReport();
   }
 }
-function loadHistory(view, page = 1) {
+let currentViolationFilter = null;
+
+function loadHistory(view, page = 1, violationType = null) {
   const histMap = {
     'people-counter': { app: 'PeopleCounter', ch: channels.PeopleCounter, div: 'pc-history', pag: 'pc-pagination' },
     'queue-monitor': { app: 'QueueMonitor', ch: channels.QueueMonitor, div: 'qm-history', pag: 'qm-pagination' },
@@ -643,7 +673,12 @@ function loadHistory(view, page = 1) {
   };
   const h = histMap[view];
   if (!h) return;
-  fetch('/history/' + h.app + '?page=' + page + '&limit=12&channel_id=' + h.ch)
+  
+  // Store current filter for pagination
+  if (violationType !== null) currentViolationFilter = violationType;
+  const filterParam = (currentViolationFilter && view === 'kitchen-compliance') ? '&violation_type=' + currentViolationFilter : '';
+  
+  fetch('/history/' + h.app + '?page=' + page + '&limit=12&channel_id=' + h.ch + filterParam)
     .then(res => res.json())
     .then(data => {
       const histDiv = document.getElementById(h.div);
@@ -657,7 +692,8 @@ function loadHistory(view, page = 1) {
           item.innerHTML = '<img src="' + det.media_url + '" loading="lazy"><div class="history-item-info"><p><strong>' + (det.message || 'Detection') + '</strong></p><p>' + det.timestamp + '</p></div>';
           histDiv.appendChild(item);
         });
-        pagDiv.innerHTML = '<button ' + (page === 1 ? 'disabled' : '') + ' onclick="loadHistory(\'' + view + '\', ' + (page - 1) + ')">Prev</button><span style="color:#9aa0a6;padding:0 10px">Page ' + page + '/' + data.total_pages + '</span><button ' + (page === data.total_pages ? 'disabled' : '') + ' onclick="loadHistory(\'' + view + '\', ' + (page + 1) + ')">Next</button>';
+        const filterInfo = currentViolationFilter ? ' <span style="color:#3b82f6;font-size:11px">(Filtered: ' + currentViolationFilter + ')</span>' : '';
+        pagDiv.innerHTML = '<button ' + (page === 1 ? 'disabled' : '') + ' onclick="loadHistory(\'' + view + '\', ' + (page - 1) + ')">Prev</button><span style="color:#9aa0a6;padding:0 10px">Page ' + page + '/' + data.total_pages + filterInfo + '</span><button ' + (page === data.total_pages ? 'disabled' : '') + ' onclick="loadHistory(\'' + view + '\', ' + (page + 1) + ')">Next</button>';
       } else {
         histDiv.innerHTML = '<p style="color:#9aa0a6;padding:20px;text-align:center">No detections yet</p>';
         pagDiv.innerHTML = '';
