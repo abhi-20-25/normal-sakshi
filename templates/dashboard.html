@@ -160,7 +160,7 @@
                 <span style="color: #9aa0a6; font-size: 12px;">Today's Activity</span>
                 <span style="color: #26a44b; font-size: 12px;">Live</span>
               </div>
-              <div id="ov-hourly-chart" style="height: 60px; background: #121314; border-radius: 6px; display: flex; align-items: end; gap: 4px; padding: 8px; position: relative;">
+              <div id="ov-hourly-chart" style="height: 100px; background: #121314; border-radius: 6px; display: flex; align-items: end; gap: 1px; padding: 8px; position: relative;">
                 <!-- Bars will be dynamically generated -->
               </div>
             </div>
@@ -334,7 +334,7 @@
             </div>
             <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2d31;">
               <div style="color: #9aa0a6; font-size: 12px; margin-bottom: 10px;">Hourly Traffic</div>
-              <div id="pc-hour-chart" style="height: 80px; display: flex; align-items: end; gap: 1px; background: #121314; border-radius: 6px; padding: 10px;">
+              <div id="pc-hour-chart" style="height: 100px; display: flex; align-items: end; gap: 1px; background: #121314; border-radius: 6px; padding: 10px;">
                 <!-- Hour bars will be dynamically generated -->
               </div>
             </div>
@@ -723,7 +723,7 @@ function renderHourChart(hourlyData) {
       background: ${data.count > 0 ? '#3b82f6' : '#2a2d31'};
       border-radius: 2px;
       height: ${heightPercent}%;
-      min-height: ${data.count > 0 ? '8px' : '5px'};
+      min-height: ${data.count > 0 ? '20px' : '5px'};
       cursor: pointer;
       transition: all 0.2s ease;
       position: relative;
@@ -853,7 +853,7 @@ function renderPCHourChart(hourlyData) {
       background: ${data.count > 0 ? '#3b82f6' : '#2a2d31'};
       border-radius: 2px;
       height: ${heightPercent}%;
-      min-height: ${data.count > 0 ? '8px' : '5px'};
+      min-height: ${data.count > 0 ? '20px' : '5px'};
       cursor: pointer;
       transition: all 0.2s ease;
       position: relative;

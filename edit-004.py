@@ -2242,7 +2242,7 @@ def get_peak_analytics(channel_id):
             if hourly_records:
                 for record in hourly_records:
                     count = record.in_count
-                    hour_12 = datetime.strptime(str(record.hour), '%H').strftime('%I %p')
+                    hour_12 = datetime.strptime(str(record.hour), '%H').strftime('%I %p').lstrip('0')
                     hourly_data.append({'hour': hour_12, 'count': count})
                     
                     if count > peak_hour_count:
