@@ -296,24 +296,22 @@ class KitchenComplianceProcessor(threading.Thread):
                                 if int(box.cls[0]) < len(self.apron_cap_model.names):
                                     violation_class = self.apron_cap_model.names[int(box.cls[0])]
                                     if 'without' in violation_class.lower() or 'no' in violation_class.lower():
-                                        # Check if we're in cooldown period - if yes, skip this violation
+                                        # Check if in cooldown period
                                         time_since_last = current_time - self.last_alert_time[violation_class]
-                                        if time_since_last <= ALERT_COOLDOWN_SECONDS:
-                                            # Skip detection during cooldown - show as OK
-                                            continue
-                                        
-                                        violations.append(violation_class)
-                                        box_color = (0, 0, 255)  # Red
-                                        person_compliant = False
-                                        if 'cap' in violation_class.lower():
-                                            violation_types['cap'] += 1
-                                        if 'apron' in violation_class.lower():
-                                            violation_types['apron'] += 1
-                                        
-                                        # Trigger alert and start cooldown
-                                        self.last_alert_time[violation_class] = current_time
-                                        details = f"Person detected with '{violation_class}'."
-                                        self._trigger_alert(frame.copy(), violation_class, details)
+                                        if time_since_last > ALERT_COOLDOWN_SECONDS:
+                                            # NOT in cooldown - show violation and send alert
+                                            violations.append(violation_class)
+                                            box_color = (0, 0, 255)  # Red
+                                            person_compliant = False
+                                            if 'cap' in violation_class.lower():
+                                                violation_types['cap'] += 1
+                                            if 'apron' in violation_class.lower():
+                                                violation_types['apron'] += 1
+                                            
+                                            self.last_alert_time[violation_class] = current_time
+                                            details = f"Person detected with '{violation_class}'."
+                                            self._trigger_alert(frame.copy(), violation_class, details)
+                                        # else: In cooldown - skip violation, UI shows OK
 
                     # 2. Check for Gloves Violation (IMPROVED LOGIC)
                     has_gloves = False
@@ -351,20 +349,19 @@ class KitchenComplianceProcessor(threading.Thread):
                                 break
                     
                     if not has_gloves:
-                        # Check if we're in cooldown period - if yes, skip this violation
+                        # Check if in cooldown period
                         time_since_last = current_time - self.last_alert_time['No-Gloves']
                         if time_since_last > ALERT_COOLDOWN_SECONDS:
-                            # Not in cooldown, record the violation
+                            # NOT in cooldown - show violation and send alert
                             violations.append("No-Gloves")
                             box_color = (0, 0, 255)  # Red
                             person_compliant = False
                             violation_types['gloves'] += 1
                             
-                            # Trigger alert and start cooldown
                             self.last_alert_time['No-Gloves'] = current_time
                             details = f"Person detected without gloves."
                             self._trigger_alert(frame.copy(), "No-Gloves", details)
-                        # else: In cooldown period, skip violation - show as OK
+                        # else: In cooldown - skip violation, UI shows OK
                     
                     # 3. Check for Uniform Color Violation
                     torso_crop = frame[py1 + int((py2-py1)*0.1):py1 + int((py2-py1)*0.7), px1:px2]
@@ -385,20 +382,19 @@ class KitchenComplianceProcessor(threading.Thread):
                             compliant_ratio = np.count_nonzero(compliant_mask) / total_pixels if total_pixels > 0 else 0
 
                             if compliant_ratio < 0.30: # If less than 30% of torso is compliant color
-                                # Check if we're in cooldown period - if yes, skip this violation
+                                # Check if in cooldown period
                                 time_since_last = current_time - self.last_alert_time['Uniform-Violation']
                                 if time_since_last > ALERT_COOLDOWN_SECONDS:
-                                    # Not in cooldown, record the violation
+                                    # NOT in cooldown - show violation and send alert
                                     violations.append("Uniform-Violation")
                                     box_color = (0, 0, 255)  # Red
                                     person_compliant = False
                                     violation_types['uniform'] += 1
                                     
-                                    # Trigger alert and start cooldown
                                     self.last_alert_time['Uniform-Violation'] = current_time
                                     details = f"Person detected with uniform color violation."
                                     self._trigger_alert(frame.copy(), "Uniform-Violation", details)
-                                # else: In cooldown period, skip violation - show as OK
+                                # else: In cooldown - skip violation, UI shows OK
                         except Exception as e:
                             logging.error(f"Uniform detection error: {e}")
                     
@@ -467,14 +463,14 @@ class KitchenComplianceProcessor(threading.Thread):
                 
                 # Alert if phone detected for enough consecutive frames
                 if self.phone_detected_frames >= phone_persistence_frames:
-                    # Check if we're in cooldown period - if yes, skip alert
                     time_since_last = current_time - self.last_alert_time['Mobile-Phone']
                     if time_since_last > ALERT_COOLDOWN_SECONDS:
+                        # NOT in cooldown - send alert
                         self.last_alert_time['Mobile-Phone'] = current_time
                         details = f"Mobile phone detected in restricted area."
                         self._trigger_alert(frame.copy(), "Mobile-Phone", details)
                         self.phone_detected_frames = 0  # Reset after alert
-                    # else: In cooldown period, don't trigger alert
+                    # else: In cooldown - skip alert
             else:
                 # No phone detected - reset counter
                 self.phone_detected_frames = 0

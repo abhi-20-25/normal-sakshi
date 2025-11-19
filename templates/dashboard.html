@@ -1017,7 +1017,8 @@ socket.on('kitchen_update', (data) => {
     const capEl = document.getElementById('ov-kitchen-cap');
     if (capEl) {
       if (totalPeople === 0) {
-        capEl.textContent = '';
+        capEl.textContent = '✓ OK';
+        capEl.style.color = '#26a44b';
       } else if (capCompliant === totalPeople) {
         capEl.textContent = '✓ OK';
         capEl.style.color = '#26a44b';
@@ -1031,7 +1032,8 @@ socket.on('kitchen_update', (data) => {
     const apronEl = document.getElementById('ov-kitchen-apron');
     if (apronEl) {
       if (totalPeople === 0) {
-        apronEl.textContent = '';
+        apronEl.textContent = '✓ OK';
+        apronEl.style.color = '#26a44b';
       } else if (apronCompliant === totalPeople) {
         apronEl.textContent = '✓ OK';
         apronEl.style.color = '#26a44b';
@@ -1045,7 +1047,8 @@ socket.on('kitchen_update', (data) => {
     const glovesEl = document.getElementById('ov-kitchen-gloves');
     if (glovesEl) {
       if (totalPeople === 0) {
-        glovesEl.textContent = '';
+        glovesEl.textContent = '✓ OK';
+        glovesEl.style.color = '#26a44b';
       } else if (glovesCompliant === totalPeople) {
         glovesEl.textContent = '✓ OK';
         glovesEl.style.color = '#26a44b';
@@ -1059,7 +1062,8 @@ socket.on('kitchen_update', (data) => {
     const uniformEl = document.getElementById('ov-kitchen-uniform');
     if (uniformEl) {
       if (totalPeople === 0) {
-        uniformEl.textContent = '';
+        uniformEl.textContent = '✓ OK';
+        uniformEl.style.color = '#26a44b';
       } else if (uniformCompliant === totalPeople) {
         uniformEl.textContent = '✓ OK';
         uniformEl.style.color = '#26a44b';
