@@ -299,7 +299,12 @@
           </div>
         </div>
         <div class="report-section">
-          <h3>📊 Daily Report</h3>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="margin: 0;">📊 Daily Report</h3>
+            <button id="download-report-btn" onclick="downloadReport()" style="display: none; padding: 8px 16px; background: #26a44b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: background 0.2s;" onmouseover="this.style.background='#1e8a3d'" onmouseout="this.style.background='#26a44b'">
+              📥 Download CSV
+            </button>
+          </div>
           <div class="report-controls">
             <input type="date" id="pc-date" />
             <button onclick="loadReport()">Load Report</button>
@@ -1040,18 +1045,29 @@ function loadHistory(view, page = 1, violationType = null) {
       document.getElementById(h.div).innerHTML = '<p style="color:#e04b4b;padding:20px;text-align:center">Error loading</p>';
     });
 }
+let currentReportData = null;
+let currentReportDate = null;
+
 function loadReport() {
   const date = document.getElementById('pc-date').value || new Date().toISOString().split('T')[0];
+  currentReportDate = date;
+  
   fetch('/report/' + channels.PeopleCounter + '/' + date)
     .then(res => res.json())
     .then(data => {
+      currentReportData = data;
       let html = '';
+      const downloadBtn = document.getElementById('download-report-btn');
+      
       if (data.hourly_data) {
         html = '<table><thead><tr><th>Time Period</th><th>IN</th><th>OUT</th></tr></thead><tbody>';
         let totalIn = 0, totalOut = 0;
+        let hasData = false;
+        
         for (let h = 0; h < 24; h++) {
           const hourData = data.hourly_data[h] || { in: 0, out: 0, total: 0 };
           if (hourData.total > 0) {
+            hasData = true;
             const hourStart = String(h).padStart(2, '0') + ':00';
             const hourEnd = String(h).padStart(2, '0') + ':59';
             const timePeriod = hourStart + '-' + hourEnd;
@@ -1061,17 +1077,57 @@ function loadReport() {
           }
         }
         html += '</tbody></table>';
+        
+        // Show download button only if there's data
+        if (downloadBtn) {
+          downloadBtn.style.display = hasData ? 'block' : 'none';
+        }
       } else if (data.error) {
         html = '<p style="color:#9aa0a6;padding:20px;text-align:center">' + data.error + '</p>';
+        if (downloadBtn) downloadBtn.style.display = 'none';
       } else {
         html = '<p style="color:#9aa0a6;padding:20px;text-align:center">No data available for this date</p>';
+        if (downloadBtn) downloadBtn.style.display = 'none';
       }
       document.getElementById('pc-report').innerHTML = html;
     })
     .catch(err => {
       console.error(err);
       document.getElementById('pc-report').innerHTML = '<p style="color:#e04b4b;padding:20px;text-align:center">Error loading report</p>';
+      const downloadBtn = document.getElementById('download-report-btn');
+      if (downloadBtn) downloadBtn.style.display = 'none';
     });
+}
+
+function downloadReport() {
+  if (!currentReportData || !currentReportData.hourly_data) {
+    alert('No data to download');
+    return;
+  }
+  
+  // Create CSV content
+  let csv = 'Time Period,IN,OUT\n';
+  
+  for (let h = 0; h < 24; h++) {
+    const hourData = currentReportData.hourly_data[h] || { in: 0, out: 0, total: 0 };
+    if (hourData.total > 0) {
+      const hourStart = String(h).padStart(2, '0') + ':00';
+      const hourEnd = String(h).padStart(2, '0') + ':59';
+      const timePeriod = hourStart + '-' + hourEnd;
+      csv += `${timePeriod},${hourData.in},${hourData.out}\n`;
+    }
+  }
+  
+  // Create blob and download
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `people_counter_report_${currentReportDate}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
 }
 function openLightbox(src) {
   document.getElementById('lightbox-img').src = src;
