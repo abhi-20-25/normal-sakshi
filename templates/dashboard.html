@@ -11,8 +11,9 @@
     body { font-family: 'Inter', sans-serif; background: #0f1112; color: #ddd; }
     .container { display: grid; grid-template-columns: 260px 1fr; gap: 24px; min-height: 100vh; padding: 18px; }
     .sidebar { background: #121314; border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 18px; height: fit-content; position: sticky; top: 18px; }
-    .brand { display: flex; align-items: center; gap: 12px; }
-    .brand .logo { width: 44px; height: 44px; border-radius: 10px; background: linear-gradient(135deg, #6d5af8 0%, #e55fd4 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; font-size: 20px; }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .brand .logo { width: 100%; height: 70px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .brand .logo img { width: 100%; height: 100%; object-fit: contain; }
     .brand h1 { font-size: 16px; color: #fff; }
     .nav { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
     .nav .section-title { font-size: 12px; color: #8a8f96; margin: 8px 6px; }
@@ -76,8 +77,7 @@
   <div class="container">
     <aside class="sidebar">
       <div class="brand">
-        <div class="logo">S</div>
-        <div><h1>Sakshi.ai</h1></div>
+        <div class="logo"><img src="/static/Sakshi.png" alt="Sakshi.ai Logo"></div>
       </div>
       <nav class="nav">
         <div class="section-title">NAVIGATION</div>
@@ -133,7 +133,7 @@
             </div>
             <div style="margin-top: 15px; padding: 15px 0;">
               <div style="color: #9aa0a6; font-size: 12px; margin-bottom: 10px;">Hourly Traffic</div>
-              <div id="ov-hour-chart" style="height: 80px; display: flex; align-items: end; gap: 2px; background: #121314; border-radius: 6px; padding: 10px; overflow-x: auto;">
+              <div id="ov-hour-chart" style="height: 80px; display: flex; align-items: end; gap: 1px; background: #121314; border-radius: 6px; padding: 10px;">
                 <!-- Hour bars will be dynamically generated -->
               </div>
             </div>
@@ -334,7 +334,7 @@
             </div>
             <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #2a2d31;">
               <div style="color: #9aa0a6; font-size: 12px; margin-bottom: 10px;">Hourly Traffic</div>
-              <div id="pc-hour-chart" style="height: 80px; display: flex; align-items: end; gap: 2px; background: #121314; border-radius: 6px; padding: 10px; overflow-x: auto;">
+              <div id="pc-hour-chart" style="height: 80px; display: flex; align-items: end; gap: 1px; background: #121314; border-radius: 6px; padding: 10px;">
                 <!-- Hour bars will be dynamically generated -->
               </div>
             </div>
@@ -566,12 +566,15 @@ function loadPeakAnalytics() {
           : 'N/A';
       }
       
-      // Update Peak Hour
+      // Update Peak Hour - convert to time period format
       const peakHourEl = document.getElementById('ov-pc-peak-hour');
       if (peakHourEl && data.peak_hour) {
-        peakHourEl.textContent = data.peak_hour.count > 0 
-          ? `${data.peak_hour.label.replace(' ', '')} (${data.peak_hour.count})` 
-          : 'N/A';
+        if (data.peak_hour.count > 0) {
+          const timePeriod = convertHourToTimePeriod(data.peak_hour.label);
+          peakHourEl.textContent = `${timePeriod} (${data.peak_hour.count})`;
+        } else {
+          peakHourEl.textContent = 'N/A';
+        }
       }
       
       // Render week chart
@@ -596,7 +599,12 @@ function loadPeakAnalytics() {
         pcPeakDayEl.textContent = data.peak_day.count > 0 ? data.peak_day.name : 'N/A';
       }
       if (pcPeakHourEl && data.peak_hour) {
-        pcPeakHourEl.textContent = data.peak_hour.count > 0 ? data.peak_hour.label.replace(' ', '') : 'N/A';
+        if (data.peak_hour.count > 0) {
+          const timePeriod = convertHourToTimePeriod(data.peak_hour.label);
+          pcPeakHourEl.textContent = timePeriod;
+        } else {
+          pcPeakHourEl.textContent = 'N/A';
+        }
       }
       if (pcPeakDayCountEl && data.peak_day) {
         pcPeakDayCountEl.textContent = data.peak_day.count > 0 ? `${data.peak_day.count} visitors` : 'No data yet';
@@ -606,6 +614,20 @@ function loadPeakAnalytics() {
       }
     })
     .catch(error => console.error('Error loading peak analytics:', error));
+}
+
+// Helper function to convert hour label to time period format
+function convertHourToTimePeriod(hourLabel) {
+  // Convert "12 PM" to "12:00-12:59"
+  const hourMap = {
+    '12 AM': '00:00-00:59', '1 AM': '01:00-01:59', '2 AM': '02:00-02:59', '3 AM': '03:00-03:59',
+    '4 AM': '04:00-04:59', '5 AM': '05:00-05:59', '6 AM': '06:00-06:59', '7 AM': '07:00-07:59',
+    '8 AM': '08:00-08:59', '9 AM': '09:00-09:59', '10 AM': '10:00-10:59', '11 AM': '11:00-11:59',
+    '12 PM': '12:00-12:59', '1 PM': '13:00-13:59', '2 PM': '14:00-14:59', '3 PM': '15:00-15:59',
+    '4 PM': '16:00-16:59', '5 PM': '17:00-17:59', '6 PM': '18:00-18:59', '7 PM': '19:00-19:59',
+    '8 PM': '20:00-20:59', '9 PM': '21:00-21:59', '10 PM': '22:00-22:59', '11 PM': '23:00-23:59'
+  };
+  return hourMap[hourLabel] || hourLabel;
 }
 
 function renderWeekChart(weekData) {
@@ -671,39 +693,64 @@ function renderHourChart(hourlyData) {
   
   chartContainer.innerHTML = '';
   
-  // If no data, show placeholder for current time range
-  if (!hourlyData || hourlyData.length === 0) {
-    const currentHour = new Date().getHours();
-    hourlyData = [];
-    for (let i = 0; i <= currentHour; i++) {
-      const hour12 = new Date(2000, 0, 1, i).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true });
-      hourlyData.push({ hour: hour12, count: 0 });
+  // Create 24-hour data structure with time periods
+  const hourData24 = [];
+  for (let h = 0; h < 24; h++) {
+    const timePeriod = String(h).padStart(2, '0') + ':00-' + String(h).padStart(2, '0') + ':59';
+    const hour12Label = h === 0 ? '12 AM' : h < 12 ? h + ' AM' : h === 12 ? '12 PM' : (h - 12) + ' PM';
+    
+    // Find matching data from hourlyData
+    let count = 0;
+    if (hourlyData && hourlyData.length > 0) {
+      const match = hourlyData.find(d => {
+        const dataHour12 = d.hour.trim();
+        return dataHour12 === hour12Label;
+      });
+      count = match ? match.count : 0;
     }
+    
+    hourData24.push({ timePeriod, hour12: hour12Label, count });
   }
   
   // Find max value for scaling
-  const maxCount = Math.max(...hourlyData.map(d => d.count), 1);
+  const maxCount = Math.max(...hourData24.map(d => d.count), 1);
   
-  hourlyData.forEach(hourData => {
-    const heightPercent = maxCount > 0 && hourData.count > 0 ? (hourData.count / maxCount) * 100 : 10;
+  hourData24.forEach((data, index) => {
+    const heightPercent = maxCount > 0 && data.count > 0 ? (data.count / maxCount) * 100 : 10;
     const bar = document.createElement('div');
     bar.style.cssText = `
       flex: 1;
-      min-width: 4px;
-      background: ${hourData.count > 0 ? '#3b82f6' : '#2a2d31'};
+      background: ${data.count > 0 ? '#3b82f6' : '#2a2d31'};
       border-radius: 2px;
       height: ${heightPercent}%;
       cursor: pointer;
       transition: all 0.2s ease;
+      position: relative;
     `;
     
-    // Tooltip
-    bar.title = `${hourData.hour}: ${hourData.count} visitors`;
+    // Add label for every 4th hour
+    if (index % 4 === 0) {
+      const label = document.createElement('div');
+      label.style.cssText = `
+        position: absolute;
+        bottom: -18px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 8px;
+        color: #9aa0a6;
+        white-space: nowrap;
+      `;
+      label.textContent = data.hour12.replace(' ', '');
+      bar.appendChild(label);
+    }
+    
+    // Tooltip with time period
+    bar.title = `${data.timePeriod}: ${data.count} visitors`;
     bar.addEventListener('mouseenter', () => {
-      bar.style.background = hourData.count > 0 ? '#60a5fa' : '#3a3d41';
+      bar.style.background = data.count > 0 ? '#60a5fa' : '#3a3d41';
     });
     bar.addEventListener('mouseleave', () => {
-      bar.style.background = hourData.count > 0 ? '#3b82f6' : '#2a2d31';
+      bar.style.background = data.count > 0 ? '#3b82f6' : '#2a2d31';
     });
     
     chartContainer.appendChild(bar);
@@ -775,39 +822,64 @@ function renderPCHourChart(hourlyData) {
   
   chartContainer.innerHTML = '';
   
-  // If no data, show placeholder for current time range
-  if (!hourlyData || hourlyData.length === 0) {
-    const currentHour = new Date().getHours();
-    hourlyData = [];
-    for (let i = 0; i <= currentHour; i++) {
-      const hour12 = new Date(2000, 0, 1, i).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true });
-      hourlyData.push({ hour: hour12, count: 0 });
+  // Create 24-hour data structure with time periods
+  const hourData24 = [];
+  for (let h = 0; h < 24; h++) {
+    const timePeriod = String(h).padStart(2, '0') + ':00-' + String(h).padStart(2, '0') + ':59';
+    const hour12Label = h === 0 ? '12 AM' : h < 12 ? h + ' AM' : h === 12 ? '12 PM' : (h - 12) + ' PM';
+    
+    // Find matching data from hourlyData
+    let count = 0;
+    if (hourlyData && hourlyData.length > 0) {
+      const match = hourlyData.find(d => {
+        const dataHour12 = d.hour.trim();
+        return dataHour12 === hour12Label;
+      });
+      count = match ? match.count : 0;
     }
+    
+    hourData24.push({ timePeriod, hour12: hour12Label, count });
   }
   
   // Find max value for scaling
-  const maxCount = Math.max(...hourlyData.map(d => d.count), 1);
+  const maxCount = Math.max(...hourData24.map(d => d.count), 1);
   
-  hourlyData.forEach(hourData => {
-    const heightPercent = maxCount > 0 && hourData.count > 0 ? (hourData.count / maxCount) * 100 : 10;
+  hourData24.forEach((data, index) => {
+    const heightPercent = maxCount > 0 && data.count > 0 ? (data.count / maxCount) * 100 : 10;
     const bar = document.createElement('div');
     bar.style.cssText = `
       flex: 1;
-      min-width: 4px;
-      background: ${hourData.count > 0 ? '#3b82f6' : '#2a2d31'};
+      background: ${data.count > 0 ? '#3b82f6' : '#2a2d31'};
       border-radius: 2px;
       height: ${heightPercent}%;
       cursor: pointer;
       transition: all 0.2s ease;
+      position: relative;
     `;
     
-    // Tooltip
-    bar.title = `${hourData.hour}: ${hourData.count} visitors`;
+    // Add label for every 4th hour
+    if (index % 4 === 0) {
+      const label = document.createElement('div');
+      label.style.cssText = `
+        position: absolute;
+        bottom: -18px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 8px;
+        color: #9aa0a6;
+        white-space: nowrap;
+      `;
+      label.textContent = data.hour12.replace(' ', '');
+      bar.appendChild(label);
+    }
+    
+    // Tooltip with time period
+    bar.title = `${data.timePeriod}: ${data.count} visitors`;
     bar.addEventListener('mouseenter', () => {
-      bar.style.background = hourData.count > 0 ? '#60a5fa' : '#3a3d41';
+      bar.style.background = data.count > 0 ? '#60a5fa' : '#3a3d41';
     });
     bar.addEventListener('mouseleave', () => {
-      bar.style.background = hourData.count > 0 ? '#3b82f6' : '#2a2d31';
+      bar.style.background = data.count > 0 ? '#3b82f6' : '#2a2d31';
     });
     
     chartContainer.appendChild(bar);
