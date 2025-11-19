@@ -251,12 +251,6 @@ class KitchenComplianceProcessor(threading.Thread):
 
             # Draw header info
             h, w = annotated_frame.shape[:2]
-            cv2.putText(annotated_frame, "Kitchen Compliance Monitor", (15, 35), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            cv2.putText(annotated_frame, "Checking: Gloves, Apron, Cap, Uniform, Phone", (15, 65), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
-            cv2.putText(annotated_frame, f"Device: {self.device.upper()} | Conf: {CONFIDENCE_THRESHOLD}", (15, 90), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
             # --- Process Each Person (Direct Detection - No Tracking) ---
             if person_results and person_results[0].boxes is not None and len(person_results[0].boxes) > 0:
@@ -279,8 +273,6 @@ class KitchenComplianceProcessor(threading.Thread):
                 # No people detected
                 if frame_count % 300 == 0:
                     logging.info(f"Kitchen frame {frame_count}: No people detected")
-                cv2.putText(annotated_frame, "No people detected", (50, h-50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 2)
 
             if person_results and person_results[0].boxes is not None and len(person_results[0].boxes) > 0:
                 total_people = len(person_boxes)
@@ -304,6 +296,12 @@ class KitchenComplianceProcessor(threading.Thread):
                                 if int(box.cls[0]) < len(self.apron_cap_model.names):
                                     violation_class = self.apron_cap_model.names[int(box.cls[0])]
                                     if 'without' in violation_class.lower() or 'no' in violation_class.lower():
+                                        # Check if we're in cooldown period - if yes, skip this violation
+                                        time_since_last = current_time - self.last_alert_time[violation_class]
+                                        if time_since_last <= ALERT_COOLDOWN_SECONDS:
+                                            # Skip detection during cooldown - show as OK
+                                            continue
+                                        
                                         violations.append(violation_class)
                                         box_color = (0, 0, 255)  # Red
                                         person_compliant = False
@@ -312,12 +310,10 @@ class KitchenComplianceProcessor(threading.Thread):
                                         if 'apron' in violation_class.lower():
                                             violation_types['apron'] += 1
                                         
-                                        # Global cooldown per violation type
-                                        time_since_last = current_time - self.last_alert_time[violation_class]
-                                        if time_since_last > ALERT_COOLDOWN_SECONDS:
-                                            self.last_alert_time[violation_class] = current_time
-                                            details = f"Person detected with '{violation_class}'."
-                                            self._trigger_alert(frame.copy(), violation_class, details)
+                                        # Trigger alert and start cooldown
+                                        self.last_alert_time[violation_class] = current_time
+                                        details = f"Person detected with '{violation_class}'."
+                                        self._trigger_alert(frame.copy(), violation_class, details)
 
                     # 2. Check for Gloves Violation (IMPROVED LOGIC)
                     has_gloves = False
@@ -351,22 +347,24 @@ class KitchenComplianceProcessor(threading.Thread):
                                 has_gloves = True
                                 # Draw glove indicator
                                 cv2.rectangle(annotated_frame, (gx1, gy1), (gx2, gy2), (0, 255, 0), 2)
-                                cv2.putText(annotated_frame, f"GLOVES {int(overlap_percentage*100)}%", (gx1, gy1-5), 
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+                                # Gloves detection - text removed
                                 break
                     
                     if not has_gloves:
-                        violations.append("No-Gloves")
-                        box_color = (0, 0, 255)  # Red
-                        person_compliant = False
-                        violation_types['gloves'] += 1
-                        
-                        # Global cooldown for gloves violation
+                        # Check if we're in cooldown period - if yes, skip this violation
                         time_since_last = current_time - self.last_alert_time['No-Gloves']
                         if time_since_last > ALERT_COOLDOWN_SECONDS:
+                            # Not in cooldown, record the violation
+                            violations.append("No-Gloves")
+                            box_color = (0, 0, 255)  # Red
+                            person_compliant = False
+                            violation_types['gloves'] += 1
+                            
+                            # Trigger alert and start cooldown
                             self.last_alert_time['No-Gloves'] = current_time
                             details = f"Person detected without gloves."
                             self._trigger_alert(frame.copy(), "No-Gloves", details)
+                        # else: In cooldown period, skip violation - show as OK
                     
                     # 3. Check for Uniform Color Violation
                     torso_crop = frame[py1 + int((py2-py1)*0.1):py1 + int((py2-py1)*0.7), px1:px2]
@@ -387,47 +385,25 @@ class KitchenComplianceProcessor(threading.Thread):
                             compliant_ratio = np.count_nonzero(compliant_mask) / total_pixels if total_pixels > 0 else 0
 
                             if compliant_ratio < 0.30: # If less than 30% of torso is compliant color
-                                violations.append("Uniform-Violation")
-                                box_color = (0, 0, 255)  # Red
-                                person_compliant = False
-                                violation_types['uniform'] += 1
-                                
-                                # Global cooldown for uniform violations
+                                # Check if we're in cooldown period - if yes, skip this violation
                                 time_since_last = current_time - self.last_alert_time['Uniform-Violation']
                                 if time_since_last > ALERT_COOLDOWN_SECONDS:
+                                    # Not in cooldown, record the violation
+                                    violations.append("Uniform-Violation")
+                                    box_color = (0, 0, 255)  # Red
+                                    person_compliant = False
+                                    violation_types['uniform'] += 1
+                                    
+                                    # Trigger alert and start cooldown
                                     self.last_alert_time['Uniform-Violation'] = current_time
                                     details = f"Person detected with uniform color violation."
                                     self._trigger_alert(frame.copy(), "Uniform-Violation", details)
+                                # else: In cooldown period, skip violation - show as OK
                         except Exception as e:
                             logging.error(f"Uniform detection error: {e}")
                     
-                    # Draw person bounding box
-                    cv2.rectangle(annotated_frame, (px1, py1), (px2, py2), box_color, 3)
-                    
-                    # Prepare label
-                    if violations:
-                        status_text = f"P{person_id} VIOLATION"
-                        label_color = (0, 0, 255)
-                    else:
-                        status_text = f"P{person_id} COMPLIANT"
-                        label_color = (0, 255, 0)
-                    
-                    # Draw label background
-                    label_size = cv2.getTextSize(status_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 2)[0]
-                    cv2.rectangle(annotated_frame, (px1, py1-label_size[1]-10), 
-                                 (px1+label_size[0]+5, py1), box_color, -1)
-                    cv2.putText(annotated_frame, status_text, (px1, py1-5),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 2)
-                    
-                    # Show violations below box
-                    if violations:
-                        for idx, violation in enumerate(violations[:3]):  # Show max 3
-                            cv2.putText(annotated_frame, f"- {violation}", (px1, py2+20+idx*20),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
-                    
-                    # Show confidence
-                    cv2.putText(annotated_frame, f"{conf:.2f}", (px2-50, py1+20),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                                        # Draw person bounding box
+                    cv2.rectangle(annotated_frame, (px1, py1), (px2, py2), box_color, 2)
                     
                     # Count compliant people
                     if person_compliant:
@@ -487,24 +463,24 @@ class KitchenComplianceProcessor(threading.Thread):
                             
                             # Draw phone detection
                             cv2.rectangle(annotated_frame, (p_x1, p_y1), (p_x2, p_y2), (0, 0, 255), 2)
-                            cv2.putText(annotated_frame, f"PHONE {self.phone_detected_frames}f", (p_x1, p_y1-5),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+                            # Phone detection text removed
                 
                 # Alert if phone detected for enough consecutive frames
                 if self.phone_detected_frames >= phone_persistence_frames:
+                    # Check if we're in cooldown period - if yes, skip alert
                     time_since_last = current_time - self.last_alert_time['Mobile-Phone']
                     if time_since_last > ALERT_COOLDOWN_SECONDS:
                         self.last_alert_time['Mobile-Phone'] = current_time
                         details = f"Mobile phone detected in restricted area."
                         self._trigger_alert(frame.copy(), "Mobile-Phone", details)
                         self.phone_detected_frames = 0  # Reset after alert
+                    # else: In cooldown period, don't trigger alert
             else:
                 # No phone detected - reset counter
                 self.phone_detected_frames = 0
             
             # Add footer indicator
-            cv2.putText(annotated_frame, "YOLO Kitchen Compliance Active", (w-350, h-15), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 2)
+            # Footer text removed
             
             # Update latest frame AFTER all annotations
             with self.lock:
