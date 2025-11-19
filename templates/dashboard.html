@@ -716,13 +716,14 @@ function renderHourChart(hourlyData) {
   const maxCount = Math.max(...hourData24.map(d => d.count), 1);
   
   hourData24.forEach((data, index) => {
-    const heightPercent = maxCount > 0 && data.count > 0 ? (data.count / maxCount) * 100 : 10;
+    const heightPercent = maxCount > 0 && data.count > 0 ? (data.count / maxCount) * 100 : 5;
     const bar = document.createElement('div');
     bar.style.cssText = `
       flex: 1;
       background: ${data.count > 0 ? '#3b82f6' : '#2a2d31'};
       border-radius: 2px;
       height: ${heightPercent}%;
+      min-height: ${data.count > 0 ? '8px' : '5px'};
       cursor: pointer;
       transition: all 0.2s ease;
       position: relative;
@@ -845,13 +846,14 @@ function renderPCHourChart(hourlyData) {
   const maxCount = Math.max(...hourData24.map(d => d.count), 1);
   
   hourData24.forEach((data, index) => {
-    const heightPercent = maxCount > 0 && data.count > 0 ? (data.count / maxCount) * 100 : 10;
+    const heightPercent = maxCount > 0 && data.count > 0 ? (data.count / maxCount) * 100 : 5;
     const bar = document.createElement('div');
     bar.style.cssText = `
       flex: 1;
       background: ${data.count > 0 ? '#3b82f6' : '#2a2d31'};
       border-radius: 2px;
       height: ${heightPercent}%;
+      min-height: ${data.count > 0 ? '8px' : '5px'};
       cursor: pointer;
       transition: all 0.2s ease;
       position: relative;
