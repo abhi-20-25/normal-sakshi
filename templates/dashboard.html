@@ -403,6 +403,28 @@
           </div>
         </div>
         <div class="report-section">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+            <h3 style="margin: 0;">📋 Schedule Management</h3>
+            <div style="display: flex; gap: 10px;">
+              <button onclick="downloadTemplate()" style="padding: 8px 16px; background: #f59e0b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: background 0.2s;" onmouseover="this.style.background='#d97706'" onmouseout="this.style.background='#f59e0b'">
+                📥 Download Template
+              </button>
+              <button onclick="promptScheduleUpload()" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: background 0.2s;" onmouseover="this.style.background='#2563eb'" onmouseout="this.style.background='#3b82f6'">
+                📤 Import Schedule
+              </button>
+            </div>
+          </div>
+          <div style="background: #1a1d21; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <p style="color: #9aa0a6; font-size: 13px; margin: 0; margin-bottom: 8px;"><strong>How to use:</strong></p>
+            <ol style="color: #9aa0a6; font-size: 13px; margin: 0; padding-left: 20px;">
+              <li>Click "Download Template" to get the correct CSV format</li>
+              <li>Edit the template with your required attendance numbers (0-100)</li>
+              <li>Click "Import Schedule" to upload your completed schedule</li>
+              <li>View and edit the schedule in the grid interface</li>
+            </ol>
+          </div>
+        </div>
+        <div class="report-section">
           <h3>History</h3>
           <div class="history-grid" id="occ-history"></div>
           <div class="pagination" id="occ-pagination"></div>
@@ -413,6 +435,30 @@
   <div id="lightbox" class="lightbox" onclick="closeLightbox()">
     <span class="lightbox-close">&times;</span>
     <img id="lightbox-img" src="">
+  </div>
+  
+  <!-- Schedule Modal -->
+  <div id="schedule-modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 10000; overflow: auto;">
+    <div style="background: #1a1d21; margin: 20px auto; max-width: 95%; border-radius: 8px; padding: 0; position: relative;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 20px; border-bottom: 1px solid #2a2d31;">
+        <h2 style="margin: 0; color: #fff;">📋 Kitchen Attendance Schedule</h2>
+        <button onclick="closeScheduleModal()" style="background: none; border: none; color: #9aa0a6; font-size: 28px; cursor: pointer; padding: 0; line-height: 1;">&times;</button>
+      </div>
+      <div style="padding: 20px;">
+        <div style="margin-bottom: 15px; display: flex; gap: 10px; justify-content: flex-end;">
+          <button onclick="downloadTemplate()" style="padding: 8px 16px; background: #f59e0b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+            📥 Download Template
+          </button>
+          <button onclick="promptScheduleUpload()" style="padding: 8px 16px; background: #3b82f6; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+            📤 Import New Schedule
+          </button>
+          <button onclick="saveSchedule()" style="padding: 8px 16px; background: #26a44b; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px;">
+            💾 Save Schedule
+          </button>
+        </div>
+        <div id="schedule-grid" style="overflow: auto; max-height: 60vh;"></div>
+      </div>
+    </div>
   </div>
   <script>
 const channels = {
@@ -1129,6 +1175,151 @@ function downloadReport() {
   window.URL.revokeObjectURL(url);
   document.body.removeChild(a);
 }
+
+// Schedule Management Functions
+function downloadTemplate() {
+  window.location.href = '/api/occupancy/schedule/template';
+}
+
+function promptScheduleUpload() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.csv,.xlsx,.xls';
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const ext = '.' + file.name.split('.').pop().toLowerCase();
+    if (!['.csv', '.xlsx', '.xls'].includes(ext)) {
+      alert('Please select a CSV or Excel file (.csv, .xlsx, .xls)');
+      return;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    // Show loading message
+    const scheduleGrid = document.getElementById('schedule-grid');
+    if (scheduleGrid) {
+      scheduleGrid.innerHTML = '<p style="color:#9aa0a6;padding:20px;text-align:center">Uploading schedule...</p>';
+    }
+    
+    fetch(`/api/occupancy/schedule/upload/${channels.OccupancyMonitor}`, {
+      method: 'POST',
+      body: formData
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert(`✅ ${data.message}`);
+        openScheduleModal();
+      } else {
+        alert(`❌ Error uploading schedule: ${data.error}`);
+      }
+    })
+    .catch(err => {
+      console.error(err);
+      alert('❌ Error uploading schedule. Please try again.');
+    });
+  };
+  input.click();
+}
+
+function openScheduleModal() {
+  const modal = document.getElementById('schedule-modal');
+  modal.style.display = 'block';
+  loadSchedule();
+}
+
+function closeScheduleModal() {
+  const modal = document.getElementById('schedule-modal');
+  modal.style.display = 'none';
+}
+
+function loadSchedule() {
+  const scheduleGrid = document.getElementById('schedule-grid');
+  scheduleGrid.innerHTML = '<p style="color:#9aa0a6;padding:20px;text-align:center">Loading schedule...</p>';
+  
+  fetch(`/api/occupancy/schedule/${channels.OccupancyMonitor}`)
+    .then(response => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then(data => {
+      displaySchedule(data);
+    })
+    .catch(error => {
+      console.error('Error loading schedule:', error);
+      scheduleGrid.innerHTML = '<p style="color:#e04b4b;padding:20px;text-align:center">Error loading schedule. Please try importing a schedule file first.</p>';
+    });
+}
+
+function displaySchedule(schedule) {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+  
+  let html = '<table style="width: 100%; border-collapse: collapse; background: #121314; color: #fff;">';
+  html += '<thead><tr style="background: #1a1d21;"><th style="padding: 10px; border: 1px solid #2a2d31; position: sticky; left: 0; background: #1a1d21; z-index: 2;">Day</th>';
+  
+  hours.forEach(hour => {
+    html += `<th style="padding: 10px; border: 1px solid #2a2d31; font-size: 12px;">${hour}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+  
+  days.forEach(day => {
+    html += '<tr>';
+    html += `<td style="padding: 10px; border: 1px solid #2a2d31; font-weight: 600; position: sticky; left: 0; background: #1a1d21; z-index: 1;">${day}</td>`;
+    hours.forEach(hour => {
+      const value = schedule[hour] && schedule[hour][day] ? schedule[hour][day] : '';
+      html += `<td style="padding: 5px; border: 1px solid #2a2d31;">
+        <input type="number" min="0" max="100" value="${value}" 
+        id="schedule-${day}-${hour}" placeholder="0" 
+        style="width: 60px; padding: 5px; background: #0d0f10; color: #fff; border: 1px solid #2a2d31; border-radius: 4px; text-align: center;">
+      </td>`;
+    });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  
+  document.getElementById('schedule-grid').innerHTML = html;
+}
+
+function saveSchedule() {
+  const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const hours = Array.from({length: 24}, (_, i) => `${i}:00`);
+  
+  const schedule = {};
+  hours.forEach(hour => {
+    schedule[hour] = {};
+    days.forEach(day => {
+      const input = document.getElementById(`schedule-${day}-${hour}`);
+      if (input) {
+        const value = parseInt(input.value) || 0;
+        if (value > 0) {
+          schedule[hour][day] = value;
+        }
+      }
+    });
+  });
+
+  fetch(`/api/occupancy/schedule/${channels.OccupancyMonitor}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(schedule)
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Schedule saved successfully!');
+      closeScheduleModal();
+    } else {
+      alert('❌ Error saving schedule: ' + (data.error || 'Unknown error'));
+    }
+  })
+  .catch(err => {
+    console.error(err);
+    alert('❌ Error saving schedule. Please try again.');
+  });
+}
+
 function openLightbox(src) {
   document.getElementById('lightbox-img').src = src;
   document.getElementById('lightbox').classList.add('show');
