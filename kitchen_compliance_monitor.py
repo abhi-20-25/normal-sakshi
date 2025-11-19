@@ -296,22 +296,21 @@ class KitchenComplianceProcessor(threading.Thread):
                                 if int(box.cls[0]) < len(self.apron_cap_model.names):
                                     violation_class = self.apron_cap_model.names[int(box.cls[0])]
                                     if 'without' in violation_class.lower() or 'no' in violation_class.lower():
-                                        # Check if in cooldown period
+                                        # Always show violation in UI
+                                        violations.append(violation_class)
+                                        box_color = (0, 0, 255)  # Red
+                                        person_compliant = False
+                                        if 'cap' in violation_class.lower():
+                                            violation_types['cap'] += 1
+                                        if 'apron' in violation_class.lower():
+                                            violation_types['apron'] += 1
+                                        
+                                        # Only send alert if not in cooldown
                                         time_since_last = current_time - self.last_alert_time[violation_class]
                                         if time_since_last > ALERT_COOLDOWN_SECONDS:
-                                            # NOT in cooldown - show violation and send alert
-                                            violations.append(violation_class)
-                                            box_color = (0, 0, 255)  # Red
-                                            person_compliant = False
-                                            if 'cap' in violation_class.lower():
-                                                violation_types['cap'] += 1
-                                            if 'apron' in violation_class.lower():
-                                                violation_types['apron'] += 1
-                                            
                                             self.last_alert_time[violation_class] = current_time
                                             details = f"Person detected with '{violation_class}'."
                                             self._trigger_alert(frame.copy(), violation_class, details)
-                                        # else: In cooldown - skip violation, UI shows OK
 
                     # 2. Check for Gloves Violation (IMPROVED LOGIC)
                     has_gloves = False
@@ -349,19 +348,18 @@ class KitchenComplianceProcessor(threading.Thread):
                                 break
                     
                     if not has_gloves:
-                        # Check if in cooldown period
+                        # Always show violation in UI
+                        violations.append("No-Gloves")
+                        box_color = (0, 0, 255)  # Red
+                        person_compliant = False
+                        violation_types['gloves'] += 1
+                        
+                        # Only send alert if not in cooldown
                         time_since_last = current_time - self.last_alert_time['No-Gloves']
                         if time_since_last > ALERT_COOLDOWN_SECONDS:
-                            # NOT in cooldown - show violation and send alert
-                            violations.append("No-Gloves")
-                            box_color = (0, 0, 255)  # Red
-                            person_compliant = False
-                            violation_types['gloves'] += 1
-                            
                             self.last_alert_time['No-Gloves'] = current_time
                             details = f"Person detected without gloves."
                             self._trigger_alert(frame.copy(), "No-Gloves", details)
-                        # else: In cooldown - skip violation, UI shows OK
                     
                     # 3. Check for Uniform Color Violation
                     torso_crop = frame[py1 + int((py2-py1)*0.1):py1 + int((py2-py1)*0.7), px1:px2]
@@ -382,19 +380,18 @@ class KitchenComplianceProcessor(threading.Thread):
                             compliant_ratio = np.count_nonzero(compliant_mask) / total_pixels if total_pixels > 0 else 0
 
                             if compliant_ratio < 0.30: # If less than 30% of torso is compliant color
-                                # Check if in cooldown period
+                                # Always show violation in UI
+                                violations.append("Uniform-Violation")
+                                box_color = (0, 0, 255)  # Red
+                                person_compliant = False
+                                violation_types['uniform'] += 1
+                                
+                                # Only send alert if not in cooldown
                                 time_since_last = current_time - self.last_alert_time['Uniform-Violation']
                                 if time_since_last > ALERT_COOLDOWN_SECONDS:
-                                    # NOT in cooldown - show violation and send alert
-                                    violations.append("Uniform-Violation")
-                                    box_color = (0, 0, 255)  # Red
-                                    person_compliant = False
-                                    violation_types['uniform'] += 1
-                                    
                                     self.last_alert_time['Uniform-Violation'] = current_time
                                     details = f"Person detected with uniform color violation."
                                     self._trigger_alert(frame.copy(), "Uniform-Violation", details)
-                                # else: In cooldown - skip violation, UI shows OK
                         except Exception as e:
                             logging.error(f"Uniform detection error: {e}")
                     
@@ -436,8 +433,8 @@ class KitchenComplianceProcessor(threading.Thread):
                     'uniform_compliant': 0
                 }
             
-            # Emit SocketIO update only every 10 seconds to avoid overwhelming the system
-            if current_time - self.last_socketio_emit >= 10.0:
+            # Emit SocketIO update every 2 seconds for quick UI updates
+            if current_time - self.last_socketio_emit >= 2.0:
                 try:
                     # Use namespace=None and broadcast=False for better performance
                     self.socketio.emit('kitchen_update', current_metrics, namespace='/')
