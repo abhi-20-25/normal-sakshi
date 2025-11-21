@@ -1,0 +1,25 @@
+[Unit]
+Description=PetPooja FastAPI Webhook Service
+After=network.target postgresql.service
+
+[Service]
+User=ubuntu
+Group=www-data
+WorkingDirectory=/home/ubuntu/normal-sakshi
+Environment="PATH=/home/ubuntu/normal-sakshi/venv/bin"
+ExecStart=/home/ubuntu/normal-sakshi/venv/bin/gunicorn \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --workers 4 \
+    --bind 0.0.0.0:8000 \
+    --timeout 120 \
+    --graceful-timeout 30 \
+    --keep-alive 5 \
+    --log-level info \
+    --access-logfile /var/log/gunicorn/petpooja-access.log \
+    --error-logfile /var/log/gunicorn/petpooja-error.log \
+    fastapi_app:app
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
