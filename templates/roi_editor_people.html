@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROI Editor - People Counter</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #059669;
+        }
+        .slider-container {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 15px;
+            background: #f3f4f6;
+            border-radius: 8px;
+            flex: 1;
+        }
+        .slider {
+            flex: 1;
+            height: 8px;
+            border-radius: 5px;
+            background: #d1d5db;
+            outline: none;
+            -webkit-appearance: none;
+        }
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+        }
+        .slider::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: #667eea;
+            cursor: pointer;
+            border: none;
+        }
+        .canvas-container {
+            position: relative;
+            display: inline-block;
+            border: 3px solid #e5e7eb;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        canvas {
+            display: block;
+            max-width: 100%;
+            height: auto;
+        }
+        .instructions {
+            background: #f3f4f6;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .instructions h3 {
+            color: #374151;
+            margin-bottom: 12px;
+            font-size: 18px;
+        }
+        .instructions ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .instructions li {
+            padding: 8px 0;
+            color: #6b7280;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+        }
+        .instructions li::before {
+            content: "→";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .status-message {
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-weight: 500;
+            display: none;
+        }
+        .status-success {
+            background: #d1fae5;
+            color: #065f46;
+            border-left: 4px solid #10b981;
+        }
+        .status-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 4px solid #ef4444;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .back-link:hover {
+            color: #764ba2;
+            transform: translateX(-5px);
+        }
+        .value-display {
+            font-size: 16px;
+            font-weight: bold;
+            color: #667eea;
+            min-width: 80px;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/dashboard" class="back-link">← Back to Dashboard</a>
+        
+        <h1>📏 ROI Editor - People Counter</h1>
+        <p class="subtitle">Adjust the counting line position (vertical line for IN/OUT detection)</p>
+        
+        <div class="controls">
+            <div class="slider-container">
+                <label style="font-weight: 600; color: #374151;">Counting Line Position:</label>
+                <input type="range" min="0" max="100" value="38" class="slider" id="lineSlider">
+                <span class="value-display" id="lineValue">38%</span>
+            </div>
+            <button class="btn btn-success" onclick="saveLinePosition()">💾 Save Position</button>
+        </div>
+        
+        <div class="canvas-container">
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="status-message" id="statusMessage"></div>
+        
+        <div class="instructions">
+            <h3>📝 Instructions</h3>
+            <ul>
+                <li><strong>Slider:</strong> Drag to adjust the counting line position (0% = left, 100% = right)</li>
+                <li><strong>Red Line:</strong> This is the counting line - people crossing left→right are counted as IN</li>
+                <li><strong>People crossing right→left:</strong> Counted as OUT</li>
+                <li><strong>Recommended:</strong> Position line at entrance/exit doorway (default: 38%)</li>
+                <li><strong>Save:</strong> Click "Save Position" to apply changes to live feed</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let channelId = new URLSearchParams(window.location.search).get('channel_id');
+        
+        {% if show_selector %}
+        const channels = {{ channels | tojson }};
+        if (channels && channels.length > 0) {
+            const selection = prompt(`Select channel:\n${channels.map((c, i) => `${i+1}. ${c.name} (${c.id})`).join('\n')}\n\nEnter number (1-${channels.length}):`);
+            if (selection) {
+                const idx = parseInt(selection) - 1;
+                if (idx >= 0 && idx < channels.length) {
+                    channelId = channels[idx].id;
+                    window.location.href = `/roi_editor_people?channel_id=${channelId}`;
+                } else {
+                    alert('Invalid selection!');
+                    window.location.href = '/dashboard';
+                }
+            } else {
+                window.location.href = '/dashboard';
+            }
+        } else {
+            alert('No PeopleCounter cameras found!');
+            window.location.href = '/dashboard';
+        }
+        {% else %}
+        channelId = '{{ channel_id }}';
+        console.log('Channel ID initialized:', channelId);
+        if (!channelId || channelId === 'None') {
+            alert('No channel_id provided!');
+            window.location.href = '/dashboard';
+        }
+        {% endif %}
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        const slider = document.getElementById('lineSlider');
+        const lineValue = document.getElementById('lineValue');
+        
+        let linePosition = 0.38; // Default 38%
+        
+        // Load video frame
+        const videoFeed = new Image();
+        let videoUpdateInterval;
+        
+        function startVideoFeed() {
+            canvas.width = 640;
+            canvas.height = 480;
+            
+            videoUpdateInterval = setInterval(() => {
+                videoFeed.src = `/video_feed/PeopleCounter/${channelId}?t=${Date.now()}`;
+            }, 100);
+            
+            videoFeed.onload = function() {
+                if (canvas.width !== videoFeed.width || canvas.height !== videoFeed.height) {
+                    canvas.width = videoFeed.width;
+                    canvas.height = videoFeed.height;
+                }
+                img.src = videoFeed.src;
+                redraw();
+            };
+            
+            videoFeed.onerror = function() {
+                if (!img.complete) {
+                    canvas.width = 640;
+                    canvas.height = 480;
+                    ctx.fillStyle = '#2a2a2a';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '20px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Loading video feed...', canvas.width/2, canvas.height/2);
+                }
+            };
+            
+            loadExistingLinePosition();
+        }
+        
+        function loadExistingLinePosition() {
+            fetch(`/api/get_roi?channel_id=${channelId}&app_name=PeopleCounter`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success && data.roi_points && data.roi_points.line_position) {
+                        linePosition = data.roi_points.line_position;
+                        slider.value = Math.round(linePosition * 100);
+                        lineValue.textContent = `${Math.round(linePosition * 100)}%`;
+                    }
+                    redraw();
+                })
+                .catch(err => {
+                    console.error('Error loading line position:', err);
+                    redraw();
+                });
+        }
+        
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw counting line
+            const lineX = Math.round(canvas.width * linePosition);
+            
+            // Draw line
+            ctx.strokeStyle = '#ef4444';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(lineX, 0);
+            ctx.lineTo(lineX, canvas.height);
+            ctx.stroke();
+            
+            // Draw labels
+            ctx.fillStyle = '#ef4444';
+            ctx.font = 'bold 16px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('COUNTING LINE', lineX, 30);
+            
+            // Draw direction indicators
+            ctx.fillStyle = '#10b981';
+            ctx.font = 'bold 14px Arial';
+            ctx.textAlign = 'right';
+            ctx.fillText('IN →', lineX - 10, canvas.height / 2);
+            
+            ctx.fillStyle = '#ef4444';
+            ctx.textAlign = 'left';
+            ctx.fillText('← OUT', lineX + 10, canvas.height / 2);
+        }
+        
+        slider.addEventListener('input', function() {
+            linePosition = this.value / 100;
+            lineValue.textContent = `${this.value}%`;
+            redraw();
+        });
+        
+        function saveLinePosition() {
+            const roiData = {
+                line_position: linePosition
+            };
+            
+            console.log('Saving line position:', linePosition, 'for channel:', channelId);
+            console.log('Request data:', { channel_id: channelId, app_name: 'PeopleCounter', roi_points: roiData });
+            
+            fetch('/api/set_roi', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    channel_id: channelId,
+                    app_name: 'PeopleCounter',
+                    roi_points: roiData
+                })
+            })
+            .then(r => {
+                console.log('Response status:', r.status);
+                return r.json();
+            })
+            .then(data => {
+                console.log('Response data:', data);
+                if (data.success) {
+                    showStatus(`✅ Counting line position saved at ${Math.round(linePosition * 100)}%! Restart app to apply changes.`, 'success');
+                } else {
+                    showStatus('❌ Failed to save: ' + (data.error || 'Unknown error'), 'error');
+                }
+            })
+            .catch(err => {
+                console.error('Save error:', err);
+                showStatus('❌ Error: ' + err.message, 'error');
+            });
+        }
+        
+        function showStatus(message, type) {
+            const status = document.getElementById('statusMessage');
+            status.textContent = message;
+            status.className = `status-message status-${type}`;
+            status.style.display = 'block';
+            
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 5000);
+        }
+        
+        startVideoFeed();
+    </script>
+</body>
+</html>

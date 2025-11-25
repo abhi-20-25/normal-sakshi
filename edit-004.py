@@ -628,9 +628,12 @@ class PeopleCounterProcessor(threading.Thread):
         
         # LINE CROSSING APPROACH - Simple & Reliable!
         self.previous_centroids = []  # List of (x, y) from previous frame
-        self.counting_line_position = 0.45  # Line at 45% (LEFT=0-45%, RIGHT=45-100%)
+        self.counting_line_position = 0.38  # Default: Line at 38% (LEFT=0-38%, RIGHT=38-100%)
         self.cooldown_zones = {}  # {(approx_x, approx_y): timestamp} to prevent double counting
         self.cooldown_duration = 0.8  # 800ms cooldown per zone
+        
+        # Load counting line position from database
+        self._load_line_position_from_db()
         
         self.counts = {'in': 0, 'out': 0}
         self.current_hour = datetime.now(IST).hour
@@ -647,6 +650,12 @@ class PeopleCounterProcessor(threading.Thread):
             'hourly_data': hourly_data
         })
 
+    def update_line_position(self, new_position):
+        """Update counting line position from ROI editor"""
+        with self.lock:
+            self.counting_line_position = new_position
+            logging.info(f"🎯 PeopleCounter {self.channel_name} line position updated to {new_position*100:.0f}%")
+    
     def stop(self): self.is_running = False
     def shutdown(self):
         logging.info(f"Shutting down PeopleCounter for {self.channel_name}. Saving final counts...")
@@ -681,6 +690,24 @@ class PeopleCounterProcessor(threading.Thread):
                 logging.error(f"Failed to fetch hourly data: {e}")
         
         return hourly_data
+
+    def _load_line_position_from_db(self):
+        """Load counting line position from database"""
+        if not db_connected: return
+        try:
+            with SessionLocal() as db:
+                roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='PeopleCounter').first()
+                if roi_record and roi_record.roi_points:
+                    points = json.loads(roi_record.roi_points)
+                    if 'line_position' in points:
+                        self.counting_line_position = points['line_position']
+                        logging.info(f"✅ Loaded counting line position: {self.counting_line_position*100:.0f}% for {self.channel_name}")
+                    else:
+                        logging.info(f"Using default counting line position: 45% for {self.channel_name}")
+                else:
+                    logging.info(f"No saved line position found, using default: 45% for {self.channel_name}")
+        except Exception as e:
+            logging.error(f"Error loading line position: {e}. Using default 45%")
 
     def _load_initial_counts(self):
         if not db_connected: return
@@ -883,45 +910,45 @@ class PeopleCounterProcessor(threading.Thread):
                 # Create annotated frame with person bounding boxes only
                 annotated_frame = frame.copy()
                 
-                # Draw counting line at 45%
-                frame_width = frame.shape[1]
-                frame_height = frame.shape[0]
-                counting_line_x = int(frame_width * self.counting_line_position)
-                cv2.line(annotated_frame, (counting_line_x, 0), (counting_line_x, frame_height), (0, 0, 255), 3)
-                cv2.putText(annotated_frame, "COUNTING LINE", (counting_line_x + 10, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                cv2.putText(annotated_frame, "IN ->", (counting_line_x - 80, frame_height // 2),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                cv2.putText(annotated_frame, "<- OUT", (counting_line_x + 10, frame_height // 2),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                # Counting line visualization removed for cleaner view
+                # frame_width = frame.shape[1]
+                # frame_height = frame.shape[0]
+                # counting_line_x = int(frame_width * self.counting_line_position)
+                # cv2.line(annotated_frame, (counting_line_x, 0), (counting_line_x, frame_height), (0, 0, 255), 3)
+                # cv2.putText(annotated_frame, "COUNTING LINE", (counting_line_x + 10, 30),
+                #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                # cv2.putText(annotated_frame, "IN ->", (counting_line_x - 80, frame_height // 2),
+                #            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                # cv2.putText(annotated_frame, "<- OUT", (counting_line_x + 10, frame_height // 2),
+                #            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
                 
-                # Draw only valid person detections (filtered)
-                if r0 is not None and getattr(r0, 'boxes', None) is not None:
-                    boxes = r0.boxes
-                    frame_area = frame.shape[0] * frame.shape[1]
-                    min_box_area = frame_area * 0.003
-                    max_box_area = frame_area * 0.9
-                    min_confidence = 0.20
-                    
-                    for i in range(len(boxes)):
-                        box = boxes.xyxy[i].cpu().numpy()
-                        x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                        conf = float(boxes.conf[i].cpu())
-                        
-                        box_width = x2 - x1
-                        box_height = y2 - y1
-                        box_area = box_width * box_height
-                        aspect_ratio = box_height / box_width if box_width > 0 else 0
-                        
-                        is_person_shaped = 1.2 <= aspect_ratio <= 4.0
-                        is_valid_size = min_box_area <= box_area <= max_box_area
-                        is_confident = conf >= min_confidence
-                        
-                        # Draw only valid person boxes
-                        if is_person_shaped and is_valid_size and is_confident:
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            label = f"Person {conf:.2f}"
-                            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                # Person bounding boxes removed for cleaner view
+                # if r0 is not None and getattr(r0, 'boxes', None) is not None:
+                #     boxes = r0.boxes
+                #     frame_area = frame.shape[0] * frame.shape[1]
+                #     min_box_area = frame_area * 0.003
+                #     max_box_area = frame_area * 0.9
+                #     min_confidence = 0.20
+                #     
+                #     for i in range(len(boxes)):
+                #         box = boxes.xyxy[i].cpu().numpy()
+                #         x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+                #         conf = float(boxes.conf[i].cpu())
+                #         
+                #         box_width = x2 - x1
+                #         box_height = y2 - y1
+                #         box_area = box_width * box_height
+                #         aspect_ratio = box_height / box_width if box_width > 0 else 0
+                #         
+                #         is_person_shaped = 1.2 <= aspect_ratio <= 4.0
+                #         is_valid_size = min_box_area <= box_area <= max_box_area
+                #         is_confident = conf >= min_confidence
+                #         
+                #         # Draw only valid person boxes
+                #         if is_person_shaped and is_valid_size and is_confident:
+                #             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                #             label = f"Person {conf:.2f}"
+                #             cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
                 with self.lock: self.latest_frame = annotated_frame.copy()
                 hourly_data = self._get_hourly_data()
@@ -2132,6 +2159,22 @@ def roi_editor():
     
     return render_template('roi_editor.html', channel_id=channel_id, show_selector=False)
 
+@app.route('/roi_editor_people')
+@login_required
+def roi_editor_people():
+    """ROI Editor page for PeopleCounter counting line"""
+    channel_id = request.args.get('channel_id')
+    if not channel_id:
+        # Show available channels
+        app_configs = get_app_configs()
+        people_channels = app_configs.get('PeopleCounter', {}).get('channels', [])
+        if len(people_channels) == 1:
+            # Auto-redirect to the only available channel
+            return redirect(f'/roi_editor_people?channel_id={people_channels[0]["id"]}')
+        return render_template('roi_editor_people.html', channels=people_channels, show_selector=True)
+    
+    return render_template('roi_editor_people.html', channel_id=channel_id, show_selector=False)
+
 @app.route('/api/set_roi', methods=['POST'])
 @login_required
 def set_roi():
@@ -2151,13 +2194,21 @@ def set_roi():
 
             processors = stream_processors.get(channel_id, [])
             target_class = None
-            if app_name == 'QueueMonitor': target_class = QueueMonitorProcessor
+            if app_name == 'QueueMonitor': 
+                target_class = QueueMonitorProcessor
+            elif app_name == 'PeopleCounter':
+                target_class = PeopleCounterProcessor
             
             if target_class:
                 for p in processors:
-                    if isinstance(p, target_class) and hasattr(p, 'update_roi'):
-                        p.update_roi(roi_points)
-                        logging.info(f"Sent live ROI update to {app_name} for {channel_id}")
+                    if isinstance(p, target_class):
+                        if app_name == 'QueueMonitor' and hasattr(p, 'update_roi'):
+                            p.update_roi(roi_points)
+                            logging.info(f"Sent live ROI update to {app_name} for {channel_id}")
+                        elif app_name == 'PeopleCounter' and hasattr(p, 'update_line_position'):
+                            line_pos = roi_points.get('line_position', 0.38)
+                            p.update_line_position(line_pos)
+                            logging.info(f"Sent live line position update to {app_name} for {channel_id}")
                         break
 
             return jsonify({"success": True, "message": "ROI updated successfully."})
