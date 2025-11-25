@@ -1,0 +1,230 @@
+[
+  {
+    "timestamp": "2025-11-19T18:30:28.737446",
+    "cpu": {
+      "overall_percent": 0.7,
+      "core_count": 12,
+      "physical_cores": 6,
+      "per_core_percent": {
+        "core_0": 1.0,
+        "core_1": 0.0,
+        "core_2": 2.0,
+        "core_3": 1.0,
+        "core_4": 1.0,
+        "core_5": 3.0,
+        "core_6": 1.0,
+        "core_7": 0.0,
+        "core_8": 0.0,
+        "core_9": 2.0,
+        "core_10": 0.0,
+        "core_11": 0.0
+      },
+      "user_percent": 0.2,
+      "system_percent": 0.4,
+      "idle_percent": 99.3,
+      "frequency_mhz": 2688.0,
+      "load_average": {
+        "1_min": 0.1,
+        "5_min": 0.23,
+        "15_min": 0.34
+      }
+    },
+    "memory": {
+      "total_gb": 5.65,
+      "used_gb": 2.98,
+      "available_gb": 2.67,
+      "percent": 52.7
+    },
+    "process_count": 48
+  },
+  {
+    "timestamp": "2025-11-19T18:31:19.806381",
+    "cpu": {
+      "overall_percent": 0.4,
+      "core_count": 12,
+      "physical_cores": 6,
+      "per_core_percent": {
+        "core_0": 2.0,
+        "core_1": 0.0,
+        "core_2": 0.0,
+        "core_3": 1.0,
+        "core_4": 1.0,
+        "core_5": 0.0,
+        "core_6": 1.0,
+        "core_7": 0.0,
+        "core_8": 1.0,
+        "core_9": 0.0,
+        "core_10": 0.0,
+        "core_11": 0.0
+      },
+      "user_percent": 0.1,
+      "system_percent": 0.2,
+      "idle_percent": 99.6,
+      "frequency_mhz": 2688.0,
+      "load_average": {
+        "1_min": 0.04,
+        "5_min": 0.19,
+        "15_min": 0.32
+      }
+    },
+    "memory": {
+      "total_gb": 5.65,
+      "used_gb": 2.98,
+      "available_gb": 2.67,
+      "percent": 52.7
+    },
+    "process_count": 45
+  },
+  {
+    "timestamp": "2025-11-19T18:32:10.832613",
+    "cpu": {
+      "overall_percent": 0.4,
+      "core_count": 12,
+      "physical_cores": 6,
+      "per_core_percent": {
+        "core_0": 0.0,
+        "core_1": 0.0,
+        "core_2": 0.0,
+        "core_3": 1.0,
+        "core_4": 0.0,
+        "core_5": 2.0,
+        "core_6": 0.0,
+        "core_7": 0.0,
+        "core_8": 3.0,
+        "core_9": 0.0,
+        "core_10": 0.0,
+        "core_11": 1.0
+      },
+      "user_percent": 0.2,
+      "system_percent": 0.2,
+      "idle_percent": 99.6,
+      "frequency_mhz": 2688.0,
+      "load_average": {
+        "1_min": 0.05,
+        "5_min": 0.17,
+        "15_min": 0.3
+      }
+    },
+    "memory": {
+      "total_gb": 5.65,
+      "used_gb": 2.98,
+      "available_gb": 2.67,
+      "percent": 52.7
+    },
+    "process_count": 45
+  },
+  {
+    "timestamp": "2025-11-19T18:33:01.889296",
+    "cpu": {
+      "overall_percent": 0.4,
+      "core_count": 12,
+      "physical_cores": 6,
+      "per_core_percent": {
+        "core_0": 0.0,
+        "core_1": 0.0,
+        "core_2": 0.0,
+        "core_3": 1.0,
+        "core_4": 0.0,
+        "core_5": 0.0,
+        "core_6": 0.0,
+        "core_7": 0.0,
+        "core_8": 0.0,
+        "core_9": 0.0,
+        "core_10": 0.0,
+        "core_11": 0.0
+      },
+      "user_percent": 0.2,
+      "system_percent": 0.3,
+      "idle_percent": 99.5,
+      "frequency_mhz": 2688.0,
+      "load_average": {
+        "1_min": 0.21,
+        "5_min": 0.19,
+        "15_min": 0.3
+      }
+    },
+    "memory": {
+      "total_gb": 5.65,
+      "used_gb": 2.98,
+      "available_gb": 2.67,
+      "percent": 52.7
+    },
+    "process_count": 45
+  },
+  {
+    "timestamp": "2025-11-19T18:33:52.945234",
+    "cpu": {
+      "overall_percent": 0.4,
+      "core_count": 12,
+      "physical_cores": 6,
+      "per_core_percent": {
+        "core_0": 4.0,
+        "core_1": 1.0,
+        "core_2": 2.0,
+        "core_3": 6.9,
+        "core_4": 0.0,
+        "core_5": 1.0,
+        "core_6": 1.0,
+        "core_7": 0.0,
+        "core_8": 1.0,
+        "core_9": 8.8,
+        "core_10": 0.0,
+        "core_11": 1.0
+      },
+      "user_percent": 0.2,
+      "system_percent": 0.2,
+      "idle_percent": 99.6,
+      "frequency_mhz": 2688.0,
+      "load_average": {
+        "1_min": 0.09,
+        "5_min": 0.16,
+        "15_min": 0.28
+      }
+    },
+    "memory": {
+      "total_gb": 5.65,
+      "used_gb": 2.98,
+      "available_gb": 2.67,
+      "percent": 52.8
+    },
+    "process_count": 48
+  },
+  {
+    "timestamp": "2025-11-19T18:34:44.000382",
+    "cpu": {
+      "overall_percent": 0.4,
+      "core_count": 12,
+      "physical_cores": 6,
+      "per_core_percent": {
+        "core_0": 1.0,
+        "core_1": 0.0,
+        "core_2": 0.0,
+        "core_3": 0.0,
+        "core_4": 0.0,
+        "core_5": 0.0,
+        "core_6": 0.0,
+        "core_7": 0.0,
+        "core_8": 1.0,
+        "core_9": 0.0,
+        "core_10": 0.0,
+        "core_11": 0.0
+      },
+      "user_percent": 0.1,
+      "system_percent": 0.3,
+      "idle_percent": 99.5,
+      "frequency_mhz": 2688.0,
+      "load_average": {
+        "1_min": 0.38,
+        "5_min": 0.22,
+        "15_min": 0.29
+      }
+    },
+    "memory": {
+      "total_gb": 5.65,
+      "used_gb": 2.98,
+      "available_gb": 2.67,
+      "percent": 52.7
+    },
+    "process_count": 45
+  }
+]

@@ -883,6 +883,18 @@ class PeopleCounterProcessor(threading.Thread):
                 # Create annotated frame with person bounding boxes only
                 annotated_frame = frame.copy()
                 
+                # Draw counting line at 45%
+                frame_width = frame.shape[1]
+                frame_height = frame.shape[0]
+                counting_line_x = int(frame_width * self.counting_line_position)
+                cv2.line(annotated_frame, (counting_line_x, 0), (counting_line_x, frame_height), (0, 0, 255), 3)
+                cv2.putText(annotated_frame, "COUNTING LINE", (counting_line_x + 10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, "IN ->", (counting_line_x - 80, frame_height // 2),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.putText(annotated_frame, "<- OUT", (counting_line_x + 10, frame_height // 2),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+                
                 # Draw only valid person detections (filtered)
                 if r0 is not None and getattr(r0, 'boxes', None) is not None:
                     boxes = r0.boxes
@@ -984,10 +996,30 @@ class QueueMonitorProcessor(threading.Thread):
     #         else:
     #             logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
     #             self._use_fallback_roi()
-    # REPLACE IT WITH THIS
     def _load_roi_from_db(self):
-        logging.info(f"BACKEND_FIX: Forcing use of hardcoded ROI for {self.channel_name}")
-        self._use_fallback_roi()
+        """Load ROI from database"""
+        with SessionLocal() as db:
+            roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
+            if roi_record and roi_record.roi_points:
+                try:
+                    points = json.loads(roi_record.roi_points)
+                    self.normalized_main_roi = points.get("main", [])
+                    self.normalized_secondary_roi = points.get("secondary", [])
+                    
+                    # Initialize with empty polygons - will be converted to pixels in run() method
+                    self.roi_poly = Polygon([])
+                    self.secondary_roi_poly = Polygon([])
+                    
+                    logging.info(f"✅ Loaded custom ROI for QueueMonitor {self.channel_name} from database.")
+                    logging.info(f"   Main ROI: {len(self.normalized_main_roi)} points")
+                    logging.info(f"   Secondary ROI: {len(self.normalized_secondary_roi)} points")
+                    return
+                except (json.JSONDecodeError, TypeError) as e:
+                    logging.error(f"Failed to parse ROI JSON from DB: {e}. Using fallback.")
+                    self._use_fallback_roi()
+            else:
+                logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
+                self._use_fallback_roi()
 
     def _use_fallback_roi(self):
         fallback_config = QUEUE_MONITOR_ROI_CONFIG.get(self.channel_name, {})
@@ -1020,10 +1052,36 @@ class QueueMonitorProcessor(threading.Thread):
             try:
                 self.normalized_main_roi = new_roi_points.get("main", [])
                 self.normalized_secondary_roi = new_roi_points.get("secondary", [])
-                logging.info(f"QueueMonitor {self.channel_name} received new ROI config.")
-                # Reset the flag so ROI polygons will be updated on next frame
+                
+                # Force immediate polygon update
+                if self.latest_frame is not None:
+                    h, w = self.latest_frame.shape[:2]
+                    
+                    # Update main ROI polygon
+                    if self.normalized_main_roi and len(self.normalized_main_roi) >= 3:
+                        pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi]
+                        self.roi_poly = Polygon(pixel_coords)
+                        if not self.roi_poly.is_valid:
+                            self.roi_poly = self.roi_poly.buffer(0)
+                        logging.info(f"✅ Updated main ROI: {len(pixel_coords)} points")
+                    
+                    # Update secondary ROI polygon
+                    if self.normalized_secondary_roi and len(self.normalized_secondary_roi) >= 3:
+                        pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi]
+                        self.secondary_roi_poly = Polygon(pixel_coords)
+                        if not self.secondary_roi_poly.is_valid:
+                            self.secondary_roi_poly = self.secondary_roi_poly.buffer(0)
+                        logging.info(f"✅ Updated secondary ROI: {len(pixel_coords)} points")
+                
+                logging.info(f"🎯 QueueMonitor {self.channel_name} ROI updated successfully!")
+                
+                # Reset the flag so ROI polygons will be logged again
                 if hasattr(self, '_roi_logged_once'):
                     delattr(self, '_roi_logged_once')
+                if hasattr(self, '_roi_warning_logged'):
+                    delattr(self, '_roi_warning_logged')
+                if hasattr(self, '_secondary_roi_warning_logged'):
+                    delattr(self, '_secondary_roi_warning_logged')
             except Exception as e:
                 logging.error(f"Error updating ROI for {self.channel_name}: {e}")
 
@@ -1355,6 +1413,8 @@ class QueueMonitorProcessor(threading.Thread):
 
         # Create annotated frame with person bounding boxes
         annotated_frame = frame.copy()
+        
+        # ROI boxes hidden for better user experience - only person detections shown
         
         # Draw person bounding boxes
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
@@ -2054,6 +2114,23 @@ def get_history(app_name):
         except Exception as e:
             logging.error(f"Error fetching history: {e}")
             return jsonify({"error": "Could not fetch history from database"}), 500
+
+@app.route('/roi_editor')
+@login_required
+def roi_editor():
+    """ROI Editor page for drawing queue monitor regions"""
+    # Get channel_id from query params or show channel selector
+    channel_id = request.args.get('channel_id')
+    if not channel_id:
+        # Show available channels
+        app_configs = get_app_configs()
+        queue_channels = app_configs.get('QueueMonitor', {}).get('channels', [])
+        if len(queue_channels) == 1:
+            # Auto-redirect to the only available channel
+            return redirect(f'/roi_editor?channel_id={queue_channels[0]["id"]}')
+        return render_template('roi_editor.html', channels=queue_channels, show_selector=True)
+    
+    return render_template('roi_editor.html', channel_id=channel_id, show_selector=False)
 
 @app.route('/api/set_roi', methods=['POST'])
 @login_required

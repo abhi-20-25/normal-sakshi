@@ -89,6 +89,11 @@ class KitchenComplianceProcessor(threading.Thread):
         self.last_socketio_emit = 0  # Track last SocketIO emit time
         self.alert_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="KitchenAlert")  # Limit concurrent alerts
         self.phone_detected_frames = 0  # Track consecutive frames with phone detected
+        
+        # FPS tracking
+        self.fps_start_time = time.time()
+        self.fps_frame_count = 0
+        self.current_fps = 0.0
 
     @staticmethod
     def initialize_tables(engine):
@@ -220,9 +225,17 @@ class KitchenComplianceProcessor(threading.Thread):
             current_time = time.time()
             annotated_frame = frame.copy()
             
+            # Calculate FPS
+            self.fps_frame_count += 1
+            elapsed_time = current_time - self.fps_start_time
+            if elapsed_time >= 1.0:  # Update FPS every second
+                self.current_fps = self.fps_frame_count / elapsed_time
+                self.fps_frame_count = 0
+                self.fps_start_time = current_time
+            
             # Log every 100 frames (about every 3 seconds at 30 FPS)
             if frame_count % 100 == 0:
-                logging.info(f"Kitchen {self.channel_name}: ✅ ALIVE - Processing frame {frame_count}")
+                logging.info(f"Kitchen {self.channel_name}: ✅ ALIVE - Processing frame {frame_count} | FPS: {self.current_fps:.1f}")
 
             # --- Run Inferences (NO TRACKING - Direct Detection Only) ---
             try:
@@ -251,6 +264,10 @@ class KitchenComplianceProcessor(threading.Thread):
 
             # Draw header info
             h, w = annotated_frame.shape[:2]
+            
+            # Display FPS in top-right corner
+            cv2.putText(annotated_frame, f"FPS: {self.current_fps:.1f}", (w-120, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             # --- Process Each Person (Direct Detection - No Tracking) ---
             if person_results and person_results[0].boxes is not None and len(person_results[0].boxes) > 0:
