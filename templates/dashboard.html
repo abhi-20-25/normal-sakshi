@@ -394,6 +394,10 @@
       </div>
       <div id="occupancy-section" class="section">
         <button class="back-btn" onclick="switchView('overview')">← Back</button>
+        
+        <!-- Status Banner -->
+        <div id="occupancy-status-banner" style="display: none; padding: 15px 20px; margin-bottom: 20px; border-radius: 8px; font-weight: 600; font-size: 16px; text-align: center; animation: fadeIn 0.3s;"></div>
+        
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
@@ -985,6 +989,34 @@ socket.on('occupancy_update', (data) => {
     // Update avg today
     const avgEl = document.getElementById('ov-occ-avg');
     if (avgEl) avgEl.textContent = avgToday;
+    
+    // Update status banner
+    const banner = document.getElementById('occupancy-status-banner');
+    if (banner && data.banner_text) {
+      banner.textContent = data.banner_text;
+      banner.style.display = 'block';
+      
+      // Set banner color based on status
+      if (data.status === 'OK') {
+        banner.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+        banner.style.color = 'white';
+        banner.style.borderLeft = '5px solid #047857';
+      } else if (data.status === 'BELOW_REQUIREMENT') {
+        banner.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+        banner.style.color = 'white';
+        banner.style.borderLeft = '5px solid #b91c1c';
+      } else if (data.status === 'PAUSED') {
+        banner.style.background = 'linear-gradient(135deg, #10b981 0%, #3b82f6 100%)';
+        banner.style.color = 'white';
+        banner.style.borderLeft = '5px solid #047857';
+      } else {
+        banner.style.background = 'linear-gradient(135deg, #6b7280 0%, #4b5563 100%)';
+        banner.style.color = 'white';
+        banner.style.borderLeft = '5px solid #374151';
+      }
+    } else if (banner) {
+      banner.style.display = 'none';
+    }
     
     // Update progress bar
     const barEl = document.getElementById('ov-occ-bar');

@@ -1794,6 +1794,18 @@ class OccupancyMonitorProcessor(threading.Thread):
         except Exception as e:
             logging.debug(f"Error calculating occupancy stats: {e}")
         
+        # Generate banner text based on status
+        banner_text = ""
+        if status == 'OK':
+            banner_text = f"✅ REQUIREMENT MET - {self.live_count}/{self.required_count} people present"
+        elif status == 'BELOW_REQUIREMENT':
+            shortage = self.required_count - self.live_count
+            banner_text = f"⚠️ ALERT: {shortage} people short! ({self.live_count}/{self.required_count} present)"
+        elif status == 'PAUSED':
+            banner_text = f"✅ REQUIREMENT MET - Monitoring paused"
+        elif status == 'NO_SCHEDULE':
+            banner_text = "ℹ️ No schedule configured for this time"
+        
         # Emit to dashboard via SocketIO
         self.socketio.emit('occupancy_update', {
             'channel_id': self.channel_id,
@@ -1803,7 +1815,8 @@ class OccupancyMonitorProcessor(threading.Thread):
             'required_count': self.required_count,
             'status': status,
             'max_today': max_today,
-            'avg_today': avg_today
+            'avg_today': avg_today,
+            'banner_text': banner_text
         })
         
         return status
@@ -1879,26 +1892,7 @@ class OccupancyMonitorProcessor(threading.Thread):
                 
                 self.live_count, annotated_frame = self._detect_people(frame)
                 
-                # Add comprehensive info overlay
-                cv2.putText(annotated_frame, f"Live: {self.live_count} | Required: {self.required_count}", 
-                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(annotated_frame, self.current_time_slot, (10, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                cv2.putText(annotated_frame, f"Device: {self.device.upper()} | Conf: 0.15", (10, 90),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                
-                # Add alert overlay if below requirement
-                if self.required_count > 0 and self.live_count < self.required_count:
-                    cv2.rectangle(annotated_frame, (0, 0), (annotated_frame.shape[1], 120), (0, 0, 255), -1)
-                    cv2.putText(annotated_frame, f"ALERT: {self.required_count - self.live_count} people short!", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                
-                # Add "OK" indicator if requirement met
-                elif self.required_count > 0 and self.live_count >= self.required_count:
-                    cv2.rectangle(annotated_frame, (0, 0), (annotated_frame.shape[1], 120), (0, 255, 0), -1)
-                    cv2.putText(annotated_frame, f"REQUIREMENT MET! ({self.live_count}/{self.required_count})", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                
+                # Clean video feed - no overlays for better user experience
                 with self.lock:
                     self.latest_frame = annotated_frame
                 
@@ -1906,51 +1900,18 @@ class OccupancyMonitorProcessor(threading.Thread):
                 self._check_occupancy_requirement()
                 
             elif should_detect:
-                # Between YOLO detections - still show smooth video with last detection overlay
-                # This ensures smooth streaming without frame skip
+                # Between YOLO detections - smooth video without overlays
                 display_frame = frame.copy()
                 
-                # Reapply last detection info (smooth display)
-                cv2.putText(display_frame, f"Live: {self.live_count} | Required: {self.required_count}", 
-                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(display_frame, self.current_time_slot, (10, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                cv2.putText(display_frame, f"Device: {self.device.upper()} | Conf: 0.15", (10, 90),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                
-                # Add status banner
-                if self.required_count > 0 and self.live_count < self.required_count:
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (0, 0, 255), -1)
-                    cv2.putText(display_frame, f"ALERT: {self.required_count - self.live_count} people short!", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                elif self.required_count > 0:
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (0, 255, 0), -1)
-                    cv2.putText(display_frame, f"REQUIREMENT MET! ({self.live_count}/{self.required_count})", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                
+                # Clean video feed - no overlays
                 with self.lock:
                     self.latest_frame = display_frame
                     
             else:
-                # PAUSED/NO SCHEDULE - Show status on frame
+                # PAUSED/NO SCHEDULE - Clean video feed
                 display_frame = frame.copy()
                 
-                if detection_status == "NO_SCHEDULE":
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (100, 100, 100), -1)
-                    cv2.putText(display_frame, "NO SCHEDULE FOR THIS TIME", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                elif detection_status == "PAUSED_REQ_MET":
-                    time_paused = int(time.time() - self.requirement_met_time)
-                    time_remaining = self.pause_after_met_duration - time_paused
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (0, 200, 0), -1)
-                    cv2.putText(display_frame, f"REQUIREMENT MET - PAUSED", 
-                              (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                    cv2.putText(display_frame, f"Resuming in {time_remaining}s", 
-                              (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                
-                cv2.putText(display_frame, f"Time: {self.current_time_slot}", (10, 110),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-                
+                # No overlays - clean video
                 with self.lock:
                     self.latest_frame = display_frame
             
