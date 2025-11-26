@@ -1404,9 +1404,10 @@ class QueueMonitorProcessor(threading.Thread):
                 if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
                     persons_in_queue_5sec.append(track_id)
         
-        # Screenshot trigger 1: person waiting > 5 seconds (HIGHEST PRIORITY)
+        # Screenshot trigger 1: person waiting > 5 seconds AND counter is empty (HIGHEST PRIORITY)
         should_screenshot_5sec = (
             len(persons_in_queue_5sec) > 0 and  # Someone waited > 5 seconds
+            valid_secondary_count == 0 and  # Counter is empty
             (current_time - self.last_screenshot_time) > self.screenshot_cooldown
         )
         
