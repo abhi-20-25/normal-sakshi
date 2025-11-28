@@ -10,10 +10,12 @@ load_dotenv()
 
 from fastapi import FastAPI, HTTPException, status, Query, Depends
 from fastapi.responses import JSONResponse
-from sqlalchemy import create_engine, Column, Integer, DateTime, func, desc
+from sqlalchemy import create_engine, Column, Integer, DateTime, func, desc, Float, Text, cast
+from sqlalchemy.orm import aliased
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from pydantic import BaseModel, Field
+from sqlalchemy import Date
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +43,33 @@ class PetpoojaWebhookEvent(Base):
     id = Column(Integer, primary_key=True)
     content = Column(JSONB, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+class SalesStats(BaseModel):
+    date: str
+    total_sales: float
+    order_count: int
+
+class PaymentStats(BaseModel):
+    method: str
+    amount: float
+    count: int
+
+class OrderTypeStats(BaseModel):
+    order_source: str # e.g., POS, Zomato, Swiggy
+    order_type: str   # e.g., Dine In, Delivery
+    count: int
+    total_sales: float
+
+class TopItem(BaseModel):
+    name: str
+    quantity_sold: int
+    total_revenue: float
+
+class DashboardResponse(BaseModel):
+    sales_timeline: List[SalesStats]
+    payment_modes: List[PaymentStats]
+    order_types: List[OrderTypeStats]
+    top_items: List[TopItem]
 
 # Create engine and session
 engine = create_engine(DATABASE_URL)
@@ -488,6 +517,143 @@ def create_petpooja_event_legacy(
         )
     finally:
         db.close()
+
+
+# ANALYTICS - Total Sales Per Day
+@app.get("/analytics/sales-daily", response_model=List[SalesStats], tags=["Analytics"])
+def get_daily_sales(
+    days: int = Query(30, description="Number of past days to analyze"),
+    token: str = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    date_col = cast(
+        func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on'), 
+        DateTime
+    ).cast(Date) 
+
+    total_col = cast(
+        func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'total'),
+        Float
+    )
+
+    results = db.query(
+        date_col.label('date'),
+        func.sum(total_col).label('total_sales'),
+        func.count(PetpoojaWebhookEvent.id).label('order_count')
+    ).filter(
+        PetpoojaWebhookEvent.content['event'].astext == 'orderdetails'
+    ).group_by(
+        date_col
+    ).order_by(
+        desc('date')
+    ).limit(days).all()
+
+    return [
+        SalesStats(
+            date=str(row.date), 
+            total_sales=row.total_sales or 0, 
+            order_count=row.order_count
+        ) for row in results
+    ]
+
+# ANALYTICS - Payment Modes
+@app.get("/analytics/payment-modes", response_model=List[PaymentStats], tags=["Analytics"])
+def get_payment_stats(
+    token: str = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    
+    payment_type_col = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'payment_type')
+    total_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'total'), Float)
+
+    results = db.query(
+        payment_type_col.label('method'),
+        func.sum(total_col).label('amount'),
+        func.count(PetpoojaWebhookEvent.id).label('count')
+    ).filter(
+        PetpoojaWebhookEvent.content['event'].astext == 'orderdetails'
+    ).group_by(
+        payment_type_col
+    ).all()
+
+    return [
+        PaymentStats(
+            method=row.method if row.method else "Unknown",
+            amount=row.amount or 0,
+            count=row.count
+        ) for row in results
+    ]
+
+# ANALYTICS - Order Types (Online vs Offline)
+@app.get("/analytics/order-types", response_model=List[OrderTypeStats], tags=["Analytics"])
+def get_order_type_stats(
+    token: str = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    
+    # order_from usually indicates POS (Offline) vs Zomato/Swiggy (Online)
+    source_col = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'order_from')
+    type_col = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'order_type')
+    total_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'total'), Float)
+
+    results = db.query(
+        source_col.label('order_source'),
+        type_col.label('order_type'),
+        func.count(PetpoojaWebhookEvent.id).label('count'),
+        func.sum(total_col).label('total_sales')
+    ).filter(
+        PetpoojaWebhookEvent.content['event'].astext == 'orderdetails'
+    ).group_by(
+        source_col, type_col
+    ).all()
+
+    return [
+        OrderTypeStats(
+            order_source=row.order_source if row.order_source else "Unknown",
+            order_type=row.order_type if row.order_type else "Unknown",
+            count=row.count,
+            total_sales=row.total_sales or 0
+        ) for row in results
+    ]
+
+# ANALYTICS - Top Selling Items
+@app.get("/analytics/top-items", response_model=List[TopItem], tags=["Analytics"])
+def get_top_items(
+    limit: int = 5,
+    token: str = Depends(verify_token),
+    db: Session = Depends(get_db)
+):
+    
+    items = func.jsonb_array_elements(PetpoojaWebhookEvent.content['properties']['OrderItem']).alias('item')
+    
+    item_name = items.column.op('->>')('name')
+    item_qty = cast(items.column.op('->>')('quantity'), Integer)
+    item_total = cast(items.column.op('->>')('total'), Float)
+
+    results = db.query(
+        item_name.label('name'),
+        func.sum(item_qty).label('quantity_sold'),
+        func.sum(item_total).label('total_revenue')
+    ).select_from(
+        PetpoojaWebhookEvent
+    ).join(
+        items, 
+        PetpoojaWebhookEvent.content['event'].astext == 'orderdetails',
+        isouter=True
+    ).group_by(
+        item_name
+    ).order_by(
+        desc('quantity_sold')
+    ).limit(limit).all()
+
+    return [
+        TopItem(
+            name=row.name if row.name else "Unknown",
+            quantity_sold=row.quantity_sold or 0,
+            total_revenue=row.total_revenue or 0
+        ) for row in results
+    ]
+
 
 if __name__ == "__main__":
     import uvicorn
