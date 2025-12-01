@@ -1367,6 +1367,7 @@ function loadHistory(view, page = 1, violationType = null) {
     .then(data => {
       const histDiv = document.getElementById(h.div);
       const pagDiv = document.getElementById(h.pag);
+      if (!histDiv || !pagDiv) return; // Elements don't exist in current view
       histDiv.innerHTML = '';
       if (data.detections && data.detections.length > 0) {
         data.detections.forEach(det => {
@@ -1385,7 +1386,8 @@ function loadHistory(view, page = 1, violationType = null) {
     })
     .catch(err => {
       console.error(err);
-      document.getElementById(h.div).innerHTML = '<p style="color:#e04b4b;padding:20px;text-align:center">Error loading</p>';
+      const histDiv = document.getElementById(h.div);
+      if (histDiv) histDiv.innerHTML = '<p style="color:#e04b4b;padding:20px;text-align:center">Error loading</p>';
     });
 }
 let currentReportData = null;
