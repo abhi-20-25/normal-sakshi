@@ -320,19 +320,22 @@ class KitchenComplianceProcessor(threading.Thread):
                         for person_box in person_box_coords:
                             px1, py1, px2, py2 = person_box
                             
-                            # Expand person box by 20% to account for slight misalignments
+                            # Expand person box by 50% to account for slight misalignments
                             width = px2 - px1
                             height = py2 - py1
-                            expanded_px1 = px1 - width * 0.2
-                            expanded_py1 = py1 - height * 0.2
-                            expanded_px2 = px2 + width * 0.2
-                            expanded_py2 = py2 + height * 0.2
+                            expanded_px1 = px1 - width * 0.5
+                            expanded_py1 = py1 - height * 0.5
+                            expanded_px2 = px2 + width * 0.5
+                            expanded_py2 = py2 + height * 0.5
                             
                             # Check if violation center is inside expanded person box
                             if (expanded_px1 <= v_center_x <= expanded_px2 and 
                                 expanded_py1 <= v_center_y <= expanded_py2):
                                 is_human_violation = True
                                 break
+                    else:
+                        # If no person detected, allow violation (avoid missing real violations)
+                        is_human_violation = True
                     
                     # Only process violations associated with people
                     if is_human_violation:
