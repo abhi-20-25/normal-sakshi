@@ -1,0 +1,32 @@
+{
+  "compliant_classes": [
+    1,
+    3,
+    5
+  ],
+  "violation_classes": [
+    2,
+    4,
+    6,
+    7,
+    8
+  ],
+  "class_descriptions": {
+    "0": "person - base human detection",
+    "1": "uniform - wearing proper uniform (any color)",
+    "2": "without_uniform - VIOLATION: no uniform",
+    "3": "cap_present - wearing chef cap/hat",
+    "4": "without_cap - VIOLATION: no cap",
+    "5": "with_apron - wearing apron",
+    "6": "without_apron - VIOLATION: no apron",
+    "7": "without_gloves - VIOLATION: no gloves",
+    "8": "using_phone - VIOLATION: using mobile phone"
+  },
+  "violation_logic": {
+    "uniform_check": "If class 2 (without_uniform) detected \u2192 VIOLATION",
+    "cap_check": "If class 4 (without_cap) detected \u2192 VIOLATION",
+    "apron_check": "If class 6 (without_apron) detected \u2192 VIOLATION",
+    "gloves_check": "If class 7 (without_gloves) detected \u2192 VIOLATION",
+    "phone_check": "If class 8 (using_phone) detected \u2192 VIOLATION"
+  }
+}

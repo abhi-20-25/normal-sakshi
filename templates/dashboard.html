@@ -71,6 +71,90 @@
     .lightbox.show { display: flex; }
     .lightbox img { max-width: 90%; max-height: 90%; }
     .lightbox-close { position: absolute; top: 20px; right: 35px; color: #fff; font-size: 40px; cursor: pointer; }
+    .bar-chart-container { 
+    height: 180px; 
+    display: flex; 
+    align-items: flex-end; 
+    gap: 12px; 
+    margin-top: 20px; 
+    padding-bottom: 5px;
+    border-bottom: 1px solid #2a2d31;
+}
+.bar-col { 
+    flex: 1; 
+    display: flex; 
+    flex-direction: column; 
+    justify-content: flex-end; 
+    align-items: center; 
+    height: 100%; 
+    position: relative;
+}
+.bar { 
+    width: 100%; 
+    background: linear-gradient(180deg, #5c7ac5 0%, #4557e1 100%); 
+    border-radius: 4px 4px 0 0; 
+    min-height: 4px; 
+    transition: height 0.5s ease; 
+    position: relative; 
+    opacity: 0.8;
+}
+.bar:hover { 
+    opacity: 1; 
+    background: #78c18a;
+}
+.bar-label { 
+    font-size: 11px; 
+    color: #9aa0a6; 
+    text-align: center; 
+    margin-top: 8px;
+}
+.bar-value {
+    font-size: 10px;
+    color: #fff;
+    margin-bottom: 4px;
+    font-weight: 600;
+}
+.bar-tooltip { 
+    position: absolute; 
+    bottom: 100%; 
+    left: 50%; 
+    transform: translateX(-50%); 
+    background: #000; 
+    border: 1px solid #333;
+    padding: 6px 10px; 
+    border-radius: 6px; 
+    font-size: 11px; 
+    display: none; 
+    white-space: nowrap; 
+    z-index: 10; 
+    margin-bottom: 5px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+}
+.bar:hover .bar-tooltip { display: block; }
+
+/* Payment Mode List Styles */
+.pie-row { 
+    display: flex; 
+    justify-content: space-between; 
+    align-items: center; 
+    padding: 12px 0; 
+    border-bottom: 1px solid #2a2d31; 
+}
+.pie-row:last-child { border-bottom: none; }
+
+.progress-track { 
+    flex: 1; 
+    background: #2a2d31; 
+    height: 8px; 
+    border-radius: 4px; 
+    margin: 0 15px; 
+    overflow: hidden;
+}
+.progress-fill { 
+    height: 100%; 
+    border-radius: 4px; 
+    transition: width 1s ease;
+}
   </style>
 </head>
 <body>
@@ -84,6 +168,10 @@
         <a href="#" data-view="overview" class="nav-link active">
           <div class="icon">🏠</div><div>Overview</div>
         </a>
+        <div class="section-title">ANALYTICS</div>
+        <a href="#" data-view="sales-analytics" class="nav-link">
+          <div class="icon">💰</div><div>Sales Analytics</div>
+        </a>
         <div class="section-title">APPLICATIONS</div>
         <a href="#" data-view="people-counter" class="nav-link">
           <div class="icon">👥</div><div>People Counter</div>
@@ -93,6 +181,9 @@
         </a>
         <a href="#" data-view="kitchen-compliance" class="nav-link">
           <div class="icon">👨‍🍳</div><div>Kitchen Compliance</div>
+        </a>
+        <a href="#" data-view="front-end-violation" class="nav-link">
+          <div class="icon">🚨</div><div>Front Office Violation</div>
         </a>
         <a href="#" data-view="occupancy" class="nav-link">
           <div class="icon">📊</div><div>Occupancy</div>
@@ -274,6 +365,72 @@
           </div>
         </section>
       </div>
+
+      <!-- SALES ANALYTICS SECTION -->
+      <div id="sales-analytics-section" class="section">
+        <div style="display: flex; justify-content: flex-end; margin-bottom: 10px;">
+            <button onclick="loadSalesData()" style="background: #2b3bff; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Refresh Data 🔄</button>
+        </div>
+        
+        <!-- KPI Cards -->
+        <div class="stats-row">
+            <div class="stat-card">
+              <h4>Total Sales (Today)</h4>
+              <div class="value" style="color:#26a44b" id="sa-total-sales">₹0</div>
+            </div>
+            <div class="stat-card">
+              <h4>Total Orders (Today)</h4>
+              <div class="value" style="color:#3b82f6" id="sa-order-count">0</div>
+            </div>
+            <div class="stat-card">
+              <h4>Avg. Order Value</h4>
+              <div class="value" style="color:#f59e0b" id="sa-avg-value">₹0</div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px;">
+            <!-- Sales Trend -->
+            <div class="report-section" style="margin: 0;">
+                <h3>📅 Sales Trend (Last 7 Days)</h3>
+                <div id="sa-trend-chart" class="bar-chart-container">
+                    <!-- Bars injected via JS -->
+                    <div style="width:100%; text-align:center; color: #555;">Loading...</div>
+                </div>
+            </div>
+
+            <!-- Payment Modes -->
+            <div class="report-section" style="margin: 0;">
+                <h3 id="h-payment">💳 Payment Modes</h3>
+                <div id="sa-payment-modes">
+                    <!-- Payment rows injected via JS -->
+                </div>
+            </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 20px;">
+            <!-- Order Types -->
+            <div class="report-section" style="margin: 0;">
+                <h3 id="h-offline">🛵 Online vs Offline</h3>
+                <div id="sa-order-types">
+                   <!-- Rows injected via JS -->
+                </div>
+            </div>
+
+             <!-- Top Items -->
+             <div class="report-section" style="margin: 0;">
+                <h3 id="h-top-items">🍔 Top 5 Selling Items</h3>
+                <table id="sa-top-items-table">
+                    <thead>
+                        <tr><th>Item Name</th><th>Qty</th><th>Revenue</th></tr>
+                    </thead>
+                    <tbody>
+                        <!-- Rows injected via JS -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+      </div>
+
       <div id="people-counter-section" class="section">
         <button class="back-btn" onclick="switchView('overview')">← Back to Overview</button>
         <div class="stats-row">
@@ -392,6 +549,22 @@
           <div class="pagination" id="kc-pagination"></div>
         </div>
       </div>
+      <div id="front-end-violation-section" class="section">
+        <button class="back-btn" onclick="switchView('overview')">← Back</button>
+        <div class="video-container">
+          <div class="video-box">
+            <div class="video-feed">
+              <img src="/video_feed/Generic/cam_f948cba9d4">
+            </div>
+            <div class="video-meta"><strong>Front Office Violation</strong></div>
+          </div>
+        </div>
+        <div class="report-section">
+          <h3>Detection History</h3>
+          <div class="history-grid" id="fev-history"></div>
+          <div class="pagination" id="fev-pagination"></div>
+        </div>
+      </div>
       <div id="occupancy-section" class="section">
         <button class="back-btn" onclick="switchView('overview')">← Back</button>
         
@@ -465,10 +638,17 @@
     </div>
   </div>
   <script>
-const channels = {
+
+    const FASTAPI_URL = 'http://127.0.0.1:8000';
+
+    const API_TOKEN = 'premji07';
+
+    const channels = {
   'PeopleCounter': 'cam_3df702bb28',
   'QueueMonitor': 'cam_f822b0bf4e',
   'KitchenCompliance': 'cam_c6ef0fb589',
+  'Generic': 'cam_f948cba9d4',
+  'RawFeed': 'cam_f948cba9d4',
   'OccupancyMonitor': 'cam_d77ace3828'
 };
 let socket = io();
@@ -1135,9 +1315,11 @@ function switchView(view) {
   document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
   const viewMap = {
     'overview': { id: 'overview-section', title: 'Dashboard Overview', subtitle: 'Real-time monitoring' },
+    'sales-analytics': { id: 'sales-analytics-section', title: 'Sales Analytics', subtitle: 'Revenue & Orders' },
     'people-counter': { id: 'people-counter-section', title: 'People Counter', subtitle: 'Footfall analytics' },
     'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue analytics' },
     'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Safety monitoring' },
+    'front-end-violation': { id: 'front-end-violation-section', title: 'Front Office Violation', subtitle: 'Violation detection' },
     'occupancy': { id: 'occupancy-section', title: 'Kitchen Attendance', subtitle: 'Attendance tracking' }
   };
   const config = viewMap[view];
@@ -1146,7 +1328,11 @@ function switchView(view) {
     document.querySelector('[data-view="' + view + '"]').classList.add('active');
     document.getElementById('page-title').textContent = config.title;
     document.getElementById('page-subtitle').textContent = config.subtitle;
-    if (view !== 'overview') {
+
+    if (view === 'sales-analytics') {
+        loadSalesData();
+    }
+    if (view !== 'overview' && view !== 'sales-analytics') {
       // Reset filter when switching views normally (not from filterKitchenViolations)
       if (view !== 'kitchen-compliance') {
         currentViolationFilter = null;
@@ -1166,6 +1352,7 @@ function loadHistory(view, page = 1, violationType = null) {
     'people-counter': { app: 'PeopleCounter', ch: channels.PeopleCounter, div: 'pc-history', pag: 'pc-pagination' },
     'queue-monitor': { app: 'QueueMonitor', ch: channels.QueueMonitor, div: 'qm-history', pag: 'qm-pagination' },
     'kitchen-compliance': { app: 'KitchenCompliance', ch: channels.KitchenCompliance, div: 'kc-history', pag: 'kc-pagination' },
+    'front-end-violation': { app: 'Generic', ch: channels.Generic, div: 'fev-history', pag: 'fev-pagination' },
     'occupancy': { app: 'OccupancyMonitor', ch: channels.OccupancyMonitor, div: 'occ-history', pag: 'occ-pagination' }
   };
   const h = histMap[view];
@@ -1445,6 +1632,176 @@ document.addEventListener('DOMContentLoaded', () => {
   // Refresh peak analytics every 5 minutes
   setInterval(loadPeakAnalytics, 5 * 60 * 1000);
 });
+
+async function loadSalesData() {
+    console.log("Fetching sales data...");
+    updateMonthHeaders();
+
+    try {
+        // 1. Fetch Daily Sales (Last 7 days)
+        const salesRes = await fetch(`${FASTAPI_URL}/analytics/sales-daily?days=7&token=${API_TOKEN}`);
+        const salesData = await salesRes.json();
+        renderSalesTrend(salesData);
+        
+        // Update Top Cards (Today's data is index 0 usually)
+        if(salesData.length > 0) {
+            // Determine if the first record is today
+            const todayStr = new Date().toISOString().split('T')[0];
+            const todayRecord = salesData.find(d => d.date === todayStr) || { total_sales: 0, order_count: 0 };
+            
+            document.getElementById('sa-total-sales').textContent = '₹' + todayRecord.total_sales.toFixed(0);
+            document.getElementById('sa-order-count').textContent = todayRecord.order_count;
+            const avg = todayRecord.order_count > 0 ? (todayRecord.total_sales / todayRecord.order_count) : 0;
+            document.getElementById('sa-avg-value').textContent = '₹' + avg.toFixed(0);
+        }
+
+        // 2. Fetch Payment Modes
+        const payRes = await fetch(`${FASTAPI_URL}/analytics/payment-modes?token=${API_TOKEN}`);
+        const payData = await payRes.json();
+        renderPaymentModes(payData);
+
+        // 3. Fetch Order Types (Online/Offline)
+        const typeRes = await fetch(`${FASTAPI_URL}/analytics/order-types?token=${API_TOKEN}`);
+        const typeData = await typeRes.json();
+        renderOrderTypes(typeData);
+
+        // 4. Fetch Top Items
+        const itemRes = await fetch(`${FASTAPI_URL}/analytics/top-items?limit=5&token=${API_TOKEN}`);
+        const itemData = await itemRes.json();
+        renderTopItems(itemData);
+
+    } catch (error) {
+        console.error("Error fetching sales data:", error);
+    }
+}
+
+function renderSalesTrend(data) {
+    const container = document.getElementById('sa-trend-chart');
+    if(!container) return;
+    container.innerHTML = '';
+    
+    // Show last 7 days from data
+    const sortedData = [...data].reverse(); 
+    
+    // Find max value to calculate bar heights relative to the highest sale
+    const maxVal = Math.max(...sortedData.map(d => d.total_sales), 100);
+
+    if (sortedData.length === 0) {
+        container.innerHTML = '<div style="width:100%; text-align:center; color:#555; align-self:center;">No recent sales data</div>';
+        return;
+    }
+
+    sortedData.forEach(d => {
+        // Calculate height percentage (ensure it's at least 2px so it's visible)
+        const heightPct = Math.max((d.total_sales / maxVal) * 100, 2);
+        
+        const col = document.createElement('div');
+        col.className = 'bar-col';
+        col.innerHTML = `
+            <div class="bar-value">₹${d.total_sales > 1000 ? (d.total_sales/1000).toFixed(1)+'k' : d.total_sales}</div>
+            <div class="bar" style="height: ${heightPct}%;">
+                <div class="bar-tooltip">
+                    <strong>${d.date}</strong><br>
+                    Sales: ₹${d.total_sales}<br>
+                    Orders: ${d.order_count}
+                </div>
+            </div>
+            <div class="bar-label">${d.date.slice(5)}</div>
+        `;
+        container.appendChild(col);
+    });
+}
+
+
+function renderPaymentModes(data) {
+    const container = document.getElementById('sa-payment-modes');
+    if(!container) return;
+    container.innerHTML = '';
+    
+    const totalAmount = data.reduce((sum, d) => sum + d.amount, 0);
+
+    if (data.length === 0) {
+        container.innerHTML = '<div style="padding:10px; color:#555;">No payment data</div>';
+        return;
+    }
+
+    data.forEach(d => {
+        const pct = totalAmount > 0 ? (d.amount / totalAmount) * 100 : 0;
+        
+        const row = document.createElement('div');
+        row.className = 'pie-row';
+        row.innerHTML = `
+            <div style="width: 100px;">
+                <div style="font-size: 13px; font-weight: 500; color: #fff;">${d.method}</div>
+            </div>
+            
+            <div class="progress-track">
+                <div class="progress-fill" style="width: ${pct}%; background: #f59e0b;"></div>
+            </div>
+            
+            <div style="text-align: right; min-width: 100px;">
+                <div style="font-size: 14px; font-weight: 600; color: #fff;">₹${d.amount.toFixed(0)}</div>
+                <div style="font-size: 11px; color: #9aa0a6;">${d.count} orders</div>
+            </div>
+        `;
+        container.appendChild(row);
+    });
+}
+
+
+function renderOrderTypes(data) {
+    const container = document.getElementById('sa-order-types');
+    container.innerHTML = '';
+    // Group by source (Online vs POS)
+    // Adjust logic based on your data. Usually 'POS' = Offline.
+    
+    data.forEach(d => {
+        const row = document.createElement('div');
+        row.className = 'pie-row';
+        const isOnline = d.order_source.toLowerCase() !== 'pos';
+        const color = isOnline ? '#3b82f6' : '#26a44b';
+        
+        row.innerHTML = `
+            <div style="width: 100px; font-size: 13px;">
+                <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:5px;"></span>
+                ${d.order_source}
+            </div>
+            <div style="font-size: 13px; color: #9aa0a6;">${d.order_type}</div>
+            <div style="font-size: 13px; font-weight: 600;">${d.count} orders</div>
+            <div style="font-size: 13px;">₹${d.total_sales.toFixed(0)}</div>
+        `;
+        container.appendChild(row);
+    });
+}
+
+function renderTopItems(data) {
+    const tbody = document.querySelector('#sa-top-items-table tbody');
+    tbody.innerHTML = '';
+    data.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td style="color: #fff;">${item.name}</td>
+            <td style="text-align:center;">${item.quantity_sold}</td>
+            <td style="text-align:right;">₹${item.total_revenue.toFixed(0)}</td>
+        `;
+        tbody.appendChild(tr);
+    });
+}
+
+function updateMonthHeaders() {
+    const date = new Date();
+    const monthName = date.toLocaleString('default', { month: 'long' });
+    
+    const hPay = document.getElementById('h-payment');
+    if(hPay) hPay.innerHTML = `💳 Payment Modes (${monthName})`;
+    
+    const hOff = document.getElementById('h-offline');
+    if(hOff) hOff.innerHTML = `🛵 Online vs Offline (${monthName})`;
+    
+    const hTop = document.getElementById('h-top-items');
+    if(hTop) hTop.innerHTML = `🍔 Top 5 Selling Items (${monthName})`;
+}
+
 </script>
 </body>
 </html>

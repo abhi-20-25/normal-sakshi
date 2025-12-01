@@ -17,10 +17,9 @@ from concurrent.futures import ThreadPoolExecutor
 IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
-# --- Model Paths (Standardized) ---
-APRON_CAP_MODEL_PATH = 'apron-cap.pt'
-GLOVES_MODEL_PATH = 'gloves.pt'
-GENERAL_MODEL_PATH = 'yolo11n.pt'  # Updated to YOLO 11
+# --- Model Paths (Unified Model) ---
+UNIFIED_MODEL_PATH = 'final_best.pt'  # Single model for all violations
+VIOLATION_CLASSES = [2, 4, 6, 7, 8]  # Classes to detect: without_uniform, without_cap, without_apron, without_gloves, using_phone
 
 # --- Detection Configuration ---
 CONFIDENCE_THRESHOLD = 0.50
@@ -67,28 +66,25 @@ class KitchenComplianceProcessor(threading.Thread):
             self.device = 'cpu'
             logging.info(f"Kitchen channel {self.channel_name} using device: CPU")
             
-            for model_path in [APRON_CAP_MODEL_PATH, GLOVES_MODEL_PATH, GENERAL_MODEL_PATH]:
-                if not os.path.exists(model_path):
-                    raise FileNotFoundError(f"Missing model file: {model_path}")
+            # Load unified model
+            if not os.path.exists(UNIFIED_MODEL_PATH):
+                raise FileNotFoundError(f"Missing model file: {UNIFIED_MODEL_PATH}")
             
-            self.apron_cap_model = YOLO(APRON_CAP_MODEL_PATH)
-            self.gloves_model = YOLO(GLOVES_MODEL_PATH)
-            self.general_model = YOLO(GENERAL_MODEL_PATH)
-            self.apron_cap_model.to(self.device)
-            self.gloves_model.to(self.device)
-            self.general_model.to(self.device)
-            logging.info(f"Successfully loaded Kitchen Compliance models for {self.channel_name} (CPU mode)")
+            self.unified_model = YOLO(UNIFIED_MODEL_PATH)
+            self.unified_model.to(self.device)
+            
+            logging.info(f"✅ Kitchen {self.channel_name}: Loaded unified model {UNIFIED_MODEL_PATH}")
+            logging.info(f"   Model classes: {self.unified_model.names}")
+            logging.info(f"   Monitoring violation classes: {VIOLATION_CLASSES}")
+            
         except Exception as e:
             self.error_message = f"Model Error: {e}"
             logging.error(f"FATAL: Failed to initialize Kitchen models for {self.channel_name}. Error: {e}")
 
         self.last_alert_time = defaultdict(float)  # Track last alert time per violation type
-        self.last_apron_cap_results = []
-        self.last_gloves_results = []
         self.clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self.last_socketio_emit = 0  # Track last SocketIO emit time
         self.alert_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="KitchenAlert")  # Limit concurrent alerts
-        self.phone_detected_frames = 0  # Track consecutive frames with phone detected
         
         # FPS tracking
         self.fps_start_time = time.time()
@@ -145,6 +141,24 @@ class KitchenComplianceProcessor(threading.Thread):
             except Exception as e:
                 logging.error(f"Failed to save kitchen violation to DB: {e}")
                 db.rollback()
+
+    def _save_violation_screenshot(self, frame, violation_type):
+        """Save screenshot of violation to static/detections folder"""
+        try:
+            timestamp = datetime.now(IST).strftime("%Y%m%d_%H%M%S")
+            filename = f"kitchen_{self.channel_name}_{violation_type}_{timestamp}.jpg"
+            filepath = os.path.join('static', 'detections', filename)
+            
+            # Create directory if it doesn't exist
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            
+            # Save screenshot
+            cv2.imwrite(filepath, frame)
+            logging.info(f"📸 Saved violation screenshot: {filepath}")
+            return filepath
+        except Exception as e:
+            logging.error(f"Failed to save screenshot: {e}")
+            return None
 
     def _trigger_alert(self, frame, violation_type, details):
         logging.warning(f"ALERT on {self.channel_name}: {details}")
@@ -237,257 +251,133 @@ class KitchenComplianceProcessor(threading.Thread):
             if frame_count % 100 == 0:
                 logging.info(f"Kitchen {self.channel_name}: ✅ ALIVE - Processing frame {frame_count} | FPS: {self.current_fps:.1f}")
 
-            # --- Run Inferences (NO TRACKING - Direct Detection Only) ---
+            # --- Run Inferences (Unified Model - Single Pass Detection) ---
             try:
-                # Simple detection without tracking - more reliable
-                person_results = self.general_model(
+                # Run model ONCE to detect both people AND violations
+                results = self.unified_model(
                     frame, 
-                    classes=[0],  # Person class only
-                    conf=0.4,  # Moderate confidence
+                    classes=[0] + VIOLATION_CLASSES,  # Detect person (0) + violations (2,4,6,7,8)
+                    conf=0.35,  # 35% confidence threshold
                     verbose=False
                 )
-                phone_results = self.general_model(frame, classes=[67], conf=CONFIDENCE_THRESHOLD, verbose=False)
-
-                # Run specialized models every few frames to save CPU
-                if frame_count % FRAME_SKIP_RATE == 0:
-                    self.last_apron_cap_results = self.apron_cap_model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
-                    self.last_gloves_results = self.gloves_model(frame, conf=CONFIDENCE_THRESHOLD, verbose=False)
+                
+                # Separate person boxes from violation boxes
+                person_boxes = []
+                violation_boxes = []
+                
+                if results and results[0].boxes is not None and len(results[0].boxes) > 0:
+                    for box in results[0].boxes:
+                        cls_id = int(box.cls[0])
+                        if cls_id == 0:  # Person class
+                            person_boxes.append(box)
+                        else:  # Violation classes
+                            violation_boxes.append(box)
                 
                 # Log detection results every 100 frames
                 if frame_count % 100 == 0:
-                    person_count = len(person_results[0].boxes) if person_results and person_results[0].boxes is not None else 0
-                    logging.info(f"Kitchen {self.channel_name}: Detected {person_count} people in frame {frame_count}")
+                    logging.info(f"Kitchen {self.channel_name}: Detected {len(person_boxes)} people, {len(violation_boxes)} raw violations in frame {frame_count}")
+                    
             except Exception as e:
                 logging.error(f"❌ Kitchen {self.channel_name}: Model inference error at frame {frame_count}: {e}")
-                person_results = None
-                phone_results = None
+                person_boxes = []
+                violation_boxes = []
 
             # Draw header info
             h, w = annotated_frame.shape[:2]
+
+            # --- Process Violations from Unified Model (Human-Verified) ---
+            violation_count = 0
+            violations_found = []
             
-            # Display FPS in top-right corner
-            cv2.putText(annotated_frame, f"FPS: {self.current_fps:.1f}", (w-120, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            # --- Process Each Person (Direct Detection - No Tracking) ---
-            if person_results and person_results[0].boxes is not None and len(person_results[0].boxes) > 0:
-                person_boxes = person_results[0].boxes.xyxy.cpu()
-                confidences = person_results[0].boxes.conf.cpu().numpy()
-                
-                if frame_count % 100 == 0:
-                    logging.info(f"Kitchen: Processing {len(person_boxes)} people in frame {frame_count}")
-
-                # Get detected gloves boxes
-                detected_gloves_boxes = []
-                for r in self.last_gloves_results:
-                    if r.boxes is not None and len(r.boxes) > 0:
-                        for box in r.boxes:
-                            if int(box.cls[0]) < len(self.gloves_model.names):
-                                class_name = self.gloves_model.names[int(box.cls[0])]
-                                if 'glove' in class_name.lower() or 'surgical' in class_name.lower():
-                                    detected_gloves_boxes.append(box.xyxy[0].cpu().numpy())
-            else:
-                # No people detected
-                if frame_count % 300 == 0:
-                    logging.info(f"Kitchen frame {frame_count}: No people detected")
-
-            if person_results and person_results[0].boxes is not None and len(person_results[0].boxes) > 0:
-                total_people = len(person_boxes)
-                compliant_count = 0
-                violation_types = {'cap': 0, 'apron': 0, 'gloves': 0, 'uniform': 0, 'phone': 0}
-                
-                for idx, (person_box, conf) in enumerate(zip(person_boxes, confidences)):
-                    person_id = idx + 1  # Simple sequential ID for this frame
-                    px1, py1, px2, py2 = map(int, person_box)
+            # Get person boxes for verification
+            person_box_coords = []
+            if len(person_boxes) > 0:
+                for person_box in person_boxes:
+                    px1, py1, px2, py2 = map(int, person_box.xyxy[0].cpu().numpy())
+                    person_box_coords.append([px1, py1, px2, py2])
                     
-                    # Default: Green box = compliant
-                    box_color = (0, 255, 0)  # Green
-                    status_text = "OK"
-                    violations = []
-                    person_compliant = True
+                    # Draw green boxes around detected people
+                    cv2.rectangle(annotated_frame, (px1, py1), (px2, py2), (0, 255, 0), 1)
+            
+            # Process violations
+            if len(violation_boxes) > 0:
+                for box in violation_boxes:
+                    # Get box coordinates
+                    vx1, vy1, vx2, vy2 = map(int, box.xyxy[0].cpu().numpy())
+                    conf = float(box.conf[0])
+                    cls_id = int(box.cls[0])
                     
-                    # 1. Check for Apron/Cap Violations
-                    for r in self.last_apron_cap_results:
-                        if r.boxes is not None and len(r.boxes) > 0:
-                            for box in r.boxes:
-                                if int(box.cls[0]) < len(self.apron_cap_model.names):
-                                    violation_class = self.apron_cap_model.names[int(box.cls[0])]
-                                    if 'without' in violation_class.lower() or 'no' in violation_class.lower():
-                                        # Always show violation in UI
-                                        violations.append(violation_class)
-                                        box_color = (0, 0, 255)  # Red
-                                        person_compliant = False
-                                        if 'cap' in violation_class.lower():
-                                            violation_types['cap'] += 1
-                                        if 'apron' in violation_class.lower():
-                                            violation_types['apron'] += 1
-                                        
-                                        # Only send alert if not in cooldown
-                                        time_since_last = current_time - self.last_alert_time[violation_class]
-                                        if time_since_last > ALERT_COOLDOWN_SECONDS:
-                                            self.last_alert_time[violation_class] = current_time
-                                            details = f"Person detected with '{violation_class}'."
-                                            self._trigger_alert(frame.copy(), violation_class, details)
-
-                    # 2. Check for Gloves Violation (IMPROVED LOGIC)
-                    has_gloves = False
-                    # Define hand region (bottom 40-70% of person box)
-                    hand_region_top = py1 + int((py2 - py1) * 0.4)
-                    hand_region_bottom = py1 + int((py2 - py1) * 0.7)
+                    # Get class name
+                    class_name = self.unified_model.names[cls_id]
                     
-                    for g_box in detected_gloves_boxes:
-                        gx1, gy1, gx2, gy2 = map(int, g_box)
-                        
-                        # Calculate glove center point
-                        glove_center_y = (gy1 + gy2) // 2
-                        
-                        # Check if glove is in hand region of this person
-                        if not (hand_region_top <= glove_center_y <= hand_region_bottom):
-                            continue
-                        
-                        # Calculate overlap percentage (how much of glove is inside person box)
-                        overlap_x1 = max(gx1, px1)
-                        overlap_y1 = max(gy1, py1)
-                        overlap_x2 = min(gx2, px2)
-                        overlap_y2 = min(gy2, py2)
-                        
-                        if overlap_x1 < overlap_x2 and overlap_y1 < overlap_y2:
-                            overlap_area = (overlap_x2 - overlap_x1) * (overlap_y2 - overlap_y1)
-                            glove_area = (gx2 - gx1) * (gy2 - gy1)
-                            overlap_percentage = overlap_area / glove_area if glove_area > 0 else 0
+                    # Calculate violation box center
+                    v_center_x = (vx1 + vx2) / 2
+                    v_center_y = (vy1 + vy2) / 2
+                    
+                    # VERIFY: Check if violation is near/inside any person box
+                    is_human_violation = False
+                    if len(person_box_coords) > 0:
+                        for person_box in person_box_coords:
+                            px1, py1, px2, py2 = person_box
                             
-                            # Require at least 60% of glove box to be inside person box
-                            if overlap_percentage >= 0.6:
-                                has_gloves = True
-                                # Draw glove indicator
-                                cv2.rectangle(annotated_frame, (gx1, gy1), (gx2, gy2), (0, 255, 0), 2)
-                                # Gloves detection - text removed
+                            # Expand person box by 20% to account for slight misalignments
+                            width = px2 - px1
+                            height = py2 - py1
+                            expanded_px1 = px1 - width * 0.2
+                            expanded_py1 = py1 - height * 0.2
+                            expanded_px2 = px2 + width * 0.2
+                            expanded_py2 = py2 + height * 0.2
+                            
+                            # Check if violation center is inside expanded person box
+                            if (expanded_px1 <= v_center_x <= expanded_px2 and 
+                                expanded_py1 <= v_center_y <= expanded_py2):
+                                is_human_violation = True
                                 break
                     
-                    if not has_gloves:
-                        # Always show violation in UI
-                        violations.append("No-Gloves")
-                        box_color = (0, 0, 255)  # Red
-                        person_compliant = False
-                        violation_types['gloves'] += 1
+                    # Only process violations associated with people
+                    if is_human_violation:
+                        violations_found.append(class_name)
+                        violation_count += 1
                         
-                        # Only send alert if not in cooldown
-                        time_since_last = current_time - self.last_alert_time['No-Gloves']
+                        # Draw red bounding box for verified human violation
+                        cv2.rectangle(annotated_frame, (vx1, vy1), (vx2, vy2), (0, 0, 255), 2)
+                        
+                        # Trigger alert if not in cooldown
+                        time_since_last = current_time - self.last_alert_time[class_name]
                         if time_since_last > ALERT_COOLDOWN_SECONDS:
-                            self.last_alert_time['No-Gloves'] = current_time
-                            details = f"Person detected without gloves."
-                            self._trigger_alert(frame.copy(), "No-Gloves", details)
-                    
-                    # 3. Check for Uniform Color Violation
-                    torso_crop = frame[py1 + int((py2-py1)*0.1):py1 + int((py2-py1)*0.7), px1:px2]
-                    if torso_crop.size > 0:
-                        try:
-                            lab_torso = cv2.cvtColor(torso_crop, cv2.COLOR_BGR2LAB)
-                            l, a, b = cv2.split(lab_torso)
-                            equalized_l = self.clahe.apply(l)
-                            merged_lab = cv2.merge((equalized_l, a, b))
-                            equalized_torso = cv2.cvtColor(merged_lab, cv2.COLOR_LAB2BGR)
-                            hsv_torso = cv2.cvtColor(equalized_torso, cv2.COLOR_BGR2HSV)
+                            self.last_alert_time[class_name] = current_time
+                            details = f"Human violation: {class_name} (confidence: {conf:.2%})"
                             
-                            mask_yellow = cv2.inRange(hsv_torso, YELLOW_LOWER, YELLOW_UPPER)
-                            mask_black = cv2.inRange(hsv_torso, BLACK_LOWER, BLACK_UPPER)
-                            compliant_mask = cv2.bitwise_or(mask_yellow, mask_black)
+                            # Save screenshot
+                            screenshot_path = self._save_violation_screenshot(frame.copy(), class_name)
                             
-                            total_pixels = torso_crop.shape[0] * torso_crop.shape[1]
-                            compliant_ratio = np.count_nonzero(compliant_mask) / total_pixels if total_pixels > 0 else 0
-
-                            if compliant_ratio < 0.30: # If less than 30% of torso is compliant color
-                                # Always show violation in UI
-                                violations.append("Uniform-Violation")
-                                box_color = (0, 0, 255)  # Red
-                                person_compliant = False
-                                violation_types['uniform'] += 1
-                                
-                                # Only send alert if not in cooldown
-                                time_since_last = current_time - self.last_alert_time['Uniform-Violation']
-                                if time_since_last > ALERT_COOLDOWN_SECONDS:
-                                    self.last_alert_time['Uniform-Violation'] = current_time
-                                    details = f"Person detected with uniform color violation."
-                                    self._trigger_alert(frame.copy(), "Uniform-Violation", details)
-                        except Exception as e:
-                            logging.error(f"Uniform detection error: {e}")
-                    
-                                        # Draw person bounding box
-                    cv2.rectangle(annotated_frame, (px1, py1), (px2, py2), box_color, 2)
-                    
-                    # Count compliant people
-                    if person_compliant:
-                        compliant_count += 1
+                            # Send alert
+                            self._trigger_alert(frame.copy(), class_name, details)
+                            
+                            logging.info(f"🚨 Kitchen {self.channel_name}: Human {class_name} violation detected! Screenshot: {screenshot_path}")
+                    else:
+                        # Draw gray box for non-human violations (filtered out)
+                        cv2.rectangle(annotated_frame, (vx1, vy1), (vx2, vy2), (128, 128, 128), 1)
                 
-                # Calculate compliance percentage
-                compliance_percentage = int((compliant_count / total_people * 100)) if total_people > 0 else 100
-                
-                # Store metrics for SocketIO emit (moved outside to avoid per-frame spam)
-                current_metrics = {
-                    'channel_id': self.channel_id,
-                    'channel_name': self.channel_name,
-                    'total_people': total_people,
-                    'compliant_count': compliant_count,
-                    'compliance_percentage': compliance_percentage,
-                    'violations': violation_types,
-                    'cap_compliant': total_people - violation_types['cap'],
-                    'apron_compliant': total_people - violation_types['apron'],
-                    'gloves_compliant': total_people - violation_types['gloves'],
-                    'uniform_compliant': total_people - violation_types['uniform']
-                }
-            else:
-                # No people detected - default metrics
-                current_metrics = {
-                    'channel_id': self.channel_id,
-                    'channel_name': self.channel_name,
-                    'total_people': 0,
-                    'compliant_count': 0,
-                    'compliance_percentage': 100,
-                    'violations': {'cap': 0, 'apron': 0, 'gloves': 0, 'uniform': 0, 'phone': 0},
-                    'cap_compliant': 0,
-                    'apron_compliant': 0,
-                    'gloves_compliant': 0,
-                    'uniform_compliant': 0
-                }
+                # Log violations every 100 frames
+                if frame_count % 100 == 0 and violation_count > 0:
+                    logging.info(f"Kitchen {self.channel_name}: Found {violation_count} human violations - {', '.join(set(violations_found))}")
             
-            # Emit SocketIO update every 2 seconds for quick UI updates
+            # Emit SocketIO update every 2 seconds
             if current_time - self.last_socketio_emit >= 2.0:
                 try:
-                    # Use namespace=None and broadcast=False for better performance
-                    self.socketio.emit('kitchen_update', current_metrics, namespace='/')
+                    metrics = {
+                        'channel_id': self.channel_id,
+                        'channel_name': self.channel_name,
+                        'violation_count': violation_count,
+                        'violations_detected': list(set(violations_found)) if violations_found else [],
+                        'timestamp': datetime.now(IST).isoformat()
+                    }
+                    self.socketio.emit('kitchen_update', metrics, namespace='/')
                     self.last_socketio_emit = current_time
-                    logging.debug(f"Kitchen: Emitted update for {self.channel_name}")
                 except Exception as e:
                     logging.error(f"Kitchen: SocketIO emit failed for {self.channel_name}: {e}")
 
-            # --- 4. Detect Mobile Phones (Simple Frame-based) ---
-            if phone_results and phone_results[0].boxes is not None and len(phone_results[0].boxes) > 0:
-                # Phone detected in this frame
-                self.phone_detected_frames += 1
-                
-                for r in phone_results:
-                    if r.boxes is not None:
-                        for box in r.boxes:
-                            phone_box = box.xyxy[0].cpu().numpy()
-                            p_x1, p_y1, p_x2, p_y2 = map(int, phone_box)
-                            
-                            # Draw phone detection
-                            cv2.rectangle(annotated_frame, (p_x1, p_y1), (p_x2, p_y2), (0, 0, 255), 2)
-                            # Phone detection text removed
-                
-                # Alert if phone detected for enough consecutive frames
-                if self.phone_detected_frames >= phone_persistence_frames:
-                    time_since_last = current_time - self.last_alert_time['Mobile-Phone']
-                    if time_since_last > ALERT_COOLDOWN_SECONDS:
-                        # NOT in cooldown - send alert
-                        self.last_alert_time['Mobile-Phone'] = current_time
-                        details = f"Mobile phone detected in restricted area."
-                        self._trigger_alert(frame.copy(), "Mobile-Phone", details)
-                        self.phone_detected_frames = 0  # Reset after alert
-                    # else: In cooldown - skip alert
-            else:
-                # No phone detected - reset counter
-                self.phone_detected_frames = 0
             
             # Add footer indicator
             # Footer text removed

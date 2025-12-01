@@ -1,0 +1,21 @@
+# Kitchen Compliance Detection - YOLOv11 Segmentation
+# Detects people + uniforms + PPE violations
+
+path: /home/athul/sakshi/normal-sakshi/kitchen_unified_dataset
+train: images/train
+val: images/train  # Using train for validation (split later if needed)
+
+# Number of classes
+nc: 9
+
+# Class names
+names:
+  0: person           # Human detection (base)
+  1: uniform          # ✅ Any uniform (black/white/yellow)
+  2: without_uniform  # ❌ VIOLATION
+  3: cap_present      # ✅ Wearing cap
+  4: without_cap      # ❌ VIOLATION
+  5: with_apron       # ✅ Wearing apron
+  6: without_apron    # ❌ VIOLATION
+  7: without_gloves   # ❌ VIOLATION
+  8: using_phone      # ❌ VIOLATION

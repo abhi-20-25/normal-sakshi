@@ -89,10 +89,10 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'best_generic.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.8, 'is_gif': True},
+    'Generic': {'model_path': 'final_best.pt', 'target_class_id': [0, 2, 4, 6, 7, 8], 'confidence': 0.35, 'is_gif': False},
     'PeopleCounter': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
     'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'yolov8n.pt', 'apron_cap_model': 'apron-cap.pt', 'gloves_model': 'gloves.pt', 'confidence': 0.5},
+    'KitchenCompliance': {'model_path': 'final_best.pt', 'confidence': 0.35},  # Unified model
     'OccupancyMonitor': {'model_path': 'yolo11n.pt', 'confidence': 0.15}
 }
 
@@ -465,11 +465,24 @@ class MultiModelProcessor(threading.Thread):
         self.consecutive_invalid_frames = 0  # Track consecutive invalid frames
         self.consecutive_errors = 0  # Track consecutive CUDA errors
         self.max_consecutive_errors = 10
+        self.latest_frame = None  # For video streaming
+        self.lock = threading.Lock()  # Thread-safe frame access
 
     def stop(self): self.is_running = False
     def shutdown(self):
         logging.info(f"Shutting down MultiModel for {self.channel_name} ({self.channel_id})")
         self.is_running = False
+    
+    def get_frame(self):
+        """Get the latest frame for video streaming"""
+        with self.lock:
+            if self.latest_frame is None:
+                placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
+                cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
+                _, jpeg = cv2.imencode('.jpg', placeholder)
+                return jpeg.tobytes()
+            _, jpeg = cv2.imencode('.jpg', self.latest_frame)
+            return jpeg.tobytes()
 
     def _validate_frame(self, frame):
         """Validate frame before processing to prevent CUDA errors"""
@@ -534,6 +547,10 @@ class MultiModelProcessor(threading.Thread):
                 time.sleep(0.01)
                 continue
 
+            # Store frame for video streaming (even if no detection)
+            with self.lock:
+                self.latest_frame = frame.copy()
+
             current_time = time.time()
 
             for task in self.tasks:
@@ -556,6 +573,11 @@ class MultiModelProcessor(threading.Thread):
                                     **model_args
                                 )
                             self.consecutive_errors = 0  # Reset on success
+                            
+                            # Debug logging for Generic app
+                            if app_name == 'Generic' and results and len(results[0].boxes) > 0:
+                                logging.info(f"🔍 {app_name} detected {len(results[0].boxes)} objects on {self.channel_name}")
+                        
                         except RuntimeError as e:
                             error_msg = str(e)
                             self.consecutive_errors += 1
@@ -574,6 +596,26 @@ class MultiModelProcessor(threading.Thread):
                             continue
 
                         if results and len(results[0].boxes) > 0:
+                            # Store annotated frame for streaming
+                            with self.lock:
+                                self.latest_frame = results[0].plot()
+                            
+                            # Extract detected class names for better message
+                            detected_classes = []
+                            for box in results[0].boxes:
+                                class_id = int(box.cls[0])
+                                class_name = task['model'].names[class_id]
+                                detected_classes.append(class_name)
+                            
+                            # Create descriptive message
+                            unique_classes = list(set(detected_classes))
+                            if app_name == 'Generic':
+                                message = f"Front Office Violation: {', '.join(unique_classes)}"
+                            else:
+                                message = f"{app_name}: {', '.join(unique_classes)}"
+                            
+                            logging.info(f"📸 {self.channel_name} - {message}")
+                            
                             self.last_detection_times[app_name] = current_time
                             if task['is_gif']:
                                 frames_to_capture = self.gif_duration_seconds * self.fps
@@ -609,14 +651,58 @@ class MultiModelProcessor(threading.Thread):
                                         gif_frames.append(frame_gif.copy())
                                 # Only create GIF if we have multiple frames
                                 if len(gif_frames) > 1:
-                                    self.detection_callback(app_name, self.channel_id, gif_frames, f"{app_name} detected.", True)
+                                    self.detection_callback(app_name, self.channel_id, gif_frames, message, True)
                                 else:
                                     # Fallback to single frame if we couldn't capture enough frames
-                                    self.detection_callback(app_name, self.channel_id, gif_frames, f"{app_name} detected.", False)
+                                    self.detection_callback(app_name, self.channel_id, gif_frames, message, False)
                             else:
                                 annotated_frame = results[0].plot()
-                                self.detection_callback(app_name, self.channel_id, [annotated_frame], f"{app_name} detected.", False)
+                                self.detection_callback(app_name, self.channel_id, [annotated_frame], message, False)
         # No cap to release when using FrameHub
+
+class RawFeedProcessor(threading.Thread):
+    """Raw video feed without any AI detection - just displays the RTSP stream"""
+    def __init__(self, rtsp_url, channel_id, channel_name):
+        super().__init__()
+        self.rtsp_url = rtsp_url
+        self.channel_id = channel_id
+        self.channel_name = channel_name
+        self.is_running = True
+        self.latest_frame = None
+        self.lock = threading.Lock()
+        logging.info(f"RawFeedProcessor initialized for {channel_name} (no AI detection)")
+
+    def stop(self):
+        self.is_running = False
+
+    def shutdown(self):
+        logging.info(f"Shutting down RawFeed for {self.channel_name}")
+        self.is_running = False
+
+    def get_frame(self):
+        """Get the latest raw frame for video streaming"""
+        with self.lock:
+            if self.latest_frame is None:
+                placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
+                cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
+                _, jpeg = cv2.imencode('.jpg', placeholder)
+                return jpeg.tobytes()
+            _, jpeg = cv2.imencode('.jpg', self.latest_frame)
+            return jpeg.tobytes()
+
+    def run(self):
+        """Simply fetch and store frames without any AI processing"""
+        while self.is_running:
+            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+            if frame is None:
+                time.sleep(0.01)
+                continue
+
+            # Just store the raw frame for video streaming
+            with self.lock:
+                self.latest_frame = frame.copy()
+            
+            time.sleep(0.03)  # ~30 FPS
 
 class PeopleCounterProcessor(threading.Thread):
     def __init__(self, rtsp_url, channel_id, channel_name, model, detection_callback, socketio):
@@ -2059,6 +2145,8 @@ def video_feed(app_name, channel_id):
     elif app_name == 'QueueMonitor': target_class = QueueMonitorProcessor
     elif app_name == 'KitchenCompliance': target_class = KitchenComplianceProcessor
     elif app_name == 'OccupancyMonitor': target_class = OccupancyMonitorProcessor
+    elif app_name == 'Generic': target_class = MultiModelProcessor
+    elif app_name == 'RawFeed': target_class = RawFeedProcessor
     
     if target_class:
         target_processor = next((p for p in processors if isinstance(p, target_class)), None)
@@ -2753,23 +2841,19 @@ def start_streams():
                 logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
                 atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
         if 'KitchenCompliance' in active_app_names:
-            config = APP_TASKS_CONFIG['KitchenCompliance']
-            general_model = load_model(config['model_path'])
-            apron_cap_model = load_model(config['apron_cap_model'])
-            gloves_model = load_model(config['gloves_model'])
-            if general_model and apron_cap_model and gloves_model:
-                kc_processor = KitchenComplianceProcessor(
-                    link, channel_id, channel_name, SessionLocal, socketio, 
-                    send_telegram_notification, handle_detection
-                )
-                # KitchenComplianceProcessor should read frames from hub if implemented to do so.
-                if hasattr(kc_processor, 'frame_hub'):
-                    kc_processor.frame_hub = hub
-                stream_processors[channel_id].append(kc_processor)
-                kc_processor.start()
-                logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
-                atexit.register(kc_processor.shutdown)
-                active_app_names.remove('KitchenCompliance')
+            # KitchenComplianceProcessor loads its own unified model internally
+            kc_processor = KitchenComplianceProcessor(
+                link, channel_id, channel_name, SessionLocal, socketio, 
+                send_telegram_notification, handle_detection
+            )
+            # KitchenComplianceProcessor should read frames from hub if implemented to do so.
+            if hasattr(kc_processor, 'frame_hub'):
+                kc_processor.frame_hub = hub
+            stream_processors[channel_id].append(kc_processor)
+            kc_processor.start()
+            logging.info(f"Started KitchenCompliance for {channel_id} ({channel_name}).")
+            atexit.register(kc_processor.shutdown)
+            active_app_names.remove('KitchenCompliance')
         if 'OccupancyMonitor' in active_app_names:
             model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'])
             if model_obj:
@@ -2783,21 +2867,30 @@ def start_streams():
                 logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
                 atexit.register(om_processor.shutdown)
                 active_app_names.remove('OccupancyMonitor')
+        
         if active_app_names:
             tasks_for_multi_model = []
             for app_name in active_app_names:
                 config = APP_TASKS_CONFIG.get(app_name)
                 if config and 'model_path' in config:
+                    logging.info(f"Loading model for {app_name}: {config['model_path']}")
                     model_obj = load_model(config['model_path'])
-                    if model_obj: tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
-                    else: logging.warning(f"Skipping '{app_name}' for {channel_id}; model failed to load.")
+                    if model_obj: 
+                        tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
+                        logging.info(f"✅ Model loaded for {app_name}. Target classes: {config.get('target_class_id', 'all')}, Confidence: {config.get('confidence', 0.5)}")
+                    else: 
+                        logging.warning(f"❌ Skipping '{app_name}' for {channel_id}; model failed to load.")
+                else:
+                    logging.warning(f"❌ No config found for {app_name}")
             if tasks_for_multi_model:
                 multi_processor = MultiModelProcessor(link, channel_id, channel_name, tasks_for_multi_model, handle_detection)
                 multi_processor.frame_hub = hub
                 stream_processors[channel_id].append(multi_processor); multi_processor.start()
                 task_names = [t['app_name'] for t in tasks_for_multi_model]
-                logging.info(f"Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
+                logging.info(f"🚀 Started MultiModel for {channel_id} ({channel_name}) with tasks: {task_names}.")
                 atexit.register(multi_processor.shutdown)
+            else:
+                logging.warning(f"⚠️ No tasks loaded for MultiModel on {channel_name}")
 
 
 def restart_processor(processor_info):
