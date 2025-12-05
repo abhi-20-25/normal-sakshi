@@ -14,7 +14,8 @@ import imageio
 from flask import Flask, Response, render_template, jsonify, url_for, request, stream_with_context, session, redirect
 from flask_socketio import SocketIO
 from functools import wraps
-from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, text, UniqueConstraint
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, text, UniqueConstraint, Boolean, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
 from urllib.parse import urlparse, urlunparse
@@ -72,7 +73,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
+DATABASE_URL = "postgresql://postgres:root@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
@@ -344,12 +345,48 @@ class QueueLog(Base):
 
 
 
+class Restaurant(Base):
+    __tablename__ = "restaurants"
+    id = Column(Integer, primary_key=True)
+    restaurant_code = Column(String(50), nullable=False, unique=True)
+    restaurant_name = Column(String(200), nullable=False)
+    location = Column(String(200))
+    dvr_ip = Column(String(50))
+    dvr_username = Column(String(100))
+    dvr_password = Column(String(100))
+    telegram_chat_id = Column(String(50))
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+    updated_at = Column(DateTime, default=lambda: datetime.now(IST), onupdate=lambda: datetime.now(IST))
+
+class Camera(Base):
+    __tablename__ = "cameras"
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey('restaurants.id'))
+    channel_id = Column(String(50), unique=True, nullable=False)
+    channel_name = Column(String(255), nullable=False)
+    channel_number = Column(Integer)
+    rtsp_url = Column(Text, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+    updated_at = Column(DateTime, default=lambda: datetime.now(IST), onupdate=lambda: datetime.now(IST))
+
+class CameraApp(Base):
+    __tablename__ = "camera_apps"
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, ForeignKey('cameras.id'))
+    app_name = Column(String(50), nullable=False)
+    is_active = Column(Boolean, default=True)
+    config = Column(JSONB)
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+
 class RoiConfig(Base):
     __tablename__ = "roi_configs"
     id = Column(Integer, primary_key=True, index=True)
     channel_id = Column(String, index=True)
     app_name = Column(String, index=True)
     roi_points = Column(Text) # Storing as JSON string
+    restaurant_id = Column(Integer, ForeignKey('restaurants.id'))
     __table_args__ = (UniqueConstraint('channel_id', 'app_name', name='_roi_uc'),)
 
 class KitchenViolation(Base):
@@ -1528,7 +1565,32 @@ class QueueMonitorProcessor(threading.Thread):
         # Create annotated frame with person bounding boxes
         annotated_frame = frame.copy()
         
-        # ROI boxes hidden for better user experience - only person detections shown
+        # Draw ROI polygons on the frame for monitoring
+        # Main ROI (Queue area) - Blue polygon
+        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+            try:
+                roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
+                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
+                # Add label for main ROI
+                if len(roi_points) > 0:
+                    label_pos = tuple(roi_points[0])
+                    cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            except Exception as e:
+                logging.warning(f"Could not draw main ROI: {e}")
+        
+        # Secondary ROI (Counter area) - Green polygon
+        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+            try:
+                roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
+                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
+                # Add label for secondary ROI
+                if len(roi_points) > 0:
+                    label_pos = tuple(roi_points[0])
+                    cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            except Exception as e:
+                logging.warning(f"Could not draw secondary ROI: {e}")
         
         # Draw person bounding boxes
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
@@ -2020,11 +2082,77 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.stop()
 
 
-def get_app_configs():
+def get_app_configs(restaurant_id=None):
+    """Get application configs, optionally filtered by restaurant
+    
+    First tries to load from database (new multi-restaurant structure).
+    Falls back to rtsp_links.txt if database is empty (backward compatibility).
+    """
     app_configs = defaultdict(lambda: {'channels': [], 'online_count': 0})
-    if not os.path.exists(RTSP_LINKS_FILE): return {}
+    
+    # Try loading from database first
+    if db_connected:
+        try:
+            with SessionLocal() as db:
+                # Check if we have any cameras in database
+                camera_count = db.query(Camera).count()
+                
+                if camera_count > 0:
+                    logging.debug(f"Loading config from database (found {camera_count} cameras)")
+                    
+                    # Build query
+                    query = db.query(Camera, CameraApp, Restaurant).\
+                        join(CameraApp, Camera.id == CameraApp.camera_id).\
+                        join(Restaurant, Camera.restaurant_id == Restaurant.id).\
+                        filter(Camera.is_active == True, CameraApp.is_active == True, Restaurant.is_active == True)
+                    
+                    # Filter by restaurant if specified
+                    if restaurant_id:
+                        query = query.filter(Camera.restaurant_id == restaurant_id)
+                        logging.debug(f"Filtering by restaurant_id: {restaurant_id}")
+                    
+                    results = query.all()
+                    logging.info(f"Database query returned {len(results)} camera-app combinations")
+                    
+                    # Build app configs structure
+                    for camera, camera_app, restaurant in results:
+                        app_name = camera_app.app_name
+                        
+                        # Check if channel is online
+                        processors = stream_processors.get(camera.channel_id, [])
+                        is_alive = any(p.is_alive() for p in processors) if processors else False
+                        
+                        # Add channel to app config (avoid duplicates)
+                        if not any(d['id'] == camera.channel_id for d in app_configs[app_name]['channels']):
+                            app_configs[app_name]['channels'].append({
+                                'id': camera.channel_id,
+                                'name': camera.channel_name,
+                                'restaurant_id': restaurant.id,
+                                'restaurant_name': restaurant.restaurant_name,
+                                'is_alive': is_alive
+                            })
+                    
+                    # Calculate online counts
+                    for app_name, config in app_configs.items():
+                        online_count = sum(1 for ch in config['channels'] if ch.get('is_alive', False))
+                        config['online_count'] = online_count
+                    
+                    logging.info(f"Loaded config from database: {len(app_configs)} apps")
+                    return dict(app_configs)
+                else:
+                    logging.info("No cameras in database, falling back to rtsp_links.txt")
+        except Exception as e:
+            logging.warning(f"Error loading from database, falling back to file: {e}")
+    
+    # Fallback to rtsp_links.txt (backward compatibility)
+    logging.info("Loading config from rtsp_links.txt (legacy mode)")
+    if not os.path.exists(RTSP_LINKS_FILE): 
+        logging.warning(f"Neither database nor {RTSP_LINKS_FILE} available")
+        return {}
+    
     channel_status = {}
     all_channel_ids = set()
+    
     with open(RTSP_LINKS_FILE, 'r') as f:
         for line in f:
             if line.strip() and not line.startswith('#'):
@@ -2036,6 +2164,7 @@ def get_app_configs():
                 processors = stream_processors.get(channel_id, [])
                 is_alive = any(p.is_alive() for p in processors) if processors else False
                 channel_status[channel_id] = {'name': channel_name, 'is_alive': is_alive}
+    
     with open(RTSP_LINKS_FILE, 'r') as f:
         for line in f:
             if line.strip() and not line.startswith('#'):
@@ -2046,10 +2175,15 @@ def get_app_configs():
                 for app_name in app_names:
                     if app_name in APP_TASKS_CONFIG:
                         if not any(d['id'] == channel_id for d in app_configs[app_name]['channels']):
-                            app_configs[app_name]['channels'].append({'id': channel_id, 'name': channel_status[channel_id]['name']})
+                            app_configs[app_name]['channels'].append({
+                                'id': channel_id,
+                                'name': channel_status[channel_id]['name']
+                            })
+    
     for app_name, config in app_configs.items():
         online_count = sum(1 for ch in config['channels'] if channel_status.get(ch['id'], {}).get('is_alive', False))
         config['online_count'] = online_count
+    
     return dict(app_configs)
 
 def log_queue_counts():
@@ -2102,8 +2236,49 @@ def logout():
 
 @app.route('/dashboard')
 @login_required
-def dashboard(): 
-    return render_template('dashboard.html', app_configs=get_app_configs())
+def dashboard():
+    """Main dashboard - supports optional restaurant filtering via query parameter"""
+    restaurant_id = request.args.get('restaurant_id', type=int)
+    
+    # Get app configs (filtered by restaurant if specified)
+    app_configs = get_app_configs(restaurant_id=restaurant_id)
+    
+    # Get list of all restaurants for dropdown (if database connected)
+    restaurants = []
+    selected_restaurant = None
+    
+    if db_connected:
+        try:
+            with SessionLocal() as db:
+                restaurant_query = db.query(Restaurant).filter(Restaurant.is_active == True).order_by(Restaurant.restaurant_name).all()
+                restaurants = [
+                    {
+                        'id': r.id,
+                        'restaurant_name': r.restaurant_name,
+                        'location': r.location,
+                        'display_name': f"{r.restaurant_name} - {r.location}" if r.location else r.restaurant_name
+                    }
+                    for r in restaurant_query
+                ]
+                
+                # Get selected restaurant details
+                if restaurant_id:
+                    selected = db.query(Restaurant).filter_by(id=restaurant_id, is_active=True).first()
+                    if selected:
+                        selected_restaurant = {
+                            'id': selected.id,
+                            'restaurant_name': selected.restaurant_name,
+                            'location': selected.location
+                        }
+        except Exception as e:
+            logging.warning(f"Could not load restaurants for dashboard: {e}")
+    
+    return render_template(
+        'dashboard.html',
+        app_configs=app_configs,
+        restaurants=restaurants,
+        selected_restaurant=selected_restaurant
+    )
 
 def gen_video_feed(processor):
     """Generator function for video feed - works with both direct run and gunicorn"""
@@ -2765,6 +2940,234 @@ def upload_schedule_file(channel_id):
 @socketio.on('connect')
 def handle_connect(): logging.info('Frontend client connected')
 
+# ============================================================================
+# RESTAURANT MANAGEMENT API ENDPOINTS (Phase 2)
+# ============================================================================
+
+@app.route('/api/restaurants', methods=['GET'])
+def get_restaurants():
+    """Get all restaurants (optionally filter by active status)"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        with SessionLocal() as db:
+            active_only = request.args.get('active_only', 'true').lower() == 'true'
+            
+            query = db.query(Restaurant)
+            if active_only:
+                query = query.filter(Restaurant.is_active == True)
+            
+            restaurants = query.order_by(Restaurant.restaurant_name).all()
+            
+            result = []
+            for r in restaurants:
+                result.append({
+                    'id': r.id,
+                    'restaurant_code': r.restaurant_code,
+                    'restaurant_name': r.restaurant_name,
+                    'location': r.location,
+                    'dvr_ip': r.dvr_ip,
+                    'dvr_username': r.dvr_username,
+                    'telegram_chat_id': r.telegram_chat_id,
+                    'is_active': r.is_active,
+                    'created_at': r.created_at.isoformat() if r.created_at else None
+                })
+            
+            return jsonify({
+                'success': True,
+                'restaurants': result,
+                'count': len(result)
+            })
+    except Exception as e:
+        logging.error(f"Error fetching restaurants: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/restaurants/<int:restaurant_id>', methods=['GET'])
+def get_restaurant(restaurant_id):
+    """Get details of a specific restaurant"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        with SessionLocal() as db:
+            restaurant = db.query(Restaurant).filter_by(id=restaurant_id).first()
+            
+            if not restaurant:
+                return jsonify({'error': 'Restaurant not found'}), 404
+            
+            return jsonify({
+                'success': True,
+                'restaurant': {
+                    'id': restaurant.id,
+                    'restaurant_code': restaurant.restaurant_code,
+                    'restaurant_name': restaurant.restaurant_name,
+                    'location': restaurant.location,
+                    'dvr_ip': restaurant.dvr_ip,
+                    'dvr_username': restaurant.dvr_username,
+                    'telegram_chat_id': restaurant.telegram_chat_id,
+                    'is_active': restaurant.is_active,
+                    'created_at': restaurant.created_at.isoformat() if restaurant.created_at else None,
+                    'updated_at': restaurant.updated_at.isoformat() if restaurant.updated_at else None
+                }
+            })
+    except Exception as e:
+        logging.error(f"Error fetching restaurant {restaurant_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/restaurants/<int:restaurant_id>/cameras', methods=['GET'])
+def get_restaurant_cameras(restaurant_id):
+    """Get all cameras for a specific restaurant with their assigned apps"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        with SessionLocal() as db:
+            # Verify restaurant exists
+            restaurant = db.query(Restaurant).filter_by(id=restaurant_id).first()
+            if not restaurant:
+                return jsonify({'error': 'Restaurant not found'}), 404
+            
+            # Get all cameras for this restaurant
+            cameras = db.query(Camera).filter_by(restaurant_id=restaurant_id).order_by(Camera.channel_number).all()
+            
+            result = []
+            for cam in cameras:
+                # Get apps assigned to this camera
+                camera_apps = db.query(CameraApp).filter_by(camera_id=cam.id).all()
+                apps = [{'app_name': ca.app_name, 'is_active': ca.is_active} for ca in camera_apps]
+                
+                result.append({
+                    'id': cam.id,
+                    'channel_id': cam.channel_id,
+                    'channel_name': cam.channel_name,
+                    'channel_number': cam.channel_number,
+                    'rtsp_url': cam.rtsp_url,
+                    'is_active': cam.is_active,
+                    'apps': apps
+                })
+            
+            return jsonify({
+                'success': True,
+                'restaurant': {
+                    'id': restaurant.id,
+                    'restaurant_name': restaurant.restaurant_name,
+                    'location': restaurant.location
+                },
+                'cameras': result,
+                'count': len(result)
+            })
+    except Exception as e:
+        logging.error(f"Error fetching cameras for restaurant {restaurant_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/restaurants', methods=['POST'])
+@login_required
+def create_restaurant():
+    """Create a new restaurant (admin only)"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['restaurant_code', 'restaurant_name']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'error': f'Missing required field: {field}'}), 400
+        
+        with SessionLocal() as db:
+            # Check if restaurant already exists
+            existing = db.query(Restaurant).filter_by(restaurant_code=data['restaurant_code']).first()
+            if existing:
+                return jsonify({'error': 'Restaurant with this code already exists'}), 400
+            
+            # Create new restaurant
+            new_restaurant = Restaurant(
+                restaurant_code=data['restaurant_code'],
+                restaurant_name=data['restaurant_name'],
+                location=data.get('location'),
+                dvr_ip=data.get('dvr_ip'),
+                dvr_username=data.get('dvr_username'),
+                dvr_password=data.get('dvr_password'),
+                telegram_chat_id=data.get('telegram_chat_id'),
+                is_active=data.get('is_active', True)
+            )
+            
+            db.add(new_restaurant)
+            db.commit()
+            db.refresh(new_restaurant)
+            
+            logging.info(f"Created new restaurant: {new_restaurant.restaurant_name} - {new_restaurant.location}")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Restaurant created successfully',
+                'restaurant': {
+                    'id': new_restaurant.id,
+                    'restaurant_code': new_restaurant.restaurant_code,
+                    'restaurant_name': new_restaurant.restaurant_name,
+                    'location': new_restaurant.location
+                }
+            }), 201
+    except Exception as e:
+        logging.error(f"Error creating restaurant: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/restaurants/<int:restaurant_id>', methods=['PUT'])
+@login_required
+def update_restaurant(restaurant_id):
+    """Update restaurant details (admin only)"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        data = request.get_json()
+        
+        with SessionLocal() as db:
+            restaurant = db.query(Restaurant).filter_by(id=restaurant_id).first()
+            if not restaurant:
+                return jsonify({'error': 'Restaurant not found'}), 404
+            
+            # Update fields if provided
+            if 'restaurant_code' in data:
+                restaurant.restaurant_code = data['restaurant_code']
+            if 'restaurant_name' in data:
+                restaurant.restaurant_name = data['restaurant_name']
+            if 'location' in data:
+                restaurant.location = data['location']
+            if 'dvr_ip' in data:
+                restaurant.dvr_ip = data['dvr_ip']
+            if 'dvr_username' in data:
+                restaurant.dvr_username = data['dvr_username']
+            if 'dvr_password' in data:
+                restaurant.dvr_password = data['dvr_password']
+            if 'telegram_chat_id' in data:
+                restaurant.telegram_chat_id = data['telegram_chat_id']
+            if 'is_active' in data:
+                restaurant.is_active = data['is_active']
+            
+            restaurant.updated_at = datetime.now()
+            
+            db.commit()
+            
+            logging.info(f"Updated restaurant {restaurant_id}: {restaurant.restaurant_name}")
+            
+            return jsonify({
+                'success': True,
+                'message': 'Restaurant updated successfully'
+            })
+    except Exception as e:
+        logging.error(f"Error updating restaurant {restaurant_id}: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+
 _MODEL_CACHE = {}
 
 def load_model(model_path: str):
@@ -2802,10 +3205,73 @@ def load_model(model_path: str):
         return None
 
 def start_streams():
+    """Initialize all video stream processors
+    
+    First tries to load from database (new multi-restaurant structure).
+    Falls back to rtsp_links.txt if database is empty (backward compatibility).
+    """
+    logging.info("=" * 70)
+    logging.info("🚀 Initializing stream processors...")
+    
+    # Try loading from database first
+    if db_connected:
+        try:
+            with SessionLocal() as db:
+                # Check if we have any cameras in database
+                camera_count = db.query(Camera).count()
+                
+                if camera_count > 0:
+                    logging.info(f"📊 Loading cameras from database ({camera_count} cameras found)")
+                    
+                    # Get all active cameras with their restaurants and apps
+                    cameras_data = db.query(Camera, Restaurant).\
+                        join(Restaurant, Camera.restaurant_id == Restaurant.id).\
+                        filter(Camera.is_active == True, Restaurant.is_active == True).all()
+                    
+                    logging.info(f"✅ Found {len(cameras_data)} active cameras")
+                    
+                    # Group cameras by RTSP URL for stream assignments
+                    stream_assignments = defaultdict(lambda: {'apps': set(), 'name': '', 'id': '', 'restaurant': None})
+                    
+                    for camera, restaurant in cameras_data:
+                        # Use existing RTSP URL or generate if needed
+                        rtsp_url = camera.rtsp_url
+                        channel_id = camera.channel_id
+                        
+                        # Get apps for this camera
+                        camera_apps = db.query(CameraApp).filter_by(
+                            camera_id=camera.id,
+                            is_active=True
+                        ).all()
+                        
+                        app_names = [ca.app_name for ca in camera_apps]
+                        
+                        stream_assignments[rtsp_url]['apps'].update(app_names)
+                        stream_assignments[rtsp_url]['name'] = camera.channel_name
+                        stream_assignments[rtsp_url]['id'] = channel_id
+                        stream_assignments[rtsp_url]['restaurant'] = restaurant
+                        
+                        logging.info(f"  📹 {camera.channel_name} → {', '.join(app_names)}")
+                    
+                    # Start streams from database data
+                    _start_streams_from_data(stream_assignments)
+                    logging.info("=" * 70)
+                    return
+                else:
+                    logging.info("No cameras in database, falling back to rtsp_links.txt")
+        except Exception as e:
+            logging.warning(f"Error loading from database, falling back to file: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    # Fallback to rtsp_links.txt (backward compatibility)
+    logging.info("📄 Loading cameras from rtsp_links.txt (legacy mode)")
     if not os.path.exists(RTSP_LINKS_FILE):
-        logging.error(f"'{RTSP_LINKS_FILE}' not found.")
+        logging.error(f"'{RTSP_LINKS_FILE}' not found and no database data available.")
+        logging.info("=" * 70)
         return
-    stream_assignments = defaultdict(lambda: {'apps': set(), 'name': ''})
+    
+    stream_assignments = defaultdict(lambda: {'apps': set(), 'name': '', 'id': '', 'restaurant': None})
     with open(RTSP_LINKS_FILE, 'r') as f:
         for line in f:
             if line.strip() and not line.startswith('#'):
@@ -2816,10 +3282,22 @@ def start_streams():
                 stream_assignments[link]['apps'].update(app_names)
                 stream_assignments[link]['name'] = name
                 stream_assignments[link]['id'] = channel_id
+                logging.info(f"  📹 {name} → {', '.join(app_names)}")
+    
+    _start_streams_from_data(stream_assignments)
+    logging.info("=" * 70)
+
+def _start_streams_from_data(stream_assignments):
+    """Helper function to start streams from parsed data (database or file)"""
     for link, assignment in stream_assignments.items():
         channel_id, channel_name, app_names = assignment['id'], assignment['name'], list(assignment['apps'])
-        if channel_id not in stream_processors: stream_processors[channel_id] = []
+        restaurant = assignment.get('restaurant')
+        
+        if channel_id not in stream_processors: 
+            stream_processors[channel_id] = []
+        
         active_app_names = app_names[:]
+        
         # Start a shared FrameHub per link
         hub = FrameHub(link, channel_name)
         hub.start()

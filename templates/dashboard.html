@@ -155,6 +155,58 @@
     border-radius: 4px; 
     transition: width 1s ease;
 }
+
+/* Restaurant Selector Styles */
+.restaurant-selector {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: #17181a;
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: 1px solid #2a2d31;
+    margin-right: 12px;
+}
+.restaurant-selector label {
+    font-size: 12px;
+    color: #9aa0a6;
+    font-weight: 500;
+}
+.restaurant-selector select {
+    background: #0f1112;
+    border: 1px solid #2a2d31;
+    color: #fff;
+    padding: 8px 32px 8px 12px;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    outline: none;
+    appearance: none;
+    background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12"><path fill="%239aa0a6" d="M6 9L1 4h10z"/></svg>');
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    min-width: 250px;
+}
+.restaurant-selector select:hover {
+    border-color: #4557e1;
+}
+.restaurant-selector select:focus {
+    border-color: #1640ff;
+}
+.restaurant-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: linear-gradient(90deg, #1640ff, #2b3bff);
+    color: #fff;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+}
+.restaurant-badge .icon {
+    font-size: 14px;
+}
   </style>
 </head>
 <body>
@@ -194,9 +246,31 @@
       <div class="topbar">
         <div class="title">
           <h2 id="page-title">Dashboard Overview</h2>
-          <div class="sub" id="page-subtitle">Real-time monitoring</div>
+          <div class="sub" id="page-subtitle">
+            {% if selected_restaurant %}
+              <span class="restaurant-badge">
+                <span class="icon">🏪</span>
+                {{ selected_restaurant.restaurant_name }} - {{ selected_restaurant.location }}
+              </span>
+            {% else %}
+              Real-time monitoring
+            {% endif %}
+          </div>
         </div>
         <div class="right">
+          {% if restaurants %}
+          <div class="restaurant-selector">
+            <label for="restaurant-select">📍 Restaurant:</label>
+            <select id="restaurant-select" onchange="switchRestaurant(this.value)">
+              <option value="">All Restaurants</option>
+              {% for restaurant in restaurants %}
+              <option value="{{ restaurant.id }}" {% if selected_restaurant and selected_restaurant.id == restaurant.id %}selected{% endif %}>
+                {{ restaurant.display_name }}
+              </option>
+              {% endfor %}
+            </select>
+          </div>
+          {% endif %}
           <a href="/logout" class="pill" style="background:#26a44b;color:#fff;text-decoration:none">Logout</a>
         </div>
       </div>
@@ -450,7 +524,11 @@
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
-              <img src="/video_feed/PeopleCounter/cam_3df702bb28" alt="Loading...">
+              {% if app_configs['PeopleCounter'] and app_configs['PeopleCounter']['channels'] %}
+              <img src="/video_feed/PeopleCounter/{{ app_configs['PeopleCounter']['channels'][0]['id'] }}" alt="Loading...">
+              {% else %}
+              <img src="" alt="No camera configured">
+              {% endif %}
             </div>
             <div class="video-meta"><strong>Main Entrance Camera</strong></div>
           </div>
@@ -503,7 +581,11 @@
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
-              <img src="/video_feed/QueueMonitor/cam_f822b0bf4e">
+              {% if app_configs.get('QueueMonitor') and app_configs['QueueMonitor'].get('channels') %}
+              <img src="/video_feed/QueueMonitor/{{ app_configs['QueueMonitor']['channels'][0]['id'] }}">
+              {% else %}
+              <img src="" alt="No camera configured">
+              {% endif %}
             </div>
             <div class="video-meta"><strong>Queue Monitor</strong></div>
           </div>
@@ -535,7 +617,11 @@
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
-              <img src="/video_feed/KitchenCompliance/cam_c6ef0fb589">
+              {% if app_configs.get('KitchenCompliance') and app_configs['KitchenCompliance'].get('channels') %}
+              <img src="/video_feed/KitchenCompliance/{{ app_configs['KitchenCompliance']['channels'][0]['id'] }}">
+              {% else %}
+              <img src="" alt="No camera configured">
+              {% endif %}
             </div>
             <div class="video-meta"><strong>Kitchen Compliance</strong></div>
           </div>
@@ -554,7 +640,11 @@
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
-              <img src="/video_feed/Generic/cam_f948cba9d4">
+              {% if app_configs.get('Generic') and app_configs['Generic'].get('channels') %}
+              <img src="/video_feed/Generic/{{ app_configs['Generic']['channels'][0]['id'] }}">
+              {% else %}
+              <img src="" alt="No camera configured">
+              {% endif %}
             </div>
             <div class="video-meta"><strong>Front Office Violation</strong></div>
           </div>
@@ -574,7 +664,11 @@
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
-              <img src="/video_feed/OccupancyMonitor/cam_d77ace3828">
+              {% if app_configs.get('OccupancyMonitor') and app_configs['OccupancyMonitor'].get('channels') %}
+              <img src="/video_feed/OccupancyMonitor/{{ app_configs['OccupancyMonitor']['channels'][0]['id'] }}">
+              {% else %}
+              <img src="" alt="No camera configured">
+              {% endif %}
             </div>
             <div class="video-meta"><strong>Kitchen Attendance</strong></div>
           </div>
@@ -643,14 +737,19 @@
 
     const API_TOKEN = 'Z4N8T2W9L3H6Q1P';
 
-    const channels = {
-  'PeopleCounter': 'cam_3df702bb28',
-  'QueueMonitor': 'cam_f822b0bf4e',
-  'KitchenCompliance': 'cam_c6ef0fb589',
-  'Generic': 'cam_f948cba9d4',
-  'RawFeed': 'cam_f948cba9d4',
-  'OccupancyMonitor': 'cam_d77ace3828'
-};
+    // Get channel IDs from backend config
+    const app_configs = {{ app_configs|tojson|safe }};
+    
+    // Build channels object dynamically from app_configs
+    const channels = {};
+    for (const [app_name, config] of Object.entries(app_configs)) {
+      if (config.channels && config.channels.length > 0) {
+        channels[app_name] = config.channels[0].id;
+      }
+    }
+    
+    console.log('Loaded channels from backend:', channels);
+    
 let socket = io();
 socket.on('connect', () => console.log('Connected'));
 
@@ -1345,6 +1444,23 @@ function switchView(view) {
     if (view === 'people-counter') loadPeakAnalytics();
   }
 }
+
+// Restaurant switching function
+function switchRestaurant(restaurantId) {
+  const currentUrl = new URL(window.location.href);
+  
+  if (restaurantId && restaurantId !== '') {
+    // Add or update restaurant_id parameter
+    currentUrl.searchParams.set('restaurant_id', restaurantId);
+  } else {
+    // Remove restaurant_id parameter to show all restaurants
+    currentUrl.searchParams.delete('restaurant_id');
+  }
+  
+  // Reload page with new restaurant filter
+  window.location.href = currentUrl.toString();
+}
+
 let currentViolationFilter = null;
 
 function loadHistory(view, page = 1, violationType = null) {
