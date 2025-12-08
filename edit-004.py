@@ -73,7 +73,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:root@127.0.0.1:5432/sakshi"
+DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
@@ -1565,32 +1565,33 @@ class QueueMonitorProcessor(threading.Thread):
         # Create annotated frame with person bounding boxes
         annotated_frame = frame.copy()
         
-        # Draw ROI polygons on the frame for monitoring
-        # Main ROI (Queue area) - Blue polygon
-        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-            try:
-                roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
-                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
-                # Add label for main ROI
-                if len(roi_points) > 0:
-                    label_pos = tuple(roi_points[0])
-                    cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            except Exception as e:
-                logging.warning(f"Could not draw main ROI: {e}")
-        
-        # Secondary ROI (Counter area) - Green polygon
-        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-            try:
-                roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
-                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
-                # Add label for secondary ROI
-                if len(roi_points) > 0:
-                    label_pos = tuple(roi_points[0])
-                    cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            except Exception as e:
-                logging.warning(f"Could not draw secondary ROI: {e}")
+        # ROI polygons hidden - uncomment below to show ROI lines
+        # # Draw ROI polygons on the frame for monitoring
+        # # Main ROI (Queue area) - Blue polygon
+        # if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+        #     try:
+        #         roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
+        #         cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
+        #         # Add label for main ROI
+        #         if len(roi_points) > 0:
+        #             label_pos = tuple(roi_points[0])
+        #             cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
+        #                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        #     except Exception as e:
+        #         logging.warning(f"Could not draw main ROI: {e}")
+        # 
+        # # Secondary ROI (Counter area) - Green polygon
+        # if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+        #     try:
+        #         roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
+        #         cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
+        #         # Add label for secondary ROI
+        #         if len(roi_points) > 0:
+        #             label_pos = tuple(roi_points[0])
+        #             cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
+        #                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        #     except Exception as e:
+        #         logging.warning(f"Could not draw secondary ROI: {e}")
         
         # Draw person bounding boxes
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
@@ -2240,9 +2241,6 @@ def dashboard():
     """Main dashboard - supports optional restaurant filtering via query parameter"""
     restaurant_id = request.args.get('restaurant_id', type=int)
     
-    # Get app configs (filtered by restaurant if specified)
-    app_configs = get_app_configs(restaurant_id=restaurant_id)
-    
     # Get list of all restaurants for dropdown (if database connected)
     restaurants = []
     selected_restaurant = None
@@ -2261,6 +2259,10 @@ def dashboard():
                     for r in restaurant_query
                 ]
                 
+                # Auto-select first restaurant if none specified
+                if not restaurant_id and restaurants:
+                    restaurant_id = restaurants[0]['id']
+                
                 # Get selected restaurant details
                 if restaurant_id:
                     selected = db.query(Restaurant).filter_by(id=restaurant_id, is_active=True).first()
@@ -2272,6 +2274,9 @@ def dashboard():
                         }
         except Exception as e:
             logging.warning(f"Could not load restaurants for dashboard: {e}")
+    
+    # Get app configs (filtered by restaurant if specified)
+    app_configs = get_app_configs(restaurant_id=restaurant_id)
     
     return render_template(
         'dashboard.html',

@@ -262,7 +262,6 @@
           <div class="restaurant-selector">
             <label for="restaurant-select">📍 Restaurant:</label>
             <select id="restaurant-select" onchange="switchRestaurant(this.value)">
-              <option value="">All Restaurants</option>
               {% for restaurant in restaurants %}
               <option value="{{ restaurant.id }}" {% if selected_restaurant and selected_restaurant.id == restaurant.id %}selected{% endif %}>
                 {{ restaurant.display_name }}
@@ -1452,9 +1451,6 @@ function switchRestaurant(restaurantId) {
   if (restaurantId && restaurantId !== '') {
     // Add or update restaurant_id parameter
     currentUrl.searchParams.set('restaurant_id', restaurantId);
-  } else {
-    // Remove restaurant_id parameter to show all restaurants
-    currentUrl.searchParams.delete('restaurant_id');
   }
   
   // Reload page with new restaurant filter
