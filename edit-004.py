@@ -497,7 +497,7 @@ class MultiModelProcessor(threading.Thread):
         self.rtsp_url, self.channel_id, self.channel_name, self.tasks, self.detection_callback = rtsp_url, channel_id, channel_name, tasks, detection_callback
         self.is_running = True
         self.last_detection_times = {task['app_name']: 0 for task in self.tasks}
-        self.cooldown, self.gif_duration_seconds, self.fps = 30, 3, 10
+        self.cooldown, self.gif_duration_seconds, self.fps = 120, 3, 10
         self.expected_frame_shape = None  # Track expected frame dimensions
         self.consecutive_invalid_frames = 0  # Track consecutive invalid frames
         self.consecutive_errors = 0  # Track consecutive CUDA errors

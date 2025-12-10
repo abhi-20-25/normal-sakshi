@@ -25,7 +25,7 @@ VIOLATION_CLASSES = [2, 4, 6, 7, 8]  # Classes to detect: without_uniform, witho
 CONFIDENCE_THRESHOLD = 0.50
 FRAME_SKIP_RATE = 5
 PHONE_PERSISTENCE_SECONDS = 3
-ALERT_COOLDOWN_SECONDS = 20  # Reduced from 60 to capture more violations
+ALERT_COOLDOWN_SECONDS = 120  # 2 minutes cooldown between alerts
 
 # --- Uniform Color Ranges (HSV) ---
 YELLOW_LOWER = np.array([18, 80, 80])
