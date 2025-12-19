@@ -51,6 +51,12 @@ class SalesStats(BaseModel):
     total_sales: float
     order_count: int
 
+class HourlySalesStats(BaseModel):
+    date: str
+    hour: int
+    orders: int
+    revenue: float
+
 class PaymentStats(BaseModel):
     method: str
     amount: float
@@ -557,6 +563,39 @@ def get_daily_sales(days: int = 30, token: str = Depends(verify_token), db: Sess
     ).group_by(date_col).order_by(desc('date')).limit(days).all()
     
     return [SalesStats(date=str(r.date), total_sales=r.total_sales or 0, order_count=r.order_count) for r in results]
+
+@app.get("/analytics/sales-hourly", response_model=List[HourlySalesStats])
+def get_hourly_sales(
+    start_date: str = Query(..., description="Start date YYYY-MM-DD"), 
+    end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    token: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    """Get hourly sales breakdown for conversion analytics"""
+    sql = text("""
+        SELECT 
+            DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
+            EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
+            COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as orders,
+            SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
+        FROM petpooja_webhook_events
+        WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
+          AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
+          AND content->>'event' = 'orderdetails'
+        GROUP BY sale_date, sale_hour
+        ORDER BY sale_date, sale_hour
+    """)
+    
+    results = db.execute(sql, {"start_date": start_date, "end_date": end_date}).fetchall()
+    
+    return [
+        HourlySalesStats(
+            date=str(r[0]),
+            hour=r[1],
+            orders=r[2] or 0,
+            revenue=float(r[3]) if r[3] else 0.0
+        ) for r in results
+    ]
 
 @app.get("/analytics/payment-modes", response_model=List[PaymentStats])
 def get_payment_stats(token: str = Depends(verify_token), db: Session = Depends(get_db)):

@@ -2667,22 +2667,24 @@ def get_footfall_conversion():
         
         with SessionLocal() as db:
             # STEP 1: Get footfall data from local database (hourly_footfall)
-            # Join with cameras table to filter by restaurant if specified
+            # Use LEFT JOIN for cameras to handle empty cameras table
             footfall_query = db.query(
                 HourlyFootfall.report_date,
                 HourlyFootfall.hour,
                 func.sum(HourlyFootfall.in_count).label('visitors')
-            ).join(
-                Camera, HourlyFootfall.channel_id == Camera.channel_id
-            ).filter(
+            )
+            
+            # Only join with cameras if filtering by restaurant
+            if restaurant_id:
+                footfall_query = footfall_query.join(
+                    Camera, HourlyFootfall.channel_id == Camera.channel_id
+                ).filter(Camera.restaurant_id == restaurant_id)
+                logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
+            
+            footfall_query = footfall_query.filter(
                 HourlyFootfall.report_date >= start_date,
                 HourlyFootfall.report_date <= end_date
             )
-            
-            # Apply restaurant filter if specified
-            if restaurant_id:
-                footfall_query = footfall_query.filter(Camera.restaurant_id == restaurant_id)
-                logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
             
             footfall_query = footfall_query.group_by(
                 HourlyFootfall.report_date,
@@ -2692,23 +2694,58 @@ def get_footfall_conversion():
                 HourlyFootfall.hour
             ).all()
             
-            # STEP 2: Get sales data from local database (petpooja_webhook_events)
-            # Using JSONB extraction to get order details
-            sales_query = db.execute(text("""
-                SELECT 
-                    DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
-                    EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
-                    COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as orders,
-                    SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
-                FROM petpooja_webhook_events
-                WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
-                  AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
-                GROUP BY sale_date, sale_hour
-                ORDER BY sale_date, sale_hour
-            """), {
-                'start_date': start_date,
-                'end_date': end_date
-            }).fetchall()
+            # STEP 2: Get sales data - Try remote FastAPI first, fallback to local DB
+            import requests
+            FASTAPI_URL = 'http://13.202.92.108:8000'
+            API_TOKEN = 'Z4N8T2W9L3H6Q1P'
+            
+            sales_query_results = []
+            try:
+                # Try fetching hourly sales from remote FastAPI
+                response = requests.get(
+                    f"{FASTAPI_URL}/analytics/sales-hourly",
+                    params={
+                        'start_date': start_date.strftime('%Y-%m-%d'),
+                        'end_date': end_date.strftime('%Y-%m-%d'),
+                        'token': API_TOKEN
+                    },
+                    timeout=5
+                )
+                if response.status_code == 200:
+                    hourly_sales = response.json()
+                    # Convert API response to match local DB structure
+                    for item in hourly_sales:
+                        from collections import namedtuple
+                        Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
+                        sales_query_results.append(Row(
+                            sale_date=datetime.strptime(item['date'], '%Y-%m-%d').date(),
+                            sale_hour=item['hour'],
+                            orders=item['orders'],
+                            revenue=item['revenue']
+                        ))
+                    logging.info(f"✅ Fetched {len(sales_query_results)} hourly records from remote FastAPI")
+                else:
+                    raise Exception(f"API returned {response.status_code}")
+            except Exception as api_error:
+                logging.warning(f"Remote API unavailable, using local DB: {api_error}")
+                # Fallback to local database
+                sales_query_results = db.execute(text("""
+                    SELECT 
+                        DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
+                        COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as orders,
+                        SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
+                    FROM petpooja_webhook_events
+                    WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
+                      AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
+                    GROUP BY sale_date, sale_hour
+                    ORDER BY sale_date, sale_hour
+                """), {
+                    'start_date': start_date,
+                    'end_date': end_date
+                }).fetchall()
+            
+            sales_query = sales_query_results
             
             # STEP 3: Combine footfall and sales data
             # Create lookup dictionary for sales data
@@ -2766,6 +2803,71 @@ def get_footfall_conversion():
             overall_revenue_per_visitor = (total_revenue / total_visitors) if total_visitors > 0 else 0
             overall_avg_order_value = (total_revenue / total_orders) if total_orders > 0 else 0
             
+            # STEP 4: Identify busiest hours and peak demand patterns
+            # Group by hour to find average metrics per hour of day
+            hourly_aggregates = defaultdict(lambda: {'visitors': [], 'orders': [], 'revenue': []})
+            for row in results:
+                hour = row['hour']
+                hourly_aggregates[hour]['visitors'].append(row['visitors'])
+                hourly_aggregates[hour]['orders'].append(row['orders'])
+                hourly_aggregates[hour]['revenue'].append(row['revenue'])
+            
+            # Calculate averages and identify peaks
+            hourly_stats = []
+            for hour in range(24):
+                if hour in hourly_aggregates:
+                    agg = hourly_aggregates[hour]
+                    avg_visitors = sum(agg['visitors']) / len(agg['visitors']) if agg['visitors'] else 0
+                    avg_orders = sum(agg['orders']) / len(agg['orders']) if agg['orders'] else 0
+                    avg_revenue = sum(agg['revenue']) / len(agg['revenue']) if agg['revenue'] else 0
+                    total_volume = sum(agg['visitors']) + sum(agg['orders'])
+                    
+                    hourly_stats.append({
+                        'hour': hour,
+                        'hour_label': datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0'),
+                        'avg_visitors': round(avg_visitors, 1),
+                        'avg_orders': round(avg_orders, 1),
+                        'avg_revenue': round(avg_revenue, 2),
+                        'total_volume': total_volume
+                    })
+            
+            # Sort by total volume to find busiest hours
+            hourly_stats.sort(key=lambda x: x['total_volume'], reverse=True)
+            busiest_hours = hourly_stats[:5]  # Top 5 busiest hours
+            
+            # Calculate staffing recommendations based on demand
+            # Base staff: 2, +1 for every 20 visitors/hour
+            for hour_stat in hourly_stats:
+                visitors_per_hour = hour_stat['avg_visitors']
+                orders_per_hour = hour_stat['avg_orders']
+                
+                # Staffing recommendation (minimum 2, scale with traffic)
+                base_staff = 2
+                additional_staff = int(visitors_per_hour / 20)  # +1 staff per 20 visitors
+                recommended_staff = max(base_staff, base_staff + additional_staff)
+                
+                # Inventory recommendation (scale with orders)
+                # Assume 1.5x buffer for peak hours
+                inventory_multiplier = 1.5 if hour_stat in busiest_hours[:3] else 1.2
+                recommended_inventory_units = int(orders_per_hour * inventory_multiplier)
+                
+                hour_stat['recommended_staff'] = recommended_staff
+                hour_stat['recommended_inventory'] = recommended_inventory_units
+            
+            # Re-sort by hour for display
+            hourly_stats.sort(key=lambda x: x['hour'])
+            
+            # Identify peak periods
+            peak_morning = [h for h in busiest_hours if 6 <= h['hour'] < 12]
+            peak_afternoon = [h for h in busiest_hours if 12 <= h['hour'] < 17]
+            peak_evening = [h for h in busiest_hours if 17 <= h['hour'] < 24]
+            
+            peak_periods = {
+                'morning': [h['hour_label'] for h in peak_morning],
+                'afternoon': [h['hour_label'] for h in peak_afternoon],
+                'evening': [h['hour_label'] for h in peak_evening]
+            }
+            
             return jsonify({
                 'date_range': {
                     'start': start_date.strftime('%Y-%m-%d'),
@@ -2780,11 +2882,172 @@ def get_footfall_conversion():
                     'revenue_per_visitor': round(overall_revenue_per_visitor, 2),
                     'avg_order_value': round(overall_avg_order_value, 2)
                 },
-                'hourly_data': results
+                'hourly_data': results,
+                'peak_analysis': {
+                    'busiest_hours': busiest_hours,
+                    'peak_periods': peak_periods,
+                    'hourly_recommendations': hourly_stats
+                }
             })
     
     except Exception as e:
         logging.error(f"Error in footfall conversion analytics: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/analytics/staffing-recommendations')
+@login_required
+def get_staffing_recommendations():
+    """
+    Provides detailed staffing and inventory recommendations based on historical demand patterns
+    Analyzes footfall + billing data to suggest optimal resource allocation per hour
+    """
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        # Get query parameters
+        days = request.args.get('days', default=14, type=int)  # Default to 2 weeks for better patterns
+        restaurant_id = request.args.get('restaurant_id', type=int)
+        
+        end_date = datetime.now(IST).date()
+        start_date = end_date - timedelta(days=days - 1)
+        
+        with SessionLocal() as db:
+            # Get footfall data
+            footfall_query = db.query(
+                HourlyFootfall.hour,
+                func.avg(HourlyFootfall.in_count).label('avg_visitors'),
+                func.max(HourlyFootfall.in_count).label('max_visitors'),
+                func.count(HourlyFootfall.id).label('data_points')
+            ).filter(
+                HourlyFootfall.report_date >= start_date,
+                HourlyFootfall.report_date <= end_date,
+                HourlyFootfall.in_count > 0  # Only non-zero hours
+            )
+            
+            # Only join with cameras if filtering by restaurant
+            if restaurant_id:
+                footfall_query = footfall_query.join(
+                    Camera, HourlyFootfall.channel_id == Camera.channel_id
+                ).filter(Camera.restaurant_id == restaurant_id)
+            
+            footfall_query = footfall_query.group_by(HourlyFootfall.hour).all()
+            
+            # Get sales data grouped by hour
+            sales_query = db.execute(text("""
+                SELECT 
+                    sale_hour,
+                    AVG(order_count) as avg_orders,
+                    MAX(order_count) as max_orders,
+                    AVG(revenue) as avg_revenue
+                FROM (
+                    SELECT 
+                        DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
+                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
+                        COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as order_count,
+                        SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
+                    FROM petpooja_webhook_events
+                    WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
+                      AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
+                    GROUP BY sale_date, sale_hour
+                ) daily_sales
+                GROUP BY sale_hour
+                ORDER BY sale_hour
+            """), {
+                'start_date': start_date,
+                'end_date': end_date
+            }).fetchall()
+            
+            # Build hourly recommendations
+            recommendations = []
+            for hour in range(24):
+                # Get footfall data for this hour
+                footfall_data = next((f for f in footfall_query if f.hour == hour), None)
+                sales_data = next((s for s in sales_query if s.sale_hour == hour), None)
+                
+                if not footfall_data and not sales_data:
+                    continue  # Skip hours with no data
+                
+                avg_visitors = float(footfall_data.avg_visitors) if footfall_data else 0
+                max_visitors = int(footfall_data.max_visitors) if footfall_data else 0
+                avg_orders = float(sales_data.avg_orders) if sales_data else 0
+                max_orders = int(sales_data.max_orders) if sales_data else 0
+                avg_revenue = float(sales_data.avg_revenue) if sales_data else 0
+                
+                # Calculate demand score (0-100)
+                demand_score = min(100, int((avg_visitors / 50 * 60) + (avg_orders / 30 * 40)))
+                
+                # Determine demand level
+                if demand_score >= 75:
+                    demand_level = "Very High"
+                    demand_color = "#ef4444"  # Red
+                elif demand_score >= 50:
+                    demand_level = "High"
+                    demand_color = "#f59e0b"  # Orange
+                elif demand_score >= 25:
+                    demand_level = "Moderate"
+                    demand_color = "#3b82f6"  # Blue
+                else:
+                    demand_level = "Low"
+                    demand_color = "#22c55e"  # Green
+                
+                # Staffing recommendations
+                # Base: 2 staff, +1 per 15 visitors, +1 per 10 orders
+                base_staff = 2
+                visitor_based_staff = int(avg_visitors / 15)
+                order_based_staff = int(avg_orders / 10)
+                recommended_staff = max(base_staff, base_staff + visitor_based_staff + order_based_staff)
+                recommended_staff = min(recommended_staff, 12)  # Cap at 12
+                
+                # Inventory recommendations (in units/servings)
+                # Assume each order = 2 items average, add 30% buffer for peak
+                base_inventory = int(avg_orders * 2.3)
+                peak_buffer = int(max_orders * 0.5) if demand_score >= 50 else 0
+                recommended_inventory = base_inventory + peak_buffer
+                
+                hour_label = datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0')
+                
+                recommendations.append({
+                    'hour': hour,
+                    'hour_label': hour_label,
+                    'hour_range': f"{hour}:00 - {hour}:59",
+                    'avg_visitors': round(avg_visitors, 1),
+                    'max_visitors': max_visitors,
+                    'avg_orders': round(avg_orders, 1),
+                    'max_orders': max_orders,
+                    'avg_revenue': round(avg_revenue, 2),
+                    'demand_score': demand_score,
+                    'demand_level': demand_level,
+                    'demand_color': demand_color,
+                    'recommended_staff': recommended_staff,
+                    'recommended_inventory': recommended_inventory,
+                    'notes': f"Plan for {recommended_staff} staff members and stock {recommended_inventory} units"
+                })
+            
+            # Calculate summary statistics
+            total_avg_visitors = sum(r['avg_visitors'] for r in recommendations)
+            total_avg_orders = sum(r['avg_orders'] for r in recommendations)
+            peak_hours = sorted(recommendations, key=lambda x: x['demand_score'], reverse=True)[:5]
+            
+            return jsonify({
+                'date_range': {
+                    'start': start_date.strftime('%Y-%m-%d'),
+                    'end': end_date.strftime('%Y-%m-%d'),
+                    'days': days
+                },
+                'summary': {
+                    'total_hours_analyzed': len(recommendations),
+                    'avg_daily_visitors': round(total_avg_visitors, 1),
+                    'avg_daily_orders': round(total_avg_orders, 1),
+                    'peak_hours': [h['hour_label'] for h in peak_hours],
+                    'max_concurrent_staff_needed': max(r['recommended_staff'] for r in recommendations) if recommendations else 0
+                },
+                'hourly_recommendations': recommendations,
+                'peak_hours_detail': peak_hours
+            })
+    
+    except Exception as e:
+        logging.error(f"Error in staffing recommendations: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/occupancy/today/<channel_id>')

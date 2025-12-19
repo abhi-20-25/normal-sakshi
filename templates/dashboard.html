@@ -759,6 +759,56 @@
             </div>
           </div>
           
+          <!-- Peak Hours Analysis -->
+          <div class="report-section" style="margin-bottom: 32px;">
+            <h3>🔥 Busiest Hours Analysis</h3>
+            <div id="peakHoursContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px;">
+              <div style="text-align: center; color: #9aa0a6; padding: 20px;">Loading peak hours...</div>
+            </div>
+            
+            <div style="margin-top: 24px;">
+              <h4 style="color: #ddd; margin-bottom: 12px;">Peak Periods by Time of Day</h4>
+              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%); padding: 16px; border-radius: 8px;">
+                  <div style="font-size: 14px; opacity: 0.9;">Morning (6 AM - 12 PM)</div>
+                  <div style="font-size: 20px; font-weight: 700; margin-top: 8px;" id="peakMorning">--</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 16px; border-radius: 8px;">
+                  <div style="font-size: 14px; opacity: 0.9;">Afternoon (12 PM - 5 PM)</div>
+                  <div style="font-size: 20px; font-weight: 700; margin-top: 8px;" id="peakAfternoon">--</div>
+                </div>
+                <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); padding: 16px; border-radius: 8px;">
+                  <div style="font-size: 14px; opacity: 0.9;">Evening (5 PM - 12 AM)</div>
+                  <div style="font-size: 20px; font-weight: 700; margin-top: 8px;" id="peakEvening">--</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Staffing & Inventory Recommendations -->
+          <div class="report-section" style="margin-bottom: 32px;">
+            <h3>👥 Staffing & Inventory Recommendations</h3>
+            <div style="overflow-x: auto; margin-top: 16px;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Hour</th>
+                    <th>Demand Level</th>
+                    <th>Avg Visitors</th>
+                    <th>Avg Orders</th>
+                    <th>Recommended Staff</th>
+                    <th>Recommended Inventory</th>
+                  </tr>
+                </thead>
+                <tbody id="staffingRecommendationsBody">
+                  <tr>
+                    <td colspan="6" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading recommendations...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          
           <div class="report-section">
             <h3>Detailed Hourly Data</h3>
             <div style="overflow-x: auto;">
@@ -1881,6 +1931,33 @@ function loadConversionData() {
       document.getElementById('conversionRevenuePerVisitor').textContent = formatCurrency(data.summary.revenue_per_visitor);
       document.getElementById('conversionAvgOrderValue').textContent = formatCurrency(data.summary.avg_order_value);
       
+      // Update peak hours analysis
+      if (data.peak_analysis && data.peak_analysis.busiest_hours) {
+        const peakHoursHTML = data.peak_analysis.busiest_hours.map((hour, index) => {
+          const colors = ['#ef4444', '#f59e0b', '#eab308', '#84cc16', '#22c55e'];
+          const labels = ['🔥 Busiest', '🔥 Very Busy', '⚡ Busy', '📈 Active', '✅ Moderate'];
+          return `
+            <div style="background: ${colors[index]}20; border: 2px solid ${colors[index]}; padding: 16px; border-radius: 8px; text-align: center;">
+              <div style="font-size: 14px; color: ${colors[index]}; font-weight: 600;">${labels[index]}</div>
+              <div style="font-size: 24px; font-weight: 700; margin: 8px 0; color: #fff;">${hour.hour_label}</div>
+              <div style="font-size: 12px; color: #9aa0a6; margin-top: 4px;">
+                ${Math.round(hour.avg_visitors)} visitors • ${Math.round(hour.avg_orders)} orders
+              </div>
+            </div>
+          `;
+        }).join('');
+        document.getElementById('peakHoursContainer').innerHTML = peakHoursHTML;
+        
+        // Update peak periods
+        const peakPeriods = data.peak_analysis.peak_periods;
+        document.getElementById('peakMorning').textContent = peakPeriods.morning.length > 0 ? peakPeriods.morning.join(', ') : 'No peak hours';
+        document.getElementById('peakAfternoon').textContent = peakPeriods.afternoon.length > 0 ? peakPeriods.afternoon.join(', ') : 'No peak hours';
+        document.getElementById('peakEvening').textContent = peakPeriods.evening.length > 0 ? peakPeriods.evening.join(', ') : 'No peak hours';
+        
+        // Load staffing recommendations
+        loadStaffingRecommendations(days);
+      }
+      
       // Update table
       const tbody = document.getElementById('conversionDataTableBody');
       if (data.hourly_data.length === 0) {
@@ -1910,6 +1987,60 @@ function loadConversionData() {
       document.getElementById('conversionDataTableBody').innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load data</td></tr>';
     });
 }
+
+function loadStaffingRecommendations(days) {
+  // Build URL with restaurant filter if applicable
+  let url = `/api/analytics/staffing-recommendations?days=${days || 14}`;
+  if (selected_restaurant && selected_restaurant.id) {
+    url += `&restaurant_id=${selected_restaurant.id}`;
+  }
+  
+  fetch(url, {
+    credentials: 'same-origin',
+    headers: { 'Accept': 'application/json' }
+  })
+    .then(response => {
+      if (!response.ok) throw new Error(`Server returned ${response.status}`);
+      return response.json();
+    })
+    .then(data => {
+      console.log('Received staffing recommendations:', data);
+      
+      if (!data || !data.hourly_recommendations) {
+        throw new Error('Invalid data format received');
+      }
+      
+      // Filter to only show business hours (typically 6 AM to 11 PM)
+      const businessHours = data.hourly_recommendations.filter(h => h.hour >= 6 && h.hour <= 23);
+      
+      const tbody = document.getElementById('staffingRecommendationsBody');
+      if (businessHours.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #9aa0a6;">No recommendations available</td></tr>';
+      } else {
+        tbody.innerHTML = businessHours.map(rec => {
+          const demandBadge = `<span style="background: ${rec.demand_color}; color: white; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">${rec.demand_level}</span>`;
+          const staffBadge = `<span style="background: #3b82f6; color: white; padding: 4px 10px; border-radius: 6px; font-weight: 600;">${rec.recommended_staff} staff</span>`;
+          const inventoryBadge = `<span style="background: #10b981; color: white; padding: 4px 10px; border-radius: 6px; font-weight: 600;">${rec.recommended_inventory} units</span>`;
+          
+          return `
+            <tr style="${rec.demand_score >= 70 ? 'background: rgba(239, 68, 68, 0.1);' : ''}">
+              <td><strong>${rec.hour_label}</strong><br><small style="color: #9aa0a6;">${rec.hour_range}</small></td>
+              <td>${demandBadge}</td>
+              <td>${Math.round(rec.avg_visitors)} <small style="color: #9aa0a6;">(max: ${rec.max_visitors})</small></td>
+              <td>${Math.round(rec.avg_orders)} <small style="color: #9aa0a6;">(max: ${rec.max_orders})</small></td>
+              <td>${staffBadge}</td>
+              <td>${inventoryBadge}</td>
+            </tr>
+          `;
+        }).join('');
+      }
+    })
+    .catch(error => {
+      console.error('Error loading staffing recommendations:', error);
+      document.getElementById('staffingRecommendationsBody').innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load recommendations</td></tr>';
+    });
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pc-date').valueAsDate = new Date();
   // Load peak analytics on page load
