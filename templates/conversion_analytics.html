@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Footfall-to-Sales Conversion | Sakshi.ai</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; background: #0f1112; color: #ddd; padding: 24px; }
+    .header { margin-bottom: 32px; }
+    .header h1 { font-size: 32px; color: #fff; margin-bottom: 8px; }
+    .header p { color: #9aa0a6; font-size: 14px; }
+    .back-btn { background: #17181a; padding: 10px 16px; border-radius: 8px; cursor: pointer; color: #ddd; border: 1px solid #2a2d31; font-size: 14px; display: inline-block; text-decoration: none; margin-bottom: 20px; }
+    .back-btn:hover { background: #1f2123; }
+    
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px; margin-bottom: 32px; }
+    .metric-card { background: #17181a; padding: 24px; border-radius: 12px; }
+    .metric-card .label { color: #9aa0a6; font-size: 13px; margin-bottom: 8px; }
+    .metric-card .value { font-size: 36px; font-weight: 700; color: #fff; }
+    .metric-card .unit { font-size: 16px; color: #6d7377; margin-left: 4px; }
+    .metric-card.highlight { border: 2px solid #1640ff; }
+    
+    .chart-section { background: #17181a; padding: 28px; border-radius: 12px; margin-bottom: 32px; }
+    .chart-section h2 { font-size: 20px; color: #fff; margin-bottom: 20px; }
+    .chart-container { position: relative; height: 350px; }
+    
+    .controls { margin-bottom: 24px; display: flex; gap: 12px; align-items: center; }
+    .controls select, .controls input { background: #17181a; border: 1px solid #2a2d31; color: #ddd; padding: 10px 14px; border-radius: 8px; font-size: 14px; }
+    .controls button { background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; }
+    .controls button:hover { opacity: 0.9; }
+    
+    .data-table { background: #17181a; padding: 28px; border-radius: 12px; }
+    .data-table h2 { font-size: 20px; color: #fff; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 14px; text-align: left; font-size: 13px; border-bottom: 1px solid #2a2d31; }
+    th { color: #9aa0a6; background: #121314; font-weight: 600; }
+    td { color: #ddd; }
+    tr:hover td { background: #1f2123; }
+    
+    .loading { text-align: center; padding: 60px; color: #9aa0a6; }
+    .error { background: #3d1717; border: 1px solid #6b2424; color: #ff6b6b; padding: 16px; border-radius: 8px; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+  <a href="/dashboard" class="back-btn">← Back to Dashboard</a>
+  
+  <div class="header">
+    <h1>📊 Footfall-to-Sales Conversion Analytics</h1>
+    <p>Compare visitor traffic with actual sales to measure conversion effectiveness</p>
+  </div>
+  
+  <div class="controls">
+    <label style="color: #9aa0a6; font-size: 14px;">Date Range:</label>
+    <select id="daysFilter" onchange="loadData()">
+      <option value="1">Today</option>
+      <option value="7" selected>Last 7 Days</option>
+      <option value="14">Last 14 Days</option>
+      <option value="30">Last 30 Days</option>
+    </select>
+    <button onclick="loadData()">Refresh Data</button>
+  </div>
+  
+  <div id="errorContainer"></div>
+  
+  <div class="metrics-grid">
+    <div class="metric-card highlight">
+      <div class="label">Conversion Rate</div>
+      <div class="value" id="conversionRate">--</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Total Visitors</div>
+      <div class="value" id="totalVisitors">--</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Total Orders</div>
+      <div class="value" id="totalOrders">--</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Total Revenue</div>
+      <div class="value" id="totalRevenue">--</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Revenue per Visitor</div>
+      <div class="value" id="revenuePerVisitor">--</div>
+    </div>
+    <div class="metric-card">
+      <div class="label">Average Order Value</div>
+      <div class="value" id="avgOrderValue">--</div>
+    </div>
+  </div>
+  
+  <div class="chart-section">
+    <h2>Hourly Conversion Breakdown</h2>
+    <div class="chart-container">
+      <canvas id="conversionChart"></canvas>
+    </div>
+  </div>
+  
+  <div class="data-table">
+    <h2>Detailed Hourly Data</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Hour</th>
+          <th>Visitors</th>
+          <th>Orders</th>
+          <th>Revenue</th>
+          <th>Conversion %</th>
+          <th>₹/Visitor</th>
+          <th>Avg Order Value</th>
+        </tr>
+      </thead>
+      <tbody id="dataTableBody">
+        <tr>
+          <td colspan="8" class="loading">Loading data...</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <script>
+    let conversionChart = null;
+    
+    function formatCurrency(value) {
+      return '₹' + value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+    
+    function loadData() {
+      const days = document.getElementById('daysFilter').value;
+      document.getElementById('errorContainer').innerHTML = '';
+      
+      // Show loading state
+      document.getElementById('dataTableBody').innerHTML = '<tr><td colspan="8" class="loading">Loading data...</td></tr>';
+      
+      console.log('Fetching conversion data for last', days, 'days...');
+      
+      fetch(`/api/analytics/footfall-conversion?days=${days}`, {
+        credentials: 'same-origin',  // Include cookies for authentication
+        headers: {
+          'Accept': 'application/json'
+        }
+      })
+        .then(response => {
+          console.log('Response status:', response.status);
+          if (!response.ok) {
+            if (response.status === 302 || response.status === 401) {
+              throw new Error('Please login first');
+            }
+            throw new Error(`Server returned ${response.status}`);
+          }
+          return response.json();
+        })
+        .then(data => {
+          console.log('Received data:', data);
+          
+          // Check if data exists
+          if (!data || !data.summary) {
+            throw new Error('Invalid data format received');
+          }
+          
+          // Update summary metrics
+          document.getElementById('conversionRate').innerHTML = data.summary.conversion_rate + '<span class="unit">%</span>';
+          document.getElementById('totalVisitors').textContent = data.summary.total_visitors.toLocaleString();
+          document.getElementById('totalOrders').textContent = data.summary.total_orders.toLocaleString();
+          document.getElementById('totalRevenue').textContent = formatCurrency(data.summary.total_revenue);
+          document.getElementById('revenuePerVisitor').textContent = formatCurrency(data.summary.revenue_per_visitor);
+          document.getElementById('avgOrderValue').textContent = formatCurrency(data.summary.avg_order_value);
+          
+          // Update table
+          const tbody = document.getElementById('dataTableBody');
+          if (data.hourly_data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #9aa0a6;">No data available for this period</td></tr>';
+          } else {
+            tbody.innerHTML = data.hourly_data.map(row => `
+              <tr>
+                <td>${row.date}</td>
+                <td>${row.hour_label}</td>
+                <td>${row.visitors}</td>
+                <td>${row.orders}</td>
+                <td>${formatCurrency(row.revenue)}</td>
+                <td>${row.conversion_rate}%</td>
+                <td>${formatCurrency(row.revenue_per_visitor)}</td>
+                <td>${formatCurrency(row.avg_order_value)}</td>
+              </tr>
+            `).join('');
+          }
+          
+          // Update chart
+          updateChart(data.hourly_data);
+        })
+        .catch(error => {
+          console.error('Error loading conversion data:', error);
+          document.getElementById('errorContainer').innerHTML = `
+            <div class="error">
+              ⚠️ Error loading conversion analytics: ${error.message}
+            </div>
+          `;
+          document.getElementById('dataTableBody').innerHTML = '<tr><td colspan="8" class="loading">Failed to load data</td></tr>';
+        });
+    }
+    
+    function updateChart(hourlyData) {
+      const ctx = document.getElementById('conversionChart').getContext('2d');
+      
+      // Prepare chart data
+      const labels = hourlyData.map(d => `${d.date} ${d.hour_label}`);
+      const visitors = hourlyData.map(d => d.visitors);
+      const orders = hourlyData.map(d => d.orders);
+      const conversionRates = hourlyData.map(d => d.conversion_rate);
+      
+      // Destroy existing chart if it exists
+      if (conversionChart) {
+        conversionChart.destroy();
+      }
+      
+      // Create new chart
+      conversionChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: 'Visitors',
+              data: visitors,
+              backgroundColor: 'rgba(92, 122, 197, 0.6)',
+              borderColor: 'rgba(92, 122, 197, 1)',
+              borderWidth: 1,
+              yAxisID: 'y'
+            },
+            {
+              label: 'Orders',
+              data: orders,
+              backgroundColor: 'rgba(69, 87, 225, 0.6)',
+              borderColor: 'rgba(69, 87, 225, 1)',
+              borderWidth: 1,
+              yAxisID: 'y'
+            },
+            {
+              label: 'Conversion %',
+              data: conversionRates,
+              type: 'line',
+              borderColor: 'rgba(255, 193, 7, 1)',
+              backgroundColor: 'rgba(255, 193, 7, 0.1)',
+              borderWidth: 2,
+              yAxisID: 'y1',
+              tension: 0.3
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: {
+            mode: 'index',
+            intersect: false
+          },
+          plugins: {
+            legend: {
+              labels: {
+                color: '#9aa0a6',
+                font: { size: 12 }
+              }
+            },
+            tooltip: {
+              callbacks: {
+                label: function(context) {
+                  let label = context.dataset.label || '';
+                  if (label) label += ': ';
+                  if (context.dataset.yAxisID === 'y1') {
+                    label += context.parsed.y.toFixed(2) + '%';
+                  } else {
+                    label += context.parsed.y;
+                  }
+                  return label;
+                }
+              }
+            }
+          },
+          scales: {
+            x: {
+              ticks: { color: '#9aa0a6', maxRotation: 45, minRotation: 45 },
+              grid: { color: 'rgba(255, 255, 255, 0.05)' }
+            },
+            y: {
+              type: 'linear',
+              position: 'left',
+              ticks: { color: '#9aa0a6' },
+              grid: { color: 'rgba(255, 255, 255, 0.05)' },
+              title: { display: true, text: 'Count', color: '#9aa0a6' }
+            },
+            y1: {
+              type: 'linear',
+              position: 'right',
+              ticks: { 
+                color: '#ffc107',
+                callback: function(value) {
+                  return value.toFixed(1) + '%';
+                }
+              },
+              grid: { drawOnChartArea: false },
+              title: { display: true, text: 'Conversion %', color: '#ffc107' }
+            }
+          }
+        }
+      });
+    }
+    
+    // Load data on page load
+    loadData();
+  </script>
+</body>
+</html>

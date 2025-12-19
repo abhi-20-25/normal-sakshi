@@ -14,7 +14,7 @@ import imageio
 from flask import Flask, Response, render_template, jsonify, url_for, request, stream_with_context, session, redirect
 from flask_socketio import SocketIO
 from functools import wraps
-from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, text, UniqueConstraint, Boolean, ForeignKey
+from sqlalchemy import create_engine, Column, Integer, String, Date, DateTime, Text, text, UniqueConstraint, Boolean, ForeignKey, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import sessionmaker, declarative_base
 from sqlalchemy.exc import OperationalError
@@ -185,6 +185,8 @@ QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
 # --- Flask and SocketIO Setup ---
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'a-very-secret-key-for-sakshi-ai'
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['SESSION_COOKIE_HTTPONLY'] = True
 # Force threading async mode to avoid eventlet/gevent interfering with streaming responses
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -2235,6 +2237,18 @@ def logout():
     session.clear()
     return redirect('/login')
 
+@app.route('/conversion-analytics')
+@login_required
+def conversion_analytics():
+    """Footfall-to-Sales Conversion Analytics Page"""
+    return render_template('conversion_analytics.html')
+
+@app.route('/debug-conversion')
+@login_required
+def debug_conversion():
+    """Debug page for conversion analytics"""
+    return render_template('debug_conversion.html')
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -2621,6 +2635,156 @@ def get_peak_analytics(channel_id):
             })
     except Exception as e:
         logging.error(f"Error in peak analytics: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/analytics/footfall-conversion')
+@login_required
+def get_footfall_conversion():
+    """
+    Calculate footfall-to-sales conversion metrics
+    Fetches footfall from local DB and sales from remote FastAPI (or local DB if available)
+    Returns hourly breakdown with conversion rates
+    Supports multi-restaurant filtering via restaurant_id query parameter
+    """
+    logging.info(f"Conversion API called - Session: {session.get('logged_in')}, User: {session.get('username')}")
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        # Get query parameters
+        days = request.args.get('days', default=7, type=int)
+        date_str = request.args.get('date')  # Optional: specific date (YYYY-MM-DD)
+        restaurant_id = request.args.get('restaurant_id', type=int)  # Optional: filter by restaurant
+        
+        # Calculate date range
+        if date_str:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+            start_date = target_date
+            end_date = target_date
+        else:
+            end_date = datetime.now(IST).date()
+            start_date = end_date - timedelta(days=days - 1)
+        
+        with SessionLocal() as db:
+            # STEP 1: Get footfall data from local database (hourly_footfall)
+            # Join with cameras table to filter by restaurant if specified
+            footfall_query = db.query(
+                HourlyFootfall.report_date,
+                HourlyFootfall.hour,
+                func.sum(HourlyFootfall.in_count).label('visitors')
+            ).join(
+                Camera, HourlyFootfall.channel_id == Camera.channel_id
+            ).filter(
+                HourlyFootfall.report_date >= start_date,
+                HourlyFootfall.report_date <= end_date
+            )
+            
+            # Apply restaurant filter if specified
+            if restaurant_id:
+                footfall_query = footfall_query.filter(Camera.restaurant_id == restaurant_id)
+                logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
+            
+            footfall_query = footfall_query.group_by(
+                HourlyFootfall.report_date,
+                HourlyFootfall.hour
+            ).order_by(
+                HourlyFootfall.report_date,
+                HourlyFootfall.hour
+            ).all()
+            
+            # STEP 2: Get sales data from local database (petpooja_webhook_events)
+            # Using JSONB extraction to get order details
+            sales_query = db.execute(text("""
+                SELECT 
+                    DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
+                    EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
+                    COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as orders,
+                    SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
+                FROM petpooja_webhook_events
+                WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
+                  AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
+                GROUP BY sale_date, sale_hour
+                ORDER BY sale_date, sale_hour
+            """), {
+                'start_date': start_date,
+                'end_date': end_date
+            }).fetchall()
+            
+            # STEP 3: Combine footfall and sales data
+            # Create lookup dictionary for sales data
+            sales_lookup = {}
+            for row in sales_query:
+                key = (row.sale_date, row.sale_hour)
+                sales_lookup[key] = {
+                    'orders': int(row.orders) if row.orders else 0,
+                    'revenue': float(row.revenue) if row.revenue else 0.0
+                }
+            
+            # Build result with conversion calculations
+            results = []
+            total_visitors = 0
+            total_orders = 0
+            total_revenue = 0.0
+            
+            for footfall_row in footfall_query:
+                date_val = footfall_row.report_date
+                hour_val = footfall_row.hour
+                visitors = footfall_row.visitors or 0
+                
+                # Lookup matching sales data
+                sales_data = sales_lookup.get((date_val, hour_val), {'orders': 0, 'revenue': 0.0})
+                orders = sales_data['orders']
+                revenue = sales_data['revenue']
+                
+                # Calculate metrics
+                conversion_rate = (orders / visitors * 100) if visitors > 0 else 0
+                revenue_per_visitor = (revenue / visitors) if visitors > 0 else 0
+                avg_order_value = (revenue / orders) if orders > 0 else 0
+                
+                # Format hour for display (12-hour format)
+                hour_label = datetime.strptime(str(hour_val), '%H').strftime('%I %p').lstrip('0')
+                
+                results.append({
+                    'date': date_val.strftime('%Y-%m-%d'),
+                    'hour': hour_val,
+                    'hour_label': hour_label,
+                    'visitors': visitors,
+                    'orders': orders,
+                    'revenue': round(revenue, 2),
+                    'conversion_rate': round(conversion_rate, 2),
+                    'revenue_per_visitor': round(revenue_per_visitor, 2),
+                    'avg_order_value': round(avg_order_value, 2)
+                })
+                
+                # Accumulate totals
+                total_visitors += visitors
+                total_orders += orders
+                total_revenue += revenue
+            
+            # Calculate overall metrics
+            overall_conversion = (total_orders / total_visitors * 100) if total_visitors > 0 else 0
+            overall_revenue_per_visitor = (total_revenue / total_visitors) if total_visitors > 0 else 0
+            overall_avg_order_value = (total_revenue / total_orders) if total_orders > 0 else 0
+            
+            return jsonify({
+                'date_range': {
+                    'start': start_date.strftime('%Y-%m-%d'),
+                    'end': end_date.strftime('%Y-%m-%d'),
+                    'days': days
+                },
+                'summary': {
+                    'total_visitors': total_visitors,
+                    'total_orders': total_orders,
+                    'total_revenue': round(total_revenue, 2),
+                    'conversion_rate': round(overall_conversion, 2),
+                    'revenue_per_visitor': round(overall_revenue_per_visitor, 2),
+                    'avg_order_value': round(overall_avg_order_value, 2)
+                },
+                'hourly_data': results
+            })
+    
+    except Exception as e:
+        logging.error(f"Error in footfall conversion analytics: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/api/occupancy/today/<channel_id>')

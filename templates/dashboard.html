@@ -224,6 +224,9 @@
         <a href="#" data-view="sales-analytics" class="nav-link">
           <div class="icon">💰</div><div>Sales Analytics</div>
         </a>
+        <a href="#" data-view="conversion-analytics" class="nav-link">
+          <div class="icon">📈</div><div>Conversion Analytics</div>
+        </a>
         <div class="section-title">APPLICATIONS</div>
         <a href="#" data-view="people-counter" class="nav-link">
           <div class="icon">👥</div><div>People Counter</div>
@@ -700,6 +703,88 @@
           <div class="pagination" id="occ-pagination"></div>
         </div>
       </div>
+
+      <!-- Conversion Analytics Section -->
+      <div id="conversion-analytics-section" class="section">
+        <button class="back-btn" onclick="switchView('overview')">← Back</button>
+        
+        <div style="padding: 0 6px;">
+          {% if selected_restaurant %}
+          <div style="background: linear-gradient(90deg, #1640ff, #2b3bff); padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 20px;">📍</span>
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">Showing data for:</div>
+              <div style="font-size: 16px; font-weight: 700;">{{ selected_restaurant.restaurant_name }}{% if selected_restaurant.location %} - {{ selected_restaurant.location }}{% endif %}</div>
+            </div>
+          </div>
+          {% endif %}
+          
+          <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 24px;">
+            <label style="color: #9aa0a6; font-size: 14px;">Date Range:</label>
+            <select id="conversionDaysFilter" onchange="loadConversionData()" style="background: #17181a; border: 1px solid #2a2d31; color: #ddd; padding: 10px 14px; border-radius: 8px; font-size: 14px;">
+              <option value="1">Today</option>
+              <option value="7" selected>Last 7 Days</option>
+              <option value="14">Last 14 Days</option>
+              <option value="30">Last 30 Days</option>
+            </select>
+            <button onclick="loadConversionData()" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">Refresh Data</button>
+          </div>
+          
+          <div id="conversionErrorContainer"></div>
+          
+          <div class="metrics" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 32px;">
+            <div class="card" style="border: 2px solid #1640ff;">
+              <h3>Conversion Rate</h3>
+              <div class="big" id="conversionRate">--</div>
+            </div>
+            <div class="card">
+              <h3>Total Visitors</h3>
+              <div class="big" id="conversionTotalVisitors">--</div>
+            </div>
+            <div class="card">
+              <h3>Total Orders</h3>
+              <div class="big" id="conversionTotalOrders">--</div>
+            </div>
+            <div class="card">
+              <h3>Total Revenue</h3>
+              <div class="big" id="conversionTotalRevenue">--</div>
+            </div>
+            <div class="card">
+              <h3>Revenue per Visitor</h3>
+              <div class="big" id="conversionRevenuePerVisitor">--</div>
+            </div>
+            <div class="card">
+              <h3>Average Order Value</h3>
+              <div class="big" id="conversionAvgOrderValue">--</div>
+            </div>
+          </div>
+          
+          <div class="report-section">
+            <h3>Detailed Hourly Data</h3>
+            <div style="overflow-x: auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Hour</th>
+                    <th>Visitors</th>
+                    <th>Orders</th>
+                    <th>Revenue</th>
+                    <th>Conversion %</th>
+                    <th>₹/Visitor</th>
+                    <th>Avg Order Value</th>
+                  </tr>
+                </thead>
+                <tbody id="conversionDataTableBody">
+                  <tr>
+                    <td colspan="8" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
   </div>
   <div id="lightbox" class="lightbox" onclick="closeLightbox()">
@@ -738,6 +823,10 @@
 
     // Get channel IDs from backend config
     const app_configs = {{ app_configs|tojson|safe }};
+    
+    // Restaurant information for multi-restaurant support
+    const selected_restaurant = {{ selected_restaurant|tojson|safe if selected_restaurant else 'null' }};
+    const all_restaurants = {{ restaurants|tojson|safe if restaurants else '[]' }};
     
     // Build channels object dynamically from app_configs
     const channels = {};
@@ -1414,6 +1503,7 @@ function switchView(view) {
   const viewMap = {
     'overview': { id: 'overview-section', title: 'Dashboard Overview', subtitle: 'Real-time monitoring' },
     'sales-analytics': { id: 'sales-analytics-section', title: 'Sales Analytics', subtitle: 'Revenue & Orders' },
+    'conversion-analytics': { id: 'conversion-analytics-section', title: 'Conversion Analytics', subtitle: 'Footfall-to-Sales Conversion' },
     'people-counter': { id: 'people-counter-section', title: 'People Counter', subtitle: 'Footfall analytics' },
     'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue analytics' },
     'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Safety monitoring' },
@@ -1430,7 +1520,10 @@ function switchView(view) {
     if (view === 'sales-analytics') {
         loadSalesData();
     }
-    if (view !== 'overview' && view !== 'sales-analytics') {
+    if (view === 'conversion-analytics') {
+        loadConversionData();
+    }
+    if (view !== 'overview' && view !== 'sales-analytics' && view !== 'conversion-analytics') {
       // Reset filter when switching views normally (not from filterKitchenViolations)
       if (view !== 'kitchen-compliance') {
         currentViolationFilter = null;
@@ -1737,6 +1830,85 @@ function openLightbox(src) {
 }
 function closeLightbox() {
   document.getElementById('lightbox').classList.remove('show');
+}
+
+function formatCurrency(value) {
+  return '₹' + value.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function loadConversionData() {
+  const days = document.getElementById('conversionDaysFilter').value;
+  document.getElementById('conversionErrorContainer').innerHTML = '';
+  
+  // Show loading state
+  document.getElementById('conversionDataTableBody').innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td></tr>';
+  
+  // Build URL with restaurant filter if applicable
+  let url = `/api/analytics/footfall-conversion?days=${days}`;
+  if (selected_restaurant && selected_restaurant.id) {
+    url += `&restaurant_id=${selected_restaurant.id}`;
+    console.log('Fetching conversion data for restaurant:', selected_restaurant.restaurant_name, 'last', days, 'days');
+  } else {
+    console.log('Fetching conversion data for all restaurants, last', days, 'days');
+  }
+  
+  fetch(url, {
+    credentials: 'same-origin',
+    headers: { 'Accept': 'application/json' }
+  })
+    .then(response => {
+      console.log('Response status:', response.status);
+      if (!response.ok) {
+        if (response.status === 302 || response.status === 401) {
+          throw new Error('Please login first');
+        }
+        throw new Error(`Server returned ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      console.log('Received conversion data:', data);
+      
+      if (!data || !data.summary) {
+        throw new Error('Invalid data format received');
+      }
+      
+      // Update summary metrics
+      document.getElementById('conversionRate').innerHTML = data.summary.conversion_rate + '<span style="font-size: 16px; color: #6d7377; margin-left: 4px;">%</span>';
+      document.getElementById('conversionTotalVisitors').textContent = data.summary.total_visitors.toLocaleString();
+      document.getElementById('conversionTotalOrders').textContent = data.summary.total_orders.toLocaleString();
+      document.getElementById('conversionTotalRevenue').textContent = formatCurrency(data.summary.total_revenue);
+      document.getElementById('conversionRevenuePerVisitor').textContent = formatCurrency(data.summary.revenue_per_visitor);
+      document.getElementById('conversionAvgOrderValue').textContent = formatCurrency(data.summary.avg_order_value);
+      
+      // Update table
+      const tbody = document.getElementById('conversionDataTableBody');
+      if (data.hourly_data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #9aa0a6;">No data available for this period</td></tr>';
+      } else {
+        tbody.innerHTML = data.hourly_data.map(row => `
+          <tr>
+            <td>${row.date}</td>
+            <td>${row.hour_label}</td>
+            <td>${row.visitors}</td>
+            <td>${row.orders}</td>
+            <td>${formatCurrency(row.revenue)}</td>
+            <td>${row.conversion_rate}%</td>
+            <td>${formatCurrency(row.revenue_per_visitor)}</td>
+            <td>${formatCurrency(row.avg_order_value)}</td>
+          </tr>
+        `).join('');
+      }
+    })
+    .catch(error => {
+      console.error('Error loading conversion data:', error);
+      document.getElementById('conversionErrorContainer').innerHTML = `
+        <div style="background: #3d1717; border: 1px solid #6b2424; color: #ff6b6b; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+          ⚠️ Error loading conversion analytics: ${error.message}
+        </div>
+      `;
+      document.getElementById('conversionDataTableBody').innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load data</td></tr>';
+    });
 }
 document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('pc-date').valueAsDate = new Date();
