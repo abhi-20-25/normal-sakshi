@@ -1,0 +1,211 @@
+╔══════════════════════════════════════════════════════════════════════════════╗
+║           FOOTFALL-TO-SALES CONVERSION ANALYTICS ARCHITECTURE                ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            DATA COLLECTION LAYER                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────┐                    ┌──────────────────────┐
+    │   AI Camera System  │                    │   PetPooja POS       │
+    │   (edit-004.py)     │                    │   System             │
+    │                     │                    │                      │
+    │  - People Detection │                    │  - Order Creation    │
+    │  - In/Out Tracking  │                    │  - Bill Generation   │
+    │  - Real-time Count  │                    │  - Webhook Trigger   │
+    └──────────┬──────────┘                    └──────────┬───────────┘
+               │                                           │
+               │ Continuous tracking                       │ On order event
+               │                                           │
+               ▼                                           ▼
+    ┌──────────────────────┐                   ┌──────────────────────┐
+    │  PeopleCounterProc   │                   │  POST /webhook       │
+    │  - Track per channel │                   │  Content-Type: JSON  │
+    │  - Hourly aggregation│                   │  {                   │
+    │  - IST timezone      │                   │   "event": "order",  │
+    └──────────┬───────────┘                   │   "properties": {...}│
+               │                                └──────────┬───────────┘
+               │                                           │
+               ▼                                           ▼
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          DATABASE STORAGE LAYER                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    ┌────────────────────────────────┐      ┌─────────────────────────────┐
+    │    hourly_footfall TABLE       │      │  petpooja_webhook_events    │
+    │  ───────────────────────────── │      │  ──────────────────────────  │
+    │  id (PK)                       │      │  id (PK)                     │
+    │  channel_id (VARCHAR)          │      │  content (JSONB)             │
+    │  report_date (DATE) ◄───┐     │      │  created_at (TIMESTAMP)      │
+    │  hour (0-23) ◄──────────┼───┐ │      │                              │
+    │  in_count (INT)          │   │ │      │  JSONB Structure:            │
+    │  out_count (INT)         │   │ │      │  {                           │
+    │                          │   │ │      │    "properties": {           │
+    │  INDEX: channel_id       │   │ │      │      "Order": {              │
+    │  INDEX: report_date      │   │ │      │        "orderID": "123",     │
+    │  UNIQUE: (channel, date, │   │ │      │        "total": "500",       │
+    │           hour)           │   │ │      │        "created_on": "..."   │
+    └──────────┬───────────────┘   │ │      │      }                       │
+               │                    │ │      │    }                         │
+               │                    │ │      │  }                           │
+    ┌──────────▼───────────────┐   │ │      └─────────────┬────────────────┘
+    │   daily_footfall TABLE   │   │ │                    │
+    │  ──────────────────────── │   │ │                    │
+    │  id (PK)                  │   │ │                    │
+    │  channel_id               │   │ │                    │
+    │  report_date (DATE)       │   │ │                    │
+    │  in_count (INT) - Summary │   │ │                    │
+    │  out_count (INT)          │   │ │                    │
+    └───────────────────────────┘   │ │                    │
+                                    │ │                    │
+                                    │ │                    │
+┌───────────────────────────────────┼─┼────────────────────┼──────────────────┐
+│                          ANALYTICS PROCESSING LAYER      │                  │
+└───────────────────────────────────┼─┼────────────────────┼──────────────────┘
+                                    │ │                    │
+                                    │ └────────────────────┘
+                                    │         JOIN ON:
+                                    │   • Date match
+                                    │   • Hour match
+                                    ▼
+         ┌──────────────────────────────────────────────────────────┐
+         │  /api/analytics/footfall-conversion?days={N}             │
+         │  ────────────────────────────────────────────────────────│
+         │                                                           │
+         │  STEP 1: Query Footfall Data                            │
+         │    SELECT report_date, hour, SUM(in_count) as visitors  │
+         │    FROM hourly_footfall                                  │
+         │    WHERE report_date >= (today - N days)                │
+         │    GROUP BY report_date, hour                           │
+         │                                                           │
+         │  STEP 2: Query Sales Data (JSONB Extraction)            │
+         │    SELECT                                                │
+         │      DATE(created_at AT TIME ZONE 'Asia/Kolkata'),      │
+         │      EXTRACT(HOUR FROM created_at),                     │
+         │      COUNT(DISTINCT orderID) as orders,                 │
+         │      SUM(CAST(total AS DECIMAL)) as revenue             │
+         │    FROM petpooja_webhook_events                         │
+         │    WHERE date >= (today - N days)                       │
+         │    GROUP BY date, hour                                  │
+         │                                                           │
+         │  STEP 3: Combine & Calculate Metrics                    │
+         │    FOR EACH (date, hour):                               │
+         │      • Lookup matching sales data                        │
+         │      • Conversion Rate = (orders/visitors) * 100        │
+         │      • Revenue per Visitor = revenue/visitors           │
+         │      • Avg Order Value = revenue/orders                 │
+         │                                                           │
+         │  STEP 4: Aggregate Summary                              │
+         │    • Total visitors, orders, revenue                     │
+         │    • Overall conversion rate                             │
+         │    • Overall revenue per visitor                         │
+         │    • Overall average order value                         │
+         │                                                           │
+         └───────────────────────┬──────────────────────────────────┘
+                                 │
+                                 │ JSON Response
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          PRESENTATION LAYER                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+         ┌─────────────────────────────────────────────────────┐
+         │  /conversion-analytics (Frontend Dashboard)         │
+         │  ───────────────────────────────────────────────────│
+         │                                                      │
+         │  ┌─────────────────────────────────────────────┐   │
+         │  │  SUMMARY METRICS (6 Cards)                  │   │
+         │  │  ─────────────────────────────────────────  │   │
+         │  │  [Conversion Rate] [Total Visitors]         │   │
+         │  │  [Total Orders]    [Total Revenue]          │   │
+         │  │  [₹/Visitor]      [Avg Order Value]        │   │
+         │  └─────────────────────────────────────────────┘   │
+         │                                                      │
+         │  ┌─────────────────────────────────────────────┐   │
+         │  │  HOURLY CONVERSION CHART (Chart.js)         │   │
+         │  │  ─────────────────────────────────────────  │   │
+         │  │  📊 Bar/Line Chart showing:                 │   │
+         │  │     - Visitors (blue bars)                   │   │
+         │  │     - Orders (green bars)                    │   │
+         │  │     - Conversion rate (red line)             │   │
+         │  │  X-axis: Date + Hour                         │   │
+         │  │  Y-axis: Count / Percentage                  │   │
+         │  └─────────────────────────────────────────────┘   │
+         │                                                      │
+         │  ┌─────────────────────────────────────────────┐   │
+         │  │  DETAILED DATA TABLE                        │   │
+         │  │  ─────────────────────────────────────────  │   │
+         │  │  Date | Hour | Visitors | Orders | Revenue  │   │
+         │  │       |      | Conv%    | ₹/Vis  | AOV     │   │
+         │  │  ────────────────────────────────────────── │   │
+         │  │  2025-12-16 | 9 AM | 15 | 5 | ₹1200 | ... │   │
+         │  │  2025-12-16 | 10 AM| 20 | 8 | ₹2400 | ... │   │
+         │  │  ...                                         │   │
+         │  └─────────────────────────────────────────────┘   │
+         │                                                      │
+         │  Controls: [Date Range: Last 7 Days ▼] [Refresh]   │
+         │                                                      │
+         └──────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              KEY CALCULATIONS                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    Conversion Rate (%)         Revenue per Visitor         Avg Order Value
+    ═══════════════════         ═══════════════════         ═══════════════
+    
+       Orders                       Total Revenue               Total Revenue
+    ─────────── × 100            ─────────────────           ─────────────────
+      Visitors                     Total Visitors              Total Orders
+    
+    Example: 45/150 × 100        Example: ₹12,500/150        Example: ₹12,500/45
+           = 30%                        = ₹83.33                    = ₹277.78
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              DATA FLOW SUMMARY                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    Camera → Detection → hourly_footfall DB ──┐
+                                               │
+                                               ├──► JOIN ──► API ──► Dashboard
+                                               │    (Date + Hour)
+    POS → Order → Webhook → petpooja_events ──┘
+
+    Frequency:
+    • Footfall: Real-time detection, hourly DB writes
+    • Sales: On-demand (webhook triggered by POS)
+    • Analytics: On-demand (user requests dashboard/API)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           TIMEZONE HANDLING                                  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    All timestamps converted to: Asia/Kolkata (IST)
+    
+    • Footfall: Stored in IST by edit-004.py
+    • Sales: UTC in DB, converted to IST in SQL query
+    • API Response: Date strings in YYYY-MM-DD format
+    • Dashboard: Displays in 12-hour format (9 AM, 10 AM, etc.)
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        CURRENT IMPLEMENTATION STATUS                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+    ✅ Database Schema Created
+    ✅ Footfall Tracking Active (edit-004.py)
+    ✅ Webhook Endpoint Ready (/petpooja/webhook)
+    ✅ Analytics API Implemented (/api/analytics/footfall-conversion)
+    ✅ Frontend Dashboard Built (/conversion-analytics)
+    ✅ Sample Data Generator (generate_sample_sales_data.py)
+    
+    ⚠️  Limited production data (footfall: Dec 8-16, sales: Nov 24)
+    ⚠️  Need date overlap for meaningful conversion metrics
+    
+    Next Steps:
+    1. Ensure PetPooja webhooks are actively received
+    2. Let system collect 7-14 days of aligned data
+    3. Monitor dashboard for insights
+    4. Set up alerts for low conversion rates
+
+═══════════════════════════════════════════════════════════════════════════════

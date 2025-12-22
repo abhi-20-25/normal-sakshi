@@ -18,7 +18,7 @@ IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Paths (Unified Model) ---
-UNIFIED_MODEL_PATH = 'final_best.pt'  # Single model for all violations
+UNIFIED_MODEL_PATH = 'models/final_best.pt'  # Single model for all violations
 VIOLATION_CLASSES = [2, 4, 6, 7, 8]  # Classes to detect: without_uniform, without_cap, without_apron, without_gloves, using_phone
 
 # --- Detection Configuration ---

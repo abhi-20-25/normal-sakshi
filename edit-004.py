@@ -90,11 +90,11 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'final_best.pt', 'target_class_id': [0, 2, 4, 6, 7, 8], 'confidence': 0.35, 'is_gif': False},
-    'PeopleCounter': {'model_path': 'yolo11n.pt' , 'confidence': 0.15},
-    'QueueMonitor': {'model_path': 'yolov8n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'final_best.pt', 'confidence': 0.35},  # Unified model
-    'OccupancyMonitor': {'model_path': 'yolo11n.pt', 'confidence': 0.15}
+    'Generic': {'model_path': 'models/final_best.pt', 'target_class_id': [0, 2, 4, 6, 7, 8], 'confidence': 0.35, 'is_gif': False},
+    'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
+    'QueueMonitor': {'model_path': 'models/yolov8n.pt' , 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'models/final_best.pt', 'confidence': 0.35},  # Unified model
+    'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15}
 }
 
 # --- YOLO tracking helper (CPU-only mode) ---
