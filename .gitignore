@@ -1,50 +1,70 @@
-# Virtual Environment
+# Virtual environment
 venv/
-env/
+.venv/
 ENV/
+env/
 
-# Python
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
 
-# Database files
-*.db
-*.sqlite3
+# Training datasets
+*dataset*/
+*.v*-athul.coco-segmentation/
+teatost.v2-athul.coco-segmentation/
+kitchen_unified_dataset/
+kitchen_yolo_dataset/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
+# YOLO runs
+runs/
+weights/
 
-# OS
-.DS_Store
-Thumbs.db
+# Windows Zone Identifier
+*.Zone.Identifier
 
 # Logs
 *.log
+*.log.*
+cpu_usage_log.json
+
+# Backup files
+*.backup
+*.bak
+*_backup_*
 
 # Temporary files
 *.tmp
 *.temp
 
+# IDE
+.vscode/
+.idea/
+
+# Database
+*.db
+
+# Media files (only tracking models, not training images)
 *.jpg
+*.jpeg
+*.png
 *.gif
+!Sakshi.png
+*.mp4
+*.avi
+
+# Model checkpoints (keep only final models)
+*.ckpt
+runs/
+
+# Deployment scripts (use deployment repo instead)
+deploy_*.sh
+*_to_server.sh
+
+# Test and diagnostic scripts
+test_*.py
+check_*.py
+verify_*.py
+diagnose_*.py
