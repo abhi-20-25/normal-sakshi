@@ -571,29 +571,40 @@ def get_hourly_sales(
     token: str = Depends(verify_token), 
     db: Session = Depends(get_db)
 ):
-    """Get hourly sales breakdown for conversion analytics"""
-    sql = text("""
-        SELECT 
-            DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
-            EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
-            COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as orders,
-            SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
-        FROM petpooja_webhook_events
-        WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
-          AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
-          AND content->>'event' = 'orderdetails'
-        GROUP BY sale_date, sale_hour
-        ORDER BY sale_date, sale_hour
-    """)
+    """Get hourly sales breakdown for conversion analytics - uses same deduplication logic as sales-daily"""
     
-    results = db.execute(sql, {"start_date": start_date, "end_date": end_date}).fetchall()
+    # Step 1: Get unique orders only (deduplicate by orderID, keep latest version)
+    order_id_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'orderID')
+    
+    subquery = db.query(func.max(PetpoojaWebhookEvent.id))\
+        .filter(PetpoojaWebhookEvent.content['event'].astext == 'orderdetails')\
+        .group_by(order_id_path)\
+        .subquery()
+    
+    # Step 2: Extract date and hour from Order.created_on (when order was placed)
+    created_on_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on')
+    date_col = cast(created_on_path, DateTime).cast(Date)
+    hour_col = func.extract('hour', cast(created_on_path, DateTime))
+    total_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'total'), Float)
+    
+    # Step 3: Query with deduplication
+    results = db.query(
+        date_col.label('sale_date'),
+        hour_col.label('sale_hour'),
+        func.count(PetpoojaWebhookEvent.id).label('orders'),
+        func.sum(total_col).label('revenue')
+    ).filter(
+        PetpoojaWebhookEvent.id.in_(subquery),  # Only unique orders (latest version)
+        date_col >= start_date,
+        date_col <= end_date
+    ).group_by(date_col, hour_col).order_by(date_col, hour_col).all()
     
     return [
         HourlySalesStats(
-            date=str(r[0]),
-            hour=r[1],
-            orders=r[2] or 0,
-            revenue=float(r[3]) if r[3] else 0.0
+            date=str(r.sale_date),
+            hour=int(r.sale_hour),
+            orders=r.orders or 0,
+            revenue=float(r.revenue) if r.revenue else 0.0
         ) for r in results
     ]
 

@@ -2728,16 +2728,23 @@ def get_footfall_conversion():
                     raise Exception(f"API returned {response.status_code}")
             except Exception as api_error:
                 logging.warning(f"Remote API unavailable, using local DB: {api_error}")
-                # Fallback to local database
+                # Fallback to local database - use same logic as sales-daily (deduplication by orderID)
                 sales_query_results = db.execute(text("""
+                    WITH unique_orders AS (
+                        SELECT MAX(id) as max_id
+                        FROM petpooja_webhook_events
+                        WHERE content->>'event' = 'orderdetails'
+                        GROUP BY content->'properties'->'Order'->>'orderID'
+                    )
                     SELECT 
-                        DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
-                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
-                        COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as orders,
+                        DATE(CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP)) as sale_date,
+                        EXTRACT(HOUR FROM CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP))::INTEGER as sale_hour,
+                        COUNT(*) as orders,
                         SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
                     FROM petpooja_webhook_events
-                    WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
-                      AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
+                    WHERE id IN (SELECT max_id FROM unique_orders)
+                      AND DATE(CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP)) >= :start_date 
+                      AND DATE(CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP)) <= :end_date
                     GROUP BY sale_date, sale_hour
                     ORDER BY sale_date, sale_hour
                 """), {
