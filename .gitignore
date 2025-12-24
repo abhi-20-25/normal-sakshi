@@ -1,5 +1,6 @@
 # Virtual environment
 venv/
+ttenv/
 .venv/
 ENV/
 env/
@@ -29,6 +30,7 @@ weights/
 *.log
 *.log.*
 cpu_usage_log.json
+nohup.out
 
 # Backup files
 *.backup
@@ -68,3 +70,4 @@ test_*.py
 check_*.py
 verify_*.py
 diagnose_*.py
+/test

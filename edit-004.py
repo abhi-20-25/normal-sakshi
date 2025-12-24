@@ -74,7 +74,7 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
 DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
-RTSP_LINKS_FILE = 'rtsp_links.txt'
+RTSP_LINKS_FILE = 'data/rtsp_links.txt'
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
 TELEGRAM_BOT_TOKEN = "7843300957:AAGVv866cPiDPVD0Wrk_wwEEHDSD64Pgaqs"
@@ -2674,12 +2674,17 @@ def get_footfall_conversion():
                 func.sum(HourlyFootfall.in_count).label('visitors')
             )
             
-            # Only join with cameras if filtering by restaurant
+            # Only join with cameras if filtering by restaurant AND cameras table has data
             if restaurant_id:
-                footfall_query = footfall_query.join(
-                    Camera, HourlyFootfall.channel_id == Camera.channel_id
-                ).filter(Camera.restaurant_id == restaurant_id)
-                logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
+                # Check if cameras table has any entries
+                camera_count = db.query(Camera).count()
+                if camera_count > 0:
+                    footfall_query = footfall_query.join(
+                        Camera, HourlyFootfall.channel_id == Camera.channel_id
+                    ).filter(Camera.restaurant_id == restaurant_id)
+                    logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
+                else:
+                    logging.warning(f"⚠️ restaurant_id={restaurant_id} provided but cameras table is empty - showing all footfall data")
             
             footfall_query = footfall_query.filter(
                 HourlyFootfall.report_date >= start_date,
@@ -2700,10 +2705,12 @@ def get_footfall_conversion():
             API_TOKEN = 'Z4N8T2W9L3H6Q1P'
             
             sales_query_results = []
+            remote_api_used = False
             try:
-                # Try fetching hourly sales from remote FastAPI
+                # Fetch DAILY sales from remote FastAPI (hourly endpoint not available on remote server)
+                logging.info(f"Attempting to fetch sales from remote API: {FASTAPI_URL}/analytics/sales-daily")
                 response = requests.get(
-                    f"{FASTAPI_URL}/analytics/sales-hourly",
+                    f"{FASTAPI_URL}/analytics/sales-daily",
                     params={
                         'start_date': start_date.strftime('%Y-%m-%d'),
                         'end_date': end_date.strftime('%Y-%m-%d'),
@@ -2711,64 +2718,155 @@ def get_footfall_conversion():
                     },
                     timeout=5
                 )
+                logging.info(f"Remote API response status: {response.status_code}")
+                
                 if response.status_code == 200:
-                    hourly_sales = response.json()
-                    # Convert API response to match local DB structure
-                    for item in hourly_sales:
-                        from collections import namedtuple
-                        Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
-                        sales_query_results.append(Row(
-                            sale_date=datetime.strptime(item['date'], '%Y-%m-%d').date(),
-                            sale_hour=item['hour'],
-                            orders=item['orders'],
-                            revenue=item['revenue']
-                        ))
-                    logging.info(f"✅ Fetched {len(sales_query_results)} hourly records from remote FastAPI")
+                    daily_sales = response.json()
+                    logging.info(f"Remote API returned {len(daily_sales) if daily_sales else 0} daily records")
+                    
+                    # Build daily sales lookup
+                    daily_sales_lookup = {}
+                    for item in daily_sales:
+                        sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
+                        daily_sales_lookup[sale_date] = {
+                            'orders': item['order_count'],
+                            'revenue': item['total_sales']
+                        }
+                    
+                    # Distribute daily sales across hours based on footfall patterns
+                    # First, calculate footfall distribution per day
+                    from collections import defaultdict
+                    footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
+                    footfall_by_date_total = defaultdict(int)
+                    
+                    for f in footfall_query:
+                        footfall_by_date_hour[f.report_date][f.hour] = f.visitors or 0
+                        footfall_by_date_total[f.report_date] += f.visitors or 0
+                    
+                    # Now distribute sales proportionally
+                    from collections import namedtuple
+                    Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
+                    
+                    # Check if viewing today to filter future hours
+                    current_time_ist = datetime.now(IST)
+                    current_date = current_time_ist.date()
+                    current_hour = current_time_ist.hour
+                    is_viewing_today = end_date == current_date
+                    
+                    for sale_date, sales_data in daily_sales_lookup.items():
+                        if sale_date in footfall_by_date_total and footfall_by_date_total[sale_date] > 0:
+                            # Distribute based on footfall proportion
+                            daily_total_footfall = footfall_by_date_total[sale_date]
+                            for hour, visitors in footfall_by_date_hour[sale_date].items():
+                                # CRITICAL FIX: Skip future hours when viewing TODAY
+                                if is_viewing_today and sale_date == current_date and hour > current_hour:
+                                    continue
+                                    
+                                proportion = visitors / daily_total_footfall
+                                # Allocate integer orders per hour (rounded) to avoid fractional order counts
+                                sales_query_results.append(Row(
+                                    sale_date=sale_date,
+                                    sale_hour=hour,
+                                    orders=int(round(sales_data['orders'] * proportion)),
+                                    revenue=round(sales_data['revenue'] * proportion, 2)
+                                ))
+                    
+                    remote_api_used = True
+                    logging.info(f"✅ Fetched {len(daily_sales)} daily records, distributed to {len(sales_query_results)} hourly records")
                 else:
+                    logging.warning(f"Remote API returned non-200 status: {response.status_code}")
                     raise Exception(f"API returned {response.status_code}")
             except Exception as api_error:
-                logging.warning(f"Remote API unavailable, using local DB: {api_error}")
+                logging.warning(f"⚠️ Remote API unavailable, using local DB: {api_error}")
+                
+                # Check if viewing today to filter future hours
+                current_time_ist = datetime.now(IST)
+                current_date = current_time_ist.date()
+                current_hour = current_time_ist.hour
+                is_viewing_today = end_date == current_date
+                
                 # Fallback to local database - use same logic as sales-daily (deduplication by orderID)
+                # Use COALESCE to fallback to created_at if created_on is null
                 sales_query_results = db.execute(text("""
                     WITH unique_orders AS (
                         SELECT MAX(id) as max_id
                         FROM petpooja_webhook_events
-                        WHERE content->>'event' = 'orderdetails'
+                        WHERE content->>'event' = 'orderdetails' OR content->'properties'->'Order' IS NOT NULL
                         GROUP BY content->'properties'->'Order'->>'orderID'
                     )
                     SELECT 
-                        DATE(CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP)) as sale_date,
-                        EXTRACT(HOUR FROM CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP))::INTEGER as sale_hour,
+                        DATE(COALESCE(
+                            CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                            created_at
+                        )) as sale_date,
+                        EXTRACT(HOUR FROM COALESCE(
+                            CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                            created_at
+                        ))::INTEGER as sale_hour,
                         COUNT(*) as orders,
                         SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
                     FROM petpooja_webhook_events
                     WHERE id IN (SELECT max_id FROM unique_orders)
-                      AND DATE(CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP)) >= :start_date 
-                      AND DATE(CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP)) <= :end_date
+                      AND DATE(COALESCE(
+                          CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                          created_at
+                      )) >= :start_date 
+                      AND DATE(COALESCE(
+                          CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                          created_at
+                      )) <= :end_date
+                      -- Filter future hours when viewing TODAY
+                      AND (
+                        :is_viewing_today = FALSE 
+                        OR DATE(COALESCE(
+                            CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                            created_at
+                        )) < :current_date
+                        OR (
+                            DATE(COALESCE(
+                                CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                                created_at
+                            )) = :current_date
+                            AND EXTRACT(HOUR FROM COALESCE(
+                                CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                                created_at
+                            ))::INTEGER <= :current_hour
+                        )
+                      )
                     GROUP BY sale_date, sale_hour
                     ORDER BY sale_date, sale_hour
                 """), {
                     'start_date': start_date,
-                    'end_date': end_date
+                    'end_date': end_date,
+                    'is_viewing_today': is_viewing_today,
+                    'current_date': current_date,
+                    'current_hour': current_hour
                 }).fetchall()
             
             sales_query = sales_query_results
+            
+            logging.info(f"📊 Data Summary: {len(footfall_query)} footfall records, {len(sales_query)} sales records")
+            logging.info(f"Using {'REMOTE FastAPI' if remote_api_used else 'LOCAL DATABASE'} for sales data")
             
             # STEP 3: Combine footfall and sales data
             # Create lookup dictionary for sales data
             sales_lookup = {}
             for row in sales_query:
                 key = (row.sale_date, row.sale_hour)
+                # Store integer order counts (rounded) to avoid decimals in UI
                 sales_lookup[key] = {
-                    'orders': int(row.orders) if row.orders else 0,
+                    'orders': int(float(row.orders)) if row.orders else 0,
                     'revenue': float(row.revenue) if row.revenue else 0.0
                 }
+            
+            logging.info(f"Sales data covers {len(sales_lookup)} unique date-hour combinations")
             
             # Build result with conversion calculations
             results = []
             total_visitors = 0
             total_orders = 0
             total_revenue = 0.0
+            matched_hours = 0
             
             for footfall_row in footfall_query:
                 date_val = footfall_row.report_date
@@ -2779,6 +2877,9 @@ def get_footfall_conversion():
                 sales_data = sales_lookup.get((date_val, hour_val), {'orders': 0, 'revenue': 0.0})
                 orders = sales_data['orders']
                 revenue = sales_data['revenue']
+                
+                if orders > 0 or revenue > 0:
+                    matched_hours += 1
                 
                 # Calculate metrics
                 conversion_rate = (orders / visitors * 100) if visitors > 0 else 0
@@ -2860,6 +2961,9 @@ def get_footfall_conversion():
                 
                 hour_stat['recommended_staff'] = recommended_staff
                 hour_stat['recommended_inventory'] = recommended_inventory_units
+                matched_hours += 1  # Count this as a successful match
+            
+            logging.info(f"✅ Successfully matched {matched_hours} out of {len(footfall_query)} footfall records with sales data")
             
             # Re-sort by hour for display
             hourly_stats.sort(key=lambda x: x['hour'])
@@ -2883,7 +2987,8 @@ def get_footfall_conversion():
                 },
                 'summary': {
                     'total_visitors': total_visitors,
-                    'total_orders': total_orders,
+                    # Display total orders as an integer (rounded) while keeping internal precision
+                    'total_orders': int(round(total_orders)),
                     'total_revenue': round(total_revenue, 2),
                     'conversion_rate': round(overall_conversion, 2),
                     'revenue_per_visitor': round(overall_revenue_per_visitor, 2),
@@ -2900,6 +3005,92 @@ def get_footfall_conversion():
     except Exception as e:
         logging.error(f"Error in footfall conversion analytics: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/analytics/conversion-debug')
+@login_required
+def conversion_debug():
+    """Debug endpoint to show raw data for troubleshooting conversion analytics"""
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        days = request.args.get('days', default=7, type=int)
+        end_date = datetime.now(IST).date()
+        start_date = end_date - timedelta(days=days - 1)
+        
+        with SessionLocal() as db:
+            # Check footfall data
+            footfall_count = db.query(HourlyFootfall).filter(
+                HourlyFootfall.report_date >= start_date,
+                HourlyFootfall.report_date <= end_date
+            ).count()
+            
+            footfall_sample = db.query(HourlyFootfall).filter(
+                HourlyFootfall.report_date >= start_date,
+                HourlyFootfall.report_date <= end_date
+            ).order_by(HourlyFootfall.report_date.desc(), HourlyFootfall.hour.desc()).limit(5).all()
+            
+            # Check PetPooja data
+            petpooja_count = db.execute(text("SELECT COUNT(*) FROM petpooja_webhook_events")).scalar()
+            
+            petpooja_sample_raw = db.execute(text("""
+                SELECT 
+                    id,
+                    created_at,
+                    COALESCE(
+                        CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
+                        created_at
+                    ) as effective_time,
+                    content->'properties'->'Order'->>'orderID' as order_id,
+                    content->'properties'->'Order'->>'total' as total
+                FROM petpooja_webhook_events
+                ORDER BY id DESC
+                LIMIT 5
+            """)).fetchall()
+            
+            return jsonify({
+                'debug_info': 'This shows what data is available for conversion analytics',
+                'date_range': {
+                    'start': start_date.strftime('%Y-%m-%d'),
+                    'end': end_date.strftime('%Y-%m-%d'),
+                    'days': days
+                },
+                'footfall': {
+                    'total_records_in_range': footfall_count,
+                    'sample_records': [
+                        {
+                            'date': f.report_date.strftime('%Y-%m-%d'),
+                            'hour': f.hour,
+                            'in_count': f.in_count,
+                            'out_count': f.out_count,
+                            'channel_id': f.channel_id
+                        } for f in footfall_sample
+                    ]
+                },
+                'petpooja_orders': {
+                    'total_records': petpooja_count,
+                    'sample_records': [
+                        {
+                            'id': row.id,
+                            'webhook_received_at': str(row.created_at),
+                            'order_time_used': str(row.effective_time),
+                            'order_id': row.order_id,
+                            'total': row.total,
+                            'in_date_range': start_date <= row.effective_time.date() <= end_date if row.effective_time else False
+                        } for row in petpooja_sample_raw
+                    ]
+                },
+                'explanation': {
+                    'footfall_data': 'Footfall from hourly_footfall table',
+                    'order_data': 'Orders from petpooja_webhook_events table',
+                    'note': 'Conversion analytics matches orders to footfall by date and hour. Both must exist for the same time period.'
+                }
+            })
+    except Exception as e:
+        logging.error(f"Error in conversion debug: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/analytics/staffing-recommendations')
 @login_required
@@ -2932,11 +3123,15 @@ def get_staffing_recommendations():
                 HourlyFootfall.in_count > 0  # Only non-zero hours
             )
             
-            # Only join with cameras if filtering by restaurant
+            # Only join with cameras if filtering by restaurant AND cameras table has data
             if restaurant_id:
-                footfall_query = footfall_query.join(
-                    Camera, HourlyFootfall.channel_id == Camera.channel_id
-                ).filter(Camera.restaurant_id == restaurant_id)
+                camera_count = db.query(Camera).count()
+                if camera_count > 0:
+                    footfall_query = footfall_query.join(
+                        Camera, HourlyFootfall.channel_id == Camera.channel_id
+                    ).filter(Camera.restaurant_id == restaurant_id)
+                else:
+                    logging.warning(f"⚠️ restaurant_id={restaurant_id} provided but cameras table is empty ({camera_count} records). Showing all footfall data.")
             
             footfall_query = footfall_query.group_by(HourlyFootfall.hour).all()
             
@@ -3605,6 +3800,479 @@ def update_restaurant(restaurant_id):
         logging.error(f"Error updating restaurant {restaurant_id}: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/menu-time-popularity')
+@login_required
+def menu_time_popularity():
+    """
+    Analyzes menu item popularity by time of day (Morning, Afternoon, Evening)
+    Uses REMOTE FastAPI server for sales data + LOCAL database for footfall
+    Morning: 6 AM - 12 PM (hours 6-11)
+    Afternoon: 12 PM - 5 PM (hours 12-16)
+    Evening: 5 PM - 6 AM (hours 17-23, 0-5)
+    
+    FIXED: Corrected hour-to-period mapping to match sales analytics
+    """
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        # Get date range (default: last 30 days)
+        days = request.args.get('days', 30, type=int)
+        end_date_ist = datetime.now(IST).date()
+        start_date_ist = end_date_ist - timedelta(days=days - 1)
+        
+        logging.info(f"📅 IST Date Range: {start_date_ist} to {end_date_ist}")
+        logging.info(f"📅 Days requested: {days}")
+        
+        # Get current time for filtering TODAY's future orders
+        current_time_ist = datetime.now(IST)
+        current_date = current_time_ist.date()
+        current_hour = current_time_ist.hour
+        is_viewing_today = end_date_ist == current_date
+        
+        logging.info(f"🕐 Current IST: {current_time_ist}, Hour: {current_hour}")
+        logging.info(f"📍 Viewing today: {is_viewing_today}")
+        
+        # Fetch from REMOTE API (same as sales analytics and conversion analytics)
+        FASTAPI_URL = 'http://13.202.92.108:8000'
+        API_TOKEN = 'Z4N8T2W9L3H6Q1P'
+        
+        seen_order_ids = {}
+        
+        try:
+            # Query remote API with expanded date range to account for timezone differences
+            # Add 1 day buffer on both sides since remote API might be in UTC
+            api_start_date = start_date_ist - timedelta(days=1)
+            api_end_date = end_date_ist + timedelta(days=1)
+            
+            logging.info(f"🌐 Querying remote API with buffer: {api_start_date} to {api_end_date}")
+            
+            response = requests.get(
+                f'{FASTAPI_URL}/webhook/events/search/date-range',
+                params={
+                    'start_date': api_start_date.isoformat(),
+                    'end_date': api_end_date.isoformat(),
+                    'token': API_TOKEN
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            all_events = response.json()
+            logging.info(f"✅ Fetched {len(all_events)} webhook events from remote API")
+            
+            # First pass: Filter and extract order data
+            filtered_orders = {}
+            
+            for event in all_events:
+                if event.get('content', {}).get('event') == 'orderdetails':
+                    order = event.get('content', {}).get('properties', {}).get('Order', {})
+                    order_id = order.get('orderID')
+                    
+                    if order_id:
+                        try:
+                            # Parse order time and convert to IST for filtering
+                            if order.get('created_on'):
+                                order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
+                                order_time_ist = order_time_utc.astimezone(IST)
+                            else:
+                                created_at = event.get('created_at', '')
+                                if created_at:
+                                    order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                                    order_time_ist = order_time_utc.astimezone(IST)
+                                else:
+                                    continue  # Skip if no timestamp
+                            
+                            order_date_ist = order_time_ist.date()
+                            order_hour_ist = order_time_ist.hour
+                            
+                            # Filter by IST date range FIRST
+                            if order_date_ist < start_date_ist or order_date_ist > end_date_ist:
+                                continue
+                            
+                            # Filter future hours when viewing TODAY
+                            if is_viewing_today and order_date_ist == current_date and order_hour_ist > current_hour:
+                                continue
+                            
+                            # NOW deduplicate - keep highest event_id for each order_id
+                            event_id = event.get('id', 0)
+                            if order_id not in filtered_orders or event_id > filtered_orders[order_id]['event_id']:
+                                filtered_orders[order_id] = {
+                                    'event_id': event_id,
+                                    'order': order,
+                                    'items': event.get('content', {}).get('properties', {}).get('OrderItem', []),
+                                    'created_on': order.get('created_on'),
+                                    'created_at': event.get('created_at'),
+                                    'order_hour': order_hour_ist,
+                                    'order_date': order_date_ist
+                                }
+                        except Exception as parse_error:
+                            logging.warning(f"Error parsing order {order_id} timestamp: {parse_error}")
+                            continue
+            
+            # Use filtered and deduplicated orders
+            seen_order_ids = filtered_orders
+            logging.info(f"✅ Processed {len(seen_order_ids)} unique orders after IST filtering and deduplication")
+            
+        except Exception as e:
+            logging.error(f"❌ Failed to fetch from remote API: {e}")
+            import traceback
+            traceback.print_exc()
+            seen_order_ids = {}
+        
+        # Initialize item collections by time period
+        morning_items = {}   # hours 6-11
+        afternoon_items = {} # hours 12-16
+        evening_items = {}   # hours 17-23, 0-5
+        
+        # Track orders by date
+        orders_by_date = {}
+        actual_start_date = None
+        actual_end_date = None
+        hour_distribution = defaultdict(int)
+        
+        logging.info(f"📊 Processing {len(seen_order_ids)} orders for time period analysis...")
+        
+        # Process each order and categorize by hour
+        for order_id, order_data in seen_order_ids.items():
+            try:
+                # Use the hour and date already extracted
+                hour = order_data.get('order_hour', 12)
+                order_date = order_data.get('order_date', end_date_ist)
+                
+                hour_distribution[hour] += 1
+                
+                # Map early-morning orders (00:00 - 05:59) to the previous calendar date
+                # so they are attributed to the previous day's "evening" period.
+                period_date = order_date
+                if 0 <= hour <= 5:
+                    period_date = order_date - timedelta(days=1)
+                
+                # Use period_date when computing actual start/end and orders_by_date
+                if actual_start_date is None or period_date < actual_start_date:
+                    actual_start_date = period_date
+                if actual_end_date is None or period_date > actual_end_date:
+                    actual_end_date = period_date
+                    
+                if period_date not in orders_by_date:
+                    orders_by_date[period_date] = 0
+                orders_by_date[period_date] += 1
+            except Exception as order_error:
+                logging.warning(f"Error processing order {order_id}: {order_error}")
+                hour = 12  # Default to noon if parsing fails
+            
+            # Process each item in the order
+            for item in order_data.get('items', []):
+                if isinstance(item, dict):
+                    item_name = item.get('name', 'Unknown')
+                    quantity = float(item.get('quantity', 0))
+                    revenue = float(item.get('total', 0))
+                    
+                    if not item_name or item_name == 'Unknown':
+                        continue
+                    
+                    # FIXED: Correct time period categorization
+                    # Morning: 6-11 (6 AM to 11:59 AM)
+                    # Afternoon: 12-16 (12 PM to 4:59 PM)
+                    # Evening: 17-23, 0-5 (5 PM to 5:59 AM next day)
+                    
+                    if 6 <= hour <= 11:  # Morning
+                        if item_name not in morning_items:
+                            morning_items[item_name] = {'quantity': 0, 'revenue': 0}
+                        morning_items[item_name]['quantity'] += quantity
+                        morning_items[item_name]['revenue'] += revenue
+                    
+                    elif 12 <= hour <= 16:  # Afternoon
+                        if item_name not in afternoon_items:
+                            afternoon_items[item_name] = {'quantity': 0, 'revenue': 0}
+                        afternoon_items[item_name]['quantity'] += quantity
+                        afternoon_items[item_name]['revenue'] += revenue
+                    
+                    else:  # Evening (17-23, 0-5)
+                        if item_name not in evening_items:
+                            evening_items[item_name] = {'quantity': 0, 'revenue': 0}
+                        evening_items[item_name]['quantity'] += quantity
+                        evening_items[item_name]['revenue'] += revenue
+        
+        logging.info(f"💰 Revenue Summary - Morning: ₹{sum(i['revenue'] for i in morning_items.values()):.2f}, Afternoon: ₹{sum(i['revenue'] for i in afternoon_items.values()):.2f}, Evening: ₹{sum(i['revenue'] for i in evening_items.values()):.2f}")
+        
+        # Convert to sorted lists (top 5)
+        morning_list = [{'name': k, 'quantity': v['quantity'], 'revenue': v['revenue']} for k, v in morning_items.items()]
+        afternoon_list = [{'name': k, 'quantity': v['quantity'], 'revenue': v['revenue']} for k, v in afternoon_items.items()]
+        evening_list = [{'name': k, 'quantity': v['quantity'], 'revenue': v['revenue']} for k, v in evening_items.items()]
+        
+        morning_top5 = sorted(morning_list, key=lambda x: x['revenue'], reverse=True)[:5]
+        afternoon_top5 = sorted(afternoon_list, key=lambda x: x['revenue'], reverse=True)[:5]
+        evening_top5 = sorted(evening_list, key=lambda x: x['revenue'], reverse=True)[:5]
+        
+        # Get footfall data from LOCAL database (using IST dates)
+        with SessionLocal() as db:
+            footfall_query = db.execute(text("""
+                SELECT 
+                    CASE 
+                        WHEN hour BETWEEN 6 AND 11 THEN 'morning'
+                        WHEN hour BETWEEN 12 AND 16 THEN 'afternoon'
+                        ELSE 'evening'
+                    END as time_period,
+                    SUM(in_count) as total_visitors,
+                    COUNT(DISTINCT report_date) as days_count
+                FROM hourly_footfall
+                WHERE report_date >= :start_date
+                  AND report_date <= :end_date
+                GROUP BY 
+                    CASE 
+                        WHEN hour BETWEEN 6 AND 11 THEN 'morning'
+                        WHEN hour BETWEEN 12 AND 16 THEN 'afternoon'
+                        ELSE 'evening'
+                    END
+            """), {
+                'start_date': start_date_ist,
+                'end_date': end_date_ist
+            }).fetchall()
+            
+            footfall_data = {
+                'morning': {'visitors': 0, 'days_count': 0},
+                'afternoon': {'visitors': 0, 'days_count': 0},
+                'evening': {'visitors': 0, 'days_count': 0}
+            }
+            
+            logging.info(f"📊 Raw footfall query results: {len(footfall_query)} rows")
+            for row in footfall_query:
+                logging.info(f"  - {row.time_period}: {row.total_visitors} visitors, {row.days_count} days")
+                if row.time_period in footfall_data:
+                    footfall_data[row.time_period]['visitors'] = int(row.total_visitors) if row.total_visitors else 0
+                    footfall_data[row.time_period]['days_count'] = int(row.days_count) if row.days_count else 0
+        
+        # Calculate metrics
+        morning_avg_footfall = (footfall_data['morning']['visitors'] / footfall_data['morning']['days_count']) if footfall_data['morning']['days_count'] > 0 else 0
+        afternoon_avg_footfall = (footfall_data['afternoon']['visitors'] / footfall_data['afternoon']['days_count']) if footfall_data['afternoon']['days_count'] > 0 else 0
+        evening_avg_footfall = (footfall_data['evening']['visitors'] / footfall_data['evening']['days_count']) if footfall_data['evening']['days_count'] > 0 else 0
+        
+        morning_total_sales = sum(item['revenue'] for item in morning_list)
+        afternoon_total_sales = sum(item['revenue'] for item in afternoon_list)
+        evening_total_sales = sum(item['revenue'] for item in evening_list)
+        
+        total_all_sales = morning_total_sales + afternoon_total_sales + evening_total_sales
+        
+        # Log breakdown by hour for verification
+        logging.info(f"💰 Revenue Breakdown by Time Period:")
+        logging.info(f"  - Morning (6-11):     ₹{morning_total_sales:.2f} ({len(morning_list)} unique items)")
+        logging.info(f"  - Afternoon (12-16):  ₹{afternoon_total_sales:.2f} ({len(afternoon_list)} unique items)")
+        logging.info(f"  - Evening (others):   ₹{evening_total_sales:.2f} ({len(evening_list)} unique items)")
+        logging.info(f"  - TOTAL:              ₹{total_all_sales:.2f}")
+        
+        logging.info(f"📊 Hour Distribution in Orders:")
+        for hour in sorted(hour_distribution.keys()):
+            period = "Morning" if 6 <= hour <= 11 else "Afternoon" if 12 <= hour <= 16 else "Evening"
+            logging.info(f"  - Hour {hour:02d} ({period}): {hour_distribution[hour]} orders")
+        
+        # Generate intelligent suggestions based on actual menu data
+        suggestions = []
+        
+        # Calculate metrics per period
+        morning_orders = len([o for o in seen_order_ids.values() if 6 <= o.get('order_hour', 0) <= 11])
+        afternoon_orders = len([o for o in seen_order_ids.values() if 12 <= o.get('order_hour', 0) <= 16])
+        evening_orders = len([o for o in seen_order_ids.values() if o.get('order_hour', 0) >= 17 or o.get('order_hour', 0) <= 5])
+        
+        morning_aov = morning_total_sales / morning_orders if morning_orders > 0 else 0
+        afternoon_aov = afternoon_total_sales / afternoon_orders if afternoon_orders > 0 else 0
+        evening_aov = evening_total_sales / evening_orders if evening_orders > 0 else 0
+        
+        logging.info(f"📊 Order Analysis - Morning: {morning_orders} orders (AOV: ₹{morning_aov:.0f}), Afternoon: {afternoon_orders} orders (AOV: ₹{afternoon_aov:.0f}), Evening: {evening_orders} orders (AOV: ₹{evening_aov:.0f})")
+        
+        # Morning Analysis (6 AM - 12 PM)
+        if morning_orders > 0:
+            top_morning = sorted(morning_list, key=lambda x: x['quantity'], reverse=True)[:3]
+            
+            if morning_aov < 250:
+                # Low AOV - suggest combos with popular items
+                top_items_str = ", ".join([item['name'] for item in top_morning])
+                suggestions.append({
+                    'period': 'Morning (6 AM - 12 PM)',
+                    'type': 'combo',
+                    'icon': '☕',
+                    'reason': f'Average order value is ₹{morning_aov:.0f}. Top sellers: {top_items_str}',
+                    'suggestion': f'Create breakfast combos featuring {top_morning[0]["name"]} + beverage + side at 15% discount to increase AOV to ₹300+'
+                })
+            elif morning_aov >= 250 and morning_orders < 15:
+                # Good AOV but low orders - attract more customers
+                suggestions.append({
+                    'period': 'Morning (6 AM - 12 PM)',
+                    'type': 'promotion',
+                    'icon': '🎁',
+                    'reason': f'Good order value (₹{morning_aov:.0f}) but only {morning_orders} orders',
+                    'suggestion': f'Launch "Early Bird Special" (before 10 AM): Get 20% off on {top_morning[0]["name"]} to drive morning traffic'
+                })
+            else:
+                # Strong performance - upsell opportunities
+                suggestions.append({
+                    'period': 'Morning (6 AM - 12 PM)',
+                    'type': 'upsell',
+                    'icon': '⬆️',
+                    'reason': f'Strong performance: {morning_orders} orders at ₹{morning_aov:.0f} AOV',
+                    'suggestion': f'Upsell strategy: Suggest premium add-ons (cheese, extra toppings) with popular {top_morning[0]["name"]} to push AOV to ₹350+'
+                })
+        
+        # Afternoon Analysis (12 PM - 5 PM)
+        if afternoon_orders > 0:
+            top_afternoon = sorted(afternoon_list, key=lambda x: x['quantity'], reverse=True)[:3]
+            
+            if afternoon_aov < 300:
+                top_items_str = ", ".join([item['name'] for item in top_afternoon])
+                suggestions.append({
+                    'period': 'Afternoon (12 PM - 5 PM)',
+                    'type': 'combo',
+                    'icon': '🍱',
+                    'reason': f'Average order value is ₹{afternoon_aov:.0f}. Most ordered: {top_items_str}',
+                    'suggestion': f'Create "Lunch Deal": {top_afternoon[0]["name"]} + {top_afternoon[1]["name"] if len(top_afternoon) > 1 else "drink"} at bundled price to boost AOV'
+                })
+            elif afternoon_orders < 20:
+                suggestions.append({
+                    'period': 'Afternoon (12 PM - 5 PM)',
+                    'type': 'promotion',
+                    'icon': '⏰',
+                    'reason': f'Peak lunch hours but only {afternoon_orders} orders',
+                    'suggestion': f'Introduce "Express Lunch" (12-2 PM): Fast service guarantee + combo deals to capture office crowd'
+                })
+            else:
+                # Peak period - maximize revenue
+                suggestions.append({
+                    'period': 'Afternoon (12 PM - 5 PM)',
+                    'type': 'premium',
+                    'icon': '⭐',
+                    'reason': f'Peak period: {afternoon_orders} orders, ₹{afternoon_aov:.0f} AOV',
+                    'suggestion': f'Launch premium "Executive Meal": {top_afternoon[0]["name"]} + premium sides + dessert at ₹{int(afternoon_aov * 1.3)} to target high-value customers'
+                })
+        
+        # Evening Analysis (5 PM - 6 AM)
+        if evening_orders > 0:
+            top_evening = sorted(evening_list, key=lambda x: x['quantity'], reverse=True)[:3]
+            
+            if evening_aov < 350:
+                top_items_str = ", ".join([item['name'] for item in top_evening])
+                suggestions.append({
+                    'period': 'Evening (5 PM - 6 AM)',
+                    'type': 'combo',
+                    'icon': '🌙',
+                    'reason': f'Dinner period with ₹{evening_aov:.0f} AOV. Popular: {top_items_str}',
+                    'suggestion': f'Create "Dinner For Two": 2x {top_evening[0]["name"]} + 2 drinks + shared appetizer at ₹{int(evening_aov * 2.2)} value price'
+                })
+            elif evening_orders < 10:
+                suggestions.append({
+                    'period': 'Evening (5 PM - 6 AM)',
+                    'type': 'promotion',
+                    'icon': '🎉',
+                    'reason': f'Evening potential untapped - only {evening_orders} orders',
+                    'suggestion': f'Happy Hours (5-7 PM): Buy {top_evening[0]["name"] if top_evening else "any main"}, get 50% off second item + free beverage'
+                })
+            else:
+                suggestions.append({
+                    'period': 'Evening (5 PM - 6 AM)',
+                    'type': 'family',
+                    'icon': '👨‍👩‍👧',
+                    'reason': f'Dinner rush: {evening_orders} orders at ₹{evening_aov:.0f} AOV',
+                    'suggestion': f'Family Bundle: 4x {top_evening[0]["name"]} + family sides + 4 drinks at ₹{int(evening_aov * 3.5)} - perfect for families'
+                })
+        
+        # Add cross-period insights
+        if len(seen_order_ids) > 0:
+            # Find most consistent seller across all periods
+            all_items = {}
+            for period_items in [morning_items, afternoon_items, evening_items]:
+                for name, data in period_items.items():
+                    if name not in all_items:
+                        all_items[name] = {'count': 0, 'revenue': 0}
+                    all_items[name]['count'] += 1  # Present in how many periods
+                    all_items[name]['revenue'] += data['revenue']
+            
+            if all_items:
+                consistent_sellers = sorted(
+                    [(name, data) for name, data in all_items.items() if data['count'] >= 2],
+                    key=lambda x: x[1]['revenue'],
+                    reverse=True
+                )
+                
+                if consistent_sellers:
+                    bestseller = consistent_sellers[0]
+                    suggestions.append({
+                        'period': 'All Day Strategy',
+                        'type': 'signature',
+                        'icon': '🏆',
+                        'reason': f'{bestseller[0]} is popular across multiple time periods (₹{bestseller[1]["revenue"]:.0f} total)',
+                        'suggestion': f'Make {bestseller[0]} your "Signature Dish" - feature it prominently on menu and create variations (spicy, cheesy, loaded) to boost sales further'
+                    })
+        
+        # Use actual date range from data
+        display_start_date = actual_start_date if actual_start_date else start_date_ist
+        display_end_date = actual_end_date if actual_end_date else end_date_ist
+        actual_days = len(orders_by_date) if orders_by_date else 0
+        
+        # Add note if viewing today's data (up to current time)
+        time_note = f"Data up to {current_time_ist.strftime('%I:%M %p').lstrip('0')}" if is_viewing_today else "Full day data"
+        
+        logging.info(f"📅 Actual date range: {display_start_date} to {display_end_date} (IST)")
+        logging.info(f"⏰ {time_note}")
+        
+        # Return comprehensive data
+        return jsonify({
+            'success': True,
+            'date_range': {
+                'start': display_start_date.strftime('%Y-%m-%d'),
+                'end': display_end_date.strftime('%Y-%m-%d'),
+                'days': actual_days,
+                'requested_days': days,
+                'orders_by_date': {date.strftime('%Y-%m-%d'): count for date, count in orders_by_date.items()},
+                'timezone': 'IST',
+                'viewing_today': is_viewing_today,
+                'current_time': current_time_ist.strftime('%Y-%m-%d %I:%M %p').lstrip('0') if is_viewing_today else None,
+                'note': time_note
+            },
+            'morning': {
+                'period': '6 AM - 12 PM',
+                'top_items': morning_top5,
+                'total_items': len(morning_list),
+                'total_revenue': round(morning_total_sales, 2),
+                'total_quantity': sum(item['quantity'] for item in morning_list),
+                'footfall': {
+                    'total_visitors': footfall_data['morning']['visitors'],
+                    'avg_per_day': round(morning_avg_footfall, 1),
+                    'days_tracked': footfall_data['morning']['days_count']
+                }
+            },
+            'afternoon': {
+                'period': '12 PM - 5 PM',
+                'top_items': afternoon_top5,
+                'total_items': len(afternoon_list),
+                'total_revenue': round(afternoon_total_sales, 2),
+                'total_quantity': sum(item['quantity'] for item in afternoon_list),
+                'footfall': {
+                    'total_visitors': footfall_data['afternoon']['visitors'],
+                    'avg_per_day': round(afternoon_avg_footfall, 1),
+                    'days_tracked': footfall_data['afternoon']['days_count']
+                }
+            },
+            'evening': {
+                'period': '5 PM - 6 AM (Evening + Late Night)',
+                'top_items': evening_top5,
+                'total_items': len(evening_list),
+                'total_revenue': round(evening_total_sales, 2),
+                'total_quantity': sum(item['quantity'] for item in evening_list),
+                'footfall': {
+                    'total_visitors': footfall_data['evening']['visitors'],
+                    'avg_per_day': round(evening_avg_footfall, 1),
+                    'days_tracked': footfall_data['evening']['days_count']
+                },
+                'note': 'Includes late-night orders (11 PM - 6 AM)'
+            },
+            'suggestions': suggestions,
+            'has_data': len(morning_list) > 0 or len(afternoon_list) > 0 or len(evening_list) > 0,
+            'data_source': 'remote_api'
+        })
+            
+    except Exception as e:
+        logging.error(f"Error in menu_time_popularity: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e), 'success': False}), 500
 # ============================================================================
 
 _MODEL_CACHE = {}

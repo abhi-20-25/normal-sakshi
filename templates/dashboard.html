@@ -227,6 +227,9 @@
         <a href="#" data-view="conversion-analytics" class="nav-link">
           <div class="icon">📈</div><div>Conversion Analytics</div>
         </a>
+        <a href="#" data-view="menu-time-popularity" class="nav-link">
+          <div class="icon">🕐</div><div>Time-Based Menu</div>
+        </a>
         <div class="section-title">APPLICATIONS</div>
         <a href="#" data-view="people-counter" class="nav-link">
           <div class="icon">👥</div><div>People Counter</div>
@@ -507,6 +510,243 @@
         </div>
       </div>
 
+      <!-- MENU TIME POPULARITY SECTION -->
+      <div id="menu-time-popularity-section" class="section">
+        <button class="back-btn" onclick="switchView('overview')">← Back to Overview</button>
+        
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+          <div>
+            <h2 style="font-size: 24px; color: #f1f3f5; margin-bottom: 5px;">🕐 Menu Item Popularity by Time of Day</h2>
+            <p style="color: #9aa0a6; font-size: 13px;">Analyze top-selling items and footfall correlation for Morning, Afternoon & Evening periods</p>
+          </div>
+          <div style="display: flex; gap: 12px; align-items: center;">
+            <label style="color: #9aa0a6; font-size: 14px;">Date Range:</label>
+            <select id="menuPopularityDaysFilter" onchange="loadMenuTimePopularity()" style="background: #17181a; border: 1px solid #2a2d31; color: #ddd; padding: 10px 14px; border-radius: 8px; font-size: 14px;">
+              <option value="1">Today</option>
+              <option value="7">Last 7 Days</option>
+              <option value="14">Last 14 Days</option>
+              <option value="30" selected>Last 30 Days</option>
+            </select>
+            <button onclick="loadMenuTimePopularity()" style="background: #2b3bff; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; font-size: 14px;">
+              Refresh Data 🔄
+            </button>
+          </div>
+        </div>
+
+        <!-- Date Range Info -->
+        <div id="mtp-date-range" style="background: #17181a; padding: 12px 18px; border-radius: 8px; margin-bottom: 20px; color: #9aa0a6; font-size: 13px;">
+          Loading data range...
+        </div>
+
+        <!-- Morning, Afternoon & Evening Cards Grid -->
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 25px;">
+          <!-- Morning Card -->
+          <div class="report-section" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+              <h3 style="font-size: 18px;">🌅 Morning Popular Items</h3>
+              <span style="background: #f59e0b; color: #000; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">6 AM - 12 PM</span>
+            </div>
+            
+            <!-- Morning Stats -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-morning-revenue" style="font-size: 20px; font-weight: 700; color: #26a44b;">₹0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Total Revenue</div>
+              </div>
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-morning-qty" style="font-size: 20px; font-weight: 700; color: #3b82f6;">0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Items Sold</div>
+              </div>
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-morning-footfall" style="font-size: 20px; font-weight: 700; color: #f59e0b;">0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Avg Footfall/Day</div>
+              </div>
+            </div>
+
+            <!-- Morning Top Items Table -->
+            <table style="width: 100%; font-size: 13px;">
+              <thead>
+                <tr style="background: #121314;">
+                  <th style="padding: 10px; text-align: left; color: #9aa0a6; border: 1px solid #2a2d31;">Item Name</th>
+                  <th style="padding: 10px; text-align: center; color: #9aa0a6; border: 1px solid #2a2d31;">Qty</th>
+                  <th style="padding: 10px; text-align: right; color: #9aa0a6; border: 1px solid #2a2d31;">Revenue</th>
+                </tr>
+              </thead>
+              <tbody id="mtp-morning-table">
+                <tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">Loading...</td></tr>
+              </tbody>
+            </table>
+
+            <!-- Morning Bar Chart -->
+            <div style="margin-top: 20px;">
+              <div style="font-size: 12px; color: #9aa0a6; margin-bottom: 10px;">Revenue Distribution</div>
+              <div id="mtp-morning-chart" style="height: 120px; display: flex; align-items: flex-end; gap: 8px; padding: 10px; background: #121314; border-radius: 6px;">
+                <div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Afternoon Card -->
+          <div class="report-section" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+              <h3 style="font-size: 18px;">☀️ Afternoon Popular Items</h3>
+              <span style="background: #f97316; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">12 PM - 5 PM</span>
+            </div>
+            
+            <!-- Afternoon Stats -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-afternoon-revenue" style="font-size: 20px; font-weight: 700; color: #26a44b;">₹0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Total Revenue</div>
+              </div>
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-afternoon-qty" style="font-size: 20px; font-weight: 700; color: #3b82f6;">0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Items Sold</div>
+              </div>
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-afternoon-footfall" style="font-size: 20px; font-weight: 700; color: #f97316;">0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Avg Footfall/Day</div>
+              </div>
+            </div>
+
+            <!-- Afternoon Top Items Table -->
+            <table style="width: 100%; font-size: 13px;">
+              <thead>
+                <tr style="background: #121314;">
+                  <th style="padding: 10px; text-align: left; color: #9aa0a6; border: 1px solid #2a2d31;">Item Name</th>
+                  <th style="padding: 10px; text-align: center; color: #9aa0a6; border: 1px solid #2a2d31;">Qty</th>
+                  <th style="padding: 10px; text-align: right; color: #9aa0a6; border: 1px solid #2a2d31;">Revenue</th>
+                </tr>
+              </thead>
+              <tbody id="mtp-afternoon-table">
+                <tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">Loading...</td></tr>
+              </tbody>
+            </table>
+
+            <!-- Afternoon Bar Chart -->
+            <div style="margin-top: 20px;">
+              <div style="font-size: 12px; color: #9aa0a6; margin-bottom: 10px;">Revenue Distribution</div>
+              <div id="mtp-afternoon-chart" style="height: 120px; display: flex; align-items: flex-end; gap: 8px; padding: 10px; background: #121314; border-radius: 6px;">
+                <div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Evening + Late Night Card -->
+          <div class="report-section" style="margin: 0;">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+              <h3 style="font-size: 18px;">🌆 Evening Popular Items</h3>
+              <span id="mtp-evening-time-label" style="background: #5c7ac5; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">5 PM - 6 AM</span>
+            </div>
+            
+            <div style="font-size: 11px; color: #9aa0a6; margin-bottom: 12px; padding: 8px; background: #121314; border-radius: 4px;">
+              ℹ️ Includes evening (5 PM - 11 PM) + late-night orders (11 PM - 6 AM)
+              <span id="mtp-evening-realtime-note" style="display: none; color: #f59e0b; font-weight: 600;"><br>⏰ Showing data only up to current time</span>
+            </div>
+            
+            <!-- Evening Stats -->
+            <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px;">
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-evening-revenue" style="font-size: 20px; font-weight: 700; color: #26a44b;">₹0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Total Revenue</div>
+              </div>
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-evening-qty" style="font-size: 20px; font-weight: 700; color: #3b82f6;">0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Items Sold</div>
+              </div>
+              <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
+                <div id="mtp-evening-footfall" style="font-size: 20px; font-weight: 700; color: #5c7ac5;">0</div>
+                <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Avg Footfall/Day</div>
+              </div>
+            </div>
+
+            <!-- Evening Top Items Table -->
+            <table style="width: 100%; font-size: 13px;">
+              <thead>
+                <tr style="background: #121314;">
+                  <th style="padding: 10px; text-align: left; color: #9aa0a6; border: 1px solid #2a2d31;">Item Name</th>
+                  <th style="padding: 10px; text-align: center; color: #9aa0a6; border: 1px solid #2a2d31;">Qty</th>
+                  <th style="padding: 10px; text-align: right; color: #9aa0a6; border: 1px solid #2a2d31;">Revenue</th>
+                </tr>
+              </thead>
+              <tbody id="mtp-evening-table">
+                <tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">Loading...</td></tr>
+              </tbody>
+            </table>
+
+            <!-- Evening Bar Chart -->
+            <div style="margin-top: 20px;">
+              <div style="font-size: 12px; color: #9aa0a6; margin-bottom: 10px;">Revenue Distribution</div>
+              <div id="mtp-evening-chart" style="height: 120px; display: flex; align-items: flex-end; gap: 8px; padding: 10px; background: #121314; border-radius: 6px;">
+                <div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Suggested Time-Based Offers Panel -->
+        <div class="report-section" style="margin: 20px 0 0 0;">
+          <h3 style="font-size: 18px; margin-bottom: 15px;">💡 Suggested Time-Based Offers</h3>
+          <div id="mtp-suggestions" style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="padding: 20px; text-align: center; color: #6d7377; background: #121314; border-radius: 8px;">
+              Loading suggestions...
+            </div>
+          </div>
+        </div>
+
+        <!-- Footfall vs Sales Correlation -->
+        <div class="report-section" style="margin: 20px 0 0 0;">
+          <h3 style="font-size: 18px; margin-bottom: 15px;">📊 Footfall vs Sales Correlation</h3>
+          <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px;">
+            <div style="background: #121314; padding: 18px; border-radius: 8px;">
+              <div style="font-size: 14px; color: #f59e0b; margin-bottom: 10px; font-weight: 600;">Morning Period</div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: #9aa0a6; font-size: 13px;">Visitors/Day:</span>
+                <span id="mtp-morning-visitors" style="color: #fff; font-size: 13px; font-weight: 600;">0</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: #9aa0a6; font-size: 13px;">Total Sales:</span>
+                <span id="mtp-morning-sales" style="color: #fff; font-size: 13px; font-weight: 600;">₹0</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #9aa0a6; font-size: 13px;">Sales per Visitor:</span>
+                <span id="mtp-morning-per-visitor" style="color: #26a44b; font-size: 14px; font-weight: 700;">₹0</span>
+              </div>
+            </div>
+            <div style="background: #121314; padding: 18px; border-radius: 8px;">
+              <div style="font-size: 14px; color: #f97316; margin-bottom: 10px; font-weight: 600;">Afternoon Period</div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: #9aa0a6; font-size: 13px;">Visitors/Day:</span>
+                <span id="mtp-afternoon-visitors" style="color: #fff; font-size: 13px; font-weight: 600;">0</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: #9aa0a6; font-size: 13px;">Total Sales:</span>
+                <span id="mtp-afternoon-sales" style="color: #fff; font-size: 13px; font-weight: 600;">₹0</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #9aa0a6; font-size: 13px;">Sales per Visitor:</span>
+                <span id="mtp-afternoon-per-visitor" style="color: #26a44b; font-size: 14px; font-weight: 700;">₹0</span>
+              </div>
+            </div>
+            <div style="background: #121314; padding: 18px; border-radius: 8px;">
+              <div style="font-size: 14px; color: #5c7ac5; margin-bottom: 10px; font-weight: 600;">Evening Period</div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: #9aa0a6; font-size: 13px;">Visitors/Day:</span>
+                <span id="mtp-evening-visitors" style="color: #fff; font-size: 13px; font-weight: 600;">0</span>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                <span style="color: #9aa0a6; font-size: 13px;">Total Sales:</span>
+                <span id="mtp-evening-sales" style="color: #fff; font-size: 13px; font-weight: 600;">₹0</span>
+              </div>
+              <div style="display: flex; justify-content: space-between;">
+                <span style="color: #9aa0a6; font-size: 13px;">Sales per Visitor:</span>
+                <span id="mtp-evening-per-visitor" style="color: #26a44b; font-size: 14px; font-weight: 700;">₹0</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div id="people-counter-section" class="section">
         <button class="back-btn" onclick="switchView('overview')">← Back to Overview</button>
         <div class="stats-row">
@@ -526,7 +766,7 @@
         <div class="video-container">
           <div class="video-box">
             <div class="video-feed">
-              {% if app_configs['PeopleCounter'] and app_configs['PeopleCounter']['channels'] %}
+              {% if app_configs.get('PeopleCounter') and app_configs.get('PeopleCounter', {}).get('channels') %}
               <img src="/video_feed/PeopleCounter/{{ app_configs['PeopleCounter']['channels'][0]['id'] }}" alt="Loading...">
               {% else %}
               <img src="" alt="No camera configured">
@@ -1554,6 +1794,7 @@ function switchView(view) {
     'overview': { id: 'overview-section', title: 'Dashboard Overview', subtitle: 'Real-time monitoring' },
     'sales-analytics': { id: 'sales-analytics-section', title: 'Sales Analytics', subtitle: 'Revenue & Orders' },
     'conversion-analytics': { id: 'conversion-analytics-section', title: 'Conversion Analytics', subtitle: 'Footfall-to-Sales Conversion' },
+    'menu-time-popularity': { id: 'menu-time-popularity-section', title: 'Menu Time Popularity', subtitle: 'Morning & Evening Analysis' },
     'people-counter': { id: 'people-counter-section', title: 'People Counter', subtitle: 'Footfall analytics' },
     'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue analytics' },
     'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Safety monitoring' },
@@ -1573,7 +1814,10 @@ function switchView(view) {
     if (view === 'conversion-analytics') {
         loadConversionData();
     }
-    if (view !== 'overview' && view !== 'sales-analytics' && view !== 'conversion-analytics') {
+    if (view === 'menu-time-popularity') {
+        loadMenuTimePopularity();
+    }
+    if (view !== 'overview' && view !== 'sales-analytics' && view !== 'conversion-analytics' && view !== 'menu-time-popularity') {
       // Reset filter when switching views normally (not from filterKitchenViolations)
       if (view !== 'kitchen-compliance') {
         currentViolationFilter = null;
@@ -2217,6 +2461,248 @@ function updateMonthHeaders() {
     
     const hTop = document.getElementById('h-top-items');
     if(hTop) hTop.innerHTML = `🍔 Top 5 Selling Items (${monthName})`;
+}
+
+// ============ MENU TIME POPULARITY FUNCTIONS ============
+
+async function loadMenuTimePopularity() {
+    try {
+        const daysFilter = document.getElementById('menuPopularityDaysFilter');
+        const days = daysFilter ? daysFilter.value : 30;
+        
+        const response = await fetch(`/api/menu-time-popularity?days=${days}`);
+        const data = await response.json();
+        
+        if (!data.success) {
+            showMenuTimeError(data.error || 'Failed to load data');
+            return;
+        }
+        
+        // Update date range display
+        const dateRangeEl = document.getElementById('mtp-date-range');
+        if (dateRangeEl) {
+            if (data.has_data) {
+                const actualDays = data.date_range.days;
+                const requestedDays = data.date_range.requested_days;
+                const isToday = requestedDays === 1;
+                
+                let dateRangeHTML = `📅 Data from ${data.date_range.start} to ${data.date_range.end}`;
+                
+                if (isToday) {
+                    const now = new Date();
+                    const currentTime = now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+                    dateRangeHTML += ` <span style="color: #f59e0b; font-weight: 600;">(TODAY - Data up to ${currentTime})</span>`;
+                } else if (actualDays !== requestedDays) {
+                    dateRangeHTML += ` <span style="color: #f59e0b;">(${actualDays} days with data, requested ${requestedDays})</span>`;
+                } else {
+                    dateRangeHTML += ` (${actualDays} days)`;
+                }
+                
+                // Show breakdown of orders by date if available
+                if (data.date_range.orders_by_date) {
+                    const orderDates = Object.entries(data.date_range.orders_by_date);
+                    if (orderDates.length > 0 && orderDates.length <= 3) {
+                        dateRangeHTML += `<br><span style="font-size: 11px; color: #6d7377;">Orders per day: `;
+                        dateRangeHTML += orderDates.map(([date, count]) => `${date}: ${count}`).join(', ');
+                        dateRangeHTML += `</span>`;
+                    }
+                }
+                
+                dateRangeEl.innerHTML = dateRangeHTML;
+                dateRangeEl.style.background = '#17181a';
+                dateRangeEl.style.color = '#9aa0a6';
+                
+                // Show realtime note for evening if viewing today
+                const eveningRealtimeNote = document.getElementById('mtp-evening-realtime-note');
+                if (eveningRealtimeNote && isToday) {
+                    eveningRealtimeNote.style.display = 'inline';
+                } else if (eveningRealtimeNote) {
+                    eveningRealtimeNote.style.display = 'none';
+                }
+            } else {
+                dateRangeEl.innerHTML = `⚠️ Insufficient data - Please ensure PetPooja webhook is active and receiving orders`;
+                dateRangeEl.style.background = '#5c3d00';
+                dateRangeEl.style.color = '#f59e0b';
+            }
+        }
+        
+        // Render Morning Data
+        renderTimePeriodData('morning', data.morning);
+        
+        // Render Afternoon Data
+        renderTimePeriodData('afternoon', data.afternoon);
+        
+        // Render Evening Data
+        renderTimePeriodData('evening', data.evening);
+        
+        // Render Suggestions
+        renderSuggestions(data.suggestions);
+        
+        // Update Correlation Stats
+        updateCorrelationStats(data.morning, data.afternoon, data.evening);
+        
+    } catch (error) {
+        console.error('Error loading menu time popularity:', error);
+        showMenuTimeError('Network error - please try again');
+    }
+}
+
+function renderTimePeriodData(period, data) {
+    // Update stats
+    const revenueEl = document.getElementById(`mtp-${period}-revenue`);
+    const qtyEl = document.getElementById(`mtp-${period}-qty`);
+    const footfallEl = document.getElementById(`mtp-${period}-footfall`);
+    
+    if (revenueEl) revenueEl.textContent = `₹${data.total_revenue.toLocaleString()}`;
+    if (qtyEl) qtyEl.textContent = data.total_quantity.toLocaleString();
+    if (footfallEl) footfallEl.textContent = data.footfall.avg_per_day.toLocaleString();
+    
+    // Render table
+    const tableBody = document.getElementById(`mtp-${period}-table`);
+    if (tableBody) {
+        if (data.top_items.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">No data available for this period</td></tr>';
+        } else {
+            tableBody.innerHTML = data.top_items.map(item => `
+                <tr>
+                    <td style="padding: 10px; border: 1px solid #2a2d31; color: #fff;">${item.name}</td>
+                    <td style="padding: 10px; border: 1px solid #2a2d31; text-align: center; color: #3b82f6; font-weight: 600;">${item.quantity}</td>
+                    <td style="padding: 10px; border: 1px solid #2a2d31; text-align: right; color: #26a44b; font-weight: 600;">₹${item.revenue.toFixed(0)}</td>
+                </tr>
+            `).join('');
+        }
+    }
+    
+    // Render bar chart
+    const chartContainer = document.getElementById(`mtp-${period}-chart`);
+    if (chartContainer) {
+        if (data.top_items.length === 0) {
+            chartContainer.innerHTML = '<div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>';
+        } else {
+            const maxRevenue = Math.max(...data.top_items.map(i => i.revenue));
+            const barColor = period === 'morning' ? '#f59e0b' : '#5c7ac5';
+            
+            chartContainer.innerHTML = data.top_items.map(item => {
+                const heightPercent = maxRevenue > 0 ? (item.revenue / maxRevenue) * 100 : 0;
+                return `
+                    <div style="flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%;">
+                        <div style="width: 100%; background: ${barColor}; border-radius: 4px 4px 0 0; transition: height 0.5s ease; height: ${heightPercent}%;" title="${item.name}: ₹${item.revenue}"></div>
+                        <div style="font-size: 9px; color: #9aa0a6; margin-top: 5px; text-align: center; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${item.name}">${item.name.substring(0, 10)}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+    }
+}
+
+function renderSuggestions(suggestions) {
+    const suggestionsContainer = document.getElementById('mtp-suggestions');
+    if (!suggestionsContainer) return;
+    
+    if (suggestions.length === 0) {
+        suggestionsContainer.innerHTML = `
+            <div style="padding: 20px; text-align: center; color: #9aa0a6; background: #121314; border-radius: 8px;">
+                ✅ No immediate suggestions - Sales and footfall are well-balanced for both periods
+            </div>
+        `;
+        return;
+    }
+    
+    suggestionsContainer.innerHTML = suggestions.map(sug => {
+        const icon = sug.type === 'discount' ? '🎯' : '🎁';
+        const typeColor = sug.type === 'discount' ? '#f59e0b' : '#3b82f6';
+        const typeLabel = sug.type === 'discount' ? 'Discount Opportunity' : 'Bundle Opportunity';
+        
+        return `
+            <div style="background: #121314; padding: 18px; border-radius: 8px; border-left: 4px solid ${typeColor};">
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                    <span style="font-size: 24px;">${icon}</span>
+                    <div>
+                        <div style="font-size: 14px; font-weight: 600; color: ${typeColor};">${typeLabel}</div>
+                        <div style="font-size: 12px; color: #9aa0a6; margin-top: 2px;">${sug.period}</div>
+                    </div>
+                </div>
+                <div style="font-size: 13px; color: #e0e0e0; margin-bottom: 8px;">
+                    <strong>Analysis:</strong> ${sug.reason}
+                </div>
+                <div style="font-size: 13px; color: #26a44b; background: rgba(38, 164, 75, 0.1); padding: 10px; border-radius: 6px;">
+                    💡 <strong>Suggestion:</strong> ${sug.suggestion}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function updateCorrelationStats(morningData, afternoonData, eveningData) {
+    // Morning correlation
+    const morningVisitors = morningData.footfall.avg_per_day;
+    const morningSales = morningData.total_revenue;
+    const morningPerVisitor = morningVisitors > 0 ? (morningSales / morningVisitors / morningData.footfall.days_tracked) : 0;
+    
+    const morningVisitorsEl = document.getElementById('mtp-morning-visitors');
+    const morningSalesEl = document.getElementById('mtp-morning-sales');
+    const morningPerVisitorEl = document.getElementById('mtp-morning-per-visitor');
+    
+    if (morningVisitorsEl) morningVisitorsEl.textContent = morningVisitors.toFixed(0);
+    if (morningSalesEl) morningSalesEl.textContent = `₹${morningSales.toFixed(0)}`;
+    if (morningPerVisitorEl) morningPerVisitorEl.textContent = `₹${morningPerVisitor.toFixed(2)}`;
+    
+    // Afternoon correlation
+    const afternoonVisitors = afternoonData.footfall.avg_per_day;
+    const afternoonSales = afternoonData.total_revenue;
+    const afternoonPerVisitor = afternoonVisitors > 0 ? (afternoonSales / afternoonVisitors / afternoonData.footfall.days_tracked) : 0;
+    
+    const afternoonVisitorsEl = document.getElementById('mtp-afternoon-visitors');
+    const afternoonSalesEl = document.getElementById('mtp-afternoon-sales');
+    const afternoonPerVisitorEl = document.getElementById('mtp-afternoon-per-visitor');
+    
+    if (afternoonVisitorsEl) afternoonVisitorsEl.textContent = afternoonVisitors.toFixed(0);
+    if (afternoonSalesEl) afternoonSalesEl.textContent = `₹${afternoonSales.toFixed(0)}`;
+    if (afternoonPerVisitorEl) afternoonPerVisitorEl.textContent = `₹${afternoonPerVisitor.toFixed(2)}`;
+    
+    // Evening correlation
+    const eveningVisitors = eveningData.footfall.avg_per_day;
+    const eveningSales = eveningData.total_revenue;
+    const eveningPerVisitor = eveningVisitors > 0 ? (eveningSales / eveningVisitors / eveningData.footfall.days_tracked) : 0;
+    
+    const eveningVisitorsEl = document.getElementById('mtp-evening-visitors');
+    const eveningSalesEl = document.getElementById('mtp-evening-sales');
+    const eveningPerVisitorEl = document.getElementById('mtp-evening-per-visitor');
+    
+    if (eveningVisitorsEl) eveningVisitorsEl.textContent = eveningVisitors.toFixed(0);
+    if (eveningSalesEl) eveningSalesEl.textContent = `₹${eveningSales.toFixed(0)}`;
+    if (eveningPerVisitorEl) eveningPerVisitorEl.textContent = `₹${eveningPerVisitor.toFixed(2)}`;
+}
+
+function showMenuTimeError(message) {
+    const dateRangeEl = document.getElementById('mtp-date-range');
+    if (dateRangeEl) {
+        dateRangeEl.innerHTML = `⚠️ Error: ${message}`;
+        dateRangeEl.style.background = '#5c0000';
+        dateRangeEl.style.color = '#e04b4b';
+    }
+    
+    // Clear all data displays
+    ['morning', 'evening'].forEach(period => {
+        const tableBody = document.getElementById(`mtp-${period}-table`);
+        if (tableBody) {
+            tableBody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">Error loading data</td></tr>';
+        }
+        
+        const chartContainer = document.getElementById(`mtp-${period}-chart`);
+        if (chartContainer) {
+            chartContainer.innerHTML = '<div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">Error</div>';
+        }
+    });
+    
+    const suggestionsContainer = document.getElementById('mtp-suggestions');
+    if (suggestionsContainer) {
+        suggestionsContainer.innerHTML = `
+            <div style="padding: 20px; text-align: center; color: #e04b4b; background: #121314; border-radius: 8px;">
+                ${message}
+            </div>
+        `;
+    }
 }
 
 </script>

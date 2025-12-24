@@ -729,6 +729,69 @@ def get_top_items(limit: int = 5, token: str = Depends(verify_token), db: Sessio
         logging.error(f"Error in top-items: {e}")
         return []
 
+@app.get("/analytics/items-by-hour")
+def get_items_by_hour(days: int = 30, token: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """
+    Get item-level sales data grouped by hour for menu time popularity analysis.
+    Returns: [{'item_name': str, 'quantity': int, 'revenue': float, 'hour': int}]
+    """
+    try:
+        # Deduplicate orders by orderID, keep latest version
+        order_id_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'orderID')
+        
+        subquery = db.query(func.max(PetpoojaWebhookEvent.id))\
+            .filter(PetpoojaWebhookEvent.content['event'].astext == 'orderdetails')\
+            .group_by(order_id_path)\
+            .subquery()
+        
+        # Extract item-level data with hour
+        created_on_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on')
+        hour_col = func.extract('hour', cast(created_on_path, DateTime))
+        
+        sql_query = text("""
+            WITH unique_orders AS (
+                SELECT content
+                FROM petpooja_webhook_events
+                WHERE id IN (
+                    SELECT MAX(id)
+                    FROM petpooja_webhook_events
+                    WHERE content->>'event' = 'orderdetails'
+                    GROUP BY content->'properties'->'Order'->>'orderID'
+                )
+                AND created_at >= CURRENT_DATE - INTERVAL ':days days'
+            )
+            SELECT 
+                item->>'name' as item_name,
+                SUM(CAST(COALESCE(NULLIF(item->>'quantity', ''), '0') AS NUMERIC)) as quantity,
+                SUM(CAST(COALESCE(NULLIF(item->>'total', ''), '0') AS NUMERIC)) as revenue,
+                EXTRACT(HOUR FROM CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP))::INTEGER as hour
+            FROM 
+                unique_orders,
+                jsonb_array_elements(content->'properties'->'OrderItem') item
+            WHERE 
+                jsonb_typeof(content->'properties'->'OrderItem') = 'array'
+                AND item->>'name' IS NOT NULL 
+                AND item->>'name' != ''
+            GROUP BY 
+                item->>'name', hour
+            ORDER BY 
+                item_name, hour
+        """)
+        
+        results = db.execute(sql_query, {"days": days}).fetchall()
+        
+        return [
+            {
+                "item_name": r[0],
+                "quantity": float(r[1]) if r[1] else 0,
+                "revenue": float(r[2]) if r[2] else 0.0,
+                "hour": int(r[3]) if r[3] else 0
+            } for r in results
+        ]
+    except Exception as e:
+        logging.error(f"Error in items-by-hour: {e}")
+        return []
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
