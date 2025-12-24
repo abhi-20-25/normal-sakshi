@@ -543,7 +543,14 @@ def get_current_month_start():
     return datetime(today.year, today.month, 1)
 
 @app.get("/analytics/sales-daily", response_model=List[SalesStats])
-def get_daily_sales(days: int = 30, token: str = Depends(verify_token), db: Session = Depends(get_db)):
+def get_daily_sales(
+    days: int = None, 
+    start_date: str = None, 
+    end_date: str = None,
+    token: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
+    """Get daily sales stats. Either use 'days' param (last N days) or 'start_date'/'end_date' for specific range."""
     
     order_id_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'orderID')
     
@@ -554,13 +561,26 @@ def get_daily_sales(days: int = 30, token: str = Depends(verify_token), db: Sess
     date_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on'), DateTime).cast(Date)
     total_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'total'), Float)
     
-    results = db.query(
+    query = db.query(
         date_col.label('date'),
         func.sum(total_col).label('total_sales'),
         func.count(PetpoojaWebhookEvent.id).label('order_count')
     ).filter(
         PetpoojaWebhookEvent.id.in_(subquery)  # Only count the latest version of the order
-    ).group_by(date_col).order_by(desc('date')).limit(days).all()
+    )
+    
+    # Filter by date range if provided, otherwise use days parameter
+    if start_date and end_date:
+        query = query.filter(date_col >= start_date, date_col <= end_date)
+    elif days:
+        # Calculate date range from days parameter
+        from datetime import datetime, timedelta
+        end_dt = datetime.now().date()
+        start_dt = end_dt - timedelta(days=days - 1)
+        query = query.filter(date_col >= start_dt, date_col <= end_dt)
+    
+    # Order by date ascending (oldest first) for consistency with conversion analytics
+    results = query.group_by(date_col).order_by(date_col).all()
     
     return [SalesStats(date=str(r.date), total_sales=r.total_sales or 0, order_count=r.order_count) for r in results]
 

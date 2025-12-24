@@ -543,8 +543,8 @@
           <!-- Morning Card -->
           <div class="report-section" style="margin: 0;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
-              <h3 style="font-size: 18px;">🌅 Morning Popular Items</h3>
-              <span style="background: #f59e0b; color: #000; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">6 AM - 12 PM</span>
+              <h3 style="font-size: 18px;"> Morning Popular Items</h3>
+              <span style="background: #788ee4; color: #000; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">6 AM - 12 PM</span>
             </div>
             
             <!-- Morning Stats -->
@@ -558,7 +558,7 @@
                 <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Items Sold</div>
               </div>
               <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
-                <div id="mtp-morning-footfall" style="font-size: 20px; font-weight: 700; color: #f59e0b;">0</div>
+                <div id="mtp-morning-footfall" style="font-size: 20px; font-weight: 700; color: #5f6e9a;">0</div>
                 <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Avg Footfall/Day</div>
               </div>
             </div>
@@ -589,8 +589,8 @@
           <!-- Afternoon Card -->
           <div class="report-section" style="margin: 0;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
-              <h3 style="font-size: 18px;">☀️ Afternoon Popular Items</h3>
-              <span style="background: #f97316; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">12 PM - 5 PM</span>
+              <h3 style="font-size: 18px;"> Afternoon Popular Items</h3>
+              <span style="background: #344c91; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">12 PM - 5 PM</span>
             </div>
             
             <!-- Afternoon Stats -->
@@ -604,7 +604,7 @@
                 <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Items Sold</div>
               </div>
               <div style="background: #121314; padding: 12px; border-radius: 6px; text-align: center;">
-                <div id="mtp-afternoon-footfall" style="font-size: 20px; font-weight: 700; color: #f97316;">0</div>
+                <div id="mtp-afternoon-footfall" style="font-size: 20px; font-weight: 700; color: #a9c8d6;">0</div>
                 <div style="font-size: 11px; color: #9aa0a6; margin-top: 3px;">Avg Footfall/Day</div>
               </div>
             </div>
@@ -635,13 +635,13 @@
           <!-- Evening + Late Night Card -->
           <div class="report-section" style="margin: 0;">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
-              <h3 style="font-size: 18px;">🌆 Evening Popular Items</h3>
+              <h3 style="font-size: 18px;"> Evening Popular Items</h3>
               <span id="mtp-evening-time-label" style="background: #5c7ac5; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">5 PM - 6 AM</span>
             </div>
             
             <div style="font-size: 11px; color: #9aa0a6; margin-bottom: 12px; padding: 8px; background: #121314; border-radius: 4px;">
               ℹ️ Includes evening (5 PM - 11 PM) + late-night orders (11 PM - 6 AM)
-              <span id="mtp-evening-realtime-note" style="display: none; color: #f59e0b; font-weight: 600;"><br>⏰ Showing data only up to current time</span>
+              <span id="mtp-evening-realtime-note" style="display: none; color: #c58a24; font-weight: 600;"><br>⏰ Showing data only up to current time</span>
             </div>
             
             <!-- Evening Stats -->
@@ -2580,7 +2580,7 @@ function renderTimePeriodData(period, data) {
             chartContainer.innerHTML = '<div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>';
         } else {
             const maxRevenue = Math.max(...data.top_items.map(i => i.revenue));
-            const barColor = period === 'morning' ? '#f59e0b' : '#5c7ac5';
+            const barColor = '#5c7ac5';  // Same color for all periods (morning, afternoon, evening)
             
             chartContainer.innerHTML = data.top_items.map(item => {
                 const heightPercent = maxRevenue > 0 ? (item.revenue / maxRevenue) * 100 : 0;

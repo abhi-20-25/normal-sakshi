@@ -2707,43 +2707,23 @@ def get_footfall_conversion():
             sales_query_results = []
             remote_api_used = False
             try:
-                # Fetch DAILY sales from remote FastAPI (hourly endpoint not available on remote server)
-                logging.info(f"Attempting to fetch sales from remote API: {FASTAPI_URL}/analytics/sales-daily")
+                # Try HOURLY endpoint first (more accurate)
+                logging.info(f"Attempting to fetch hourly sales from remote API: {FASTAPI_URL}/analytics/sales-hourly")
                 response = requests.get(
-                    f"{FASTAPI_URL}/analytics/sales-daily",
+                    f"{FASTAPI_URL}/analytics/sales-hourly",
                     params={
                         'start_date': start_date.strftime('%Y-%m-%d'),
                         'end_date': end_date.strftime('%Y-%m-%d'),
                         'token': API_TOKEN
                     },
-                    timeout=5
+                    timeout=10
                 )
-                logging.info(f"Remote API response status: {response.status_code}")
                 
                 if response.status_code == 200:
-                    daily_sales = response.json()
-                    logging.info(f"Remote API returned {len(daily_sales) if daily_sales else 0} daily records")
+                    hourly_sales = response.json()
+                    logging.info(f"✅ Remote API returned {len(hourly_sales) if hourly_sales else 0} hourly records")
                     
-                    # Build daily sales lookup
-                    daily_sales_lookup = {}
-                    for item in daily_sales:
-                        sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
-                        daily_sales_lookup[sale_date] = {
-                            'orders': item['order_count'],
-                            'revenue': item['total_sales']
-                        }
-                    
-                    # Distribute daily sales across hours based on footfall patterns
-                    # First, calculate footfall distribution per day
-                    from collections import defaultdict
-                    footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
-                    footfall_by_date_total = defaultdict(int)
-                    
-                    for f in footfall_query:
-                        footfall_by_date_hour[f.report_date][f.hour] = f.visitors or 0
-                        footfall_by_date_total[f.report_date] += f.visitors or 0
-                    
-                    # Now distribute sales proportionally
+                    # Convert to namedtuple format for compatibility
                     from collections import namedtuple
                     Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
                     
@@ -2753,32 +2733,134 @@ def get_footfall_conversion():
                     current_hour = current_time_ist.hour
                     is_viewing_today = end_date == current_date
                     
-                    for sale_date, sales_data in daily_sales_lookup.items():
-                        if sale_date in footfall_by_date_total and footfall_by_date_total[sale_date] > 0:
-                            # Distribute based on footfall proportion
+                    for item in hourly_sales:
+                        sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
+                        sale_hour = int(item['hour'])
+                        
+                        # Skip future hours when viewing TODAY
+                        if is_viewing_today and sale_date == current_date and sale_hour > current_hour:
+                            continue
+                        
+                        sales_query_results.append(Row(
+                            sale_date=sale_date,
+                            sale_hour=sale_hour,
+                            orders=item['orders'],
+                            revenue=item['revenue']
+                        ))
+                    
+                    remote_api_used = True
+                    logging.info(f"✅ Using hourly sales data: {len(sales_query_results)} records")
+                else:
+                    logging.warning(f"Hourly endpoint returned {response.status_code}, trying daily endpoint...")
+                    raise Exception(f"Hourly API returned {response.status_code}")
+                    
+            except Exception as hourly_error:
+                logging.info(f"⚠️ Hourly endpoint not available: {hourly_error}")
+                
+                # Fallback to DAILY endpoint and distribute intelligently
+                try:
+                    logging.info(f"Fetching daily sales from remote API: {FASTAPI_URL}/analytics/sales-daily")
+                    response = requests.get(
+                        f"{FASTAPI_URL}/analytics/sales-daily",
+                        params={
+                            'start_date': start_date.strftime('%Y-%m-%d'),
+                            'end_date': end_date.strftime('%Y-%m-%d'),
+                            'token': API_TOKEN
+                        },
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        daily_sales = response.json()
+                        logging.info(f"✅ Remote API returned {len(daily_sales) if daily_sales else 0} daily records")
+                        
+                        # Build daily sales lookup
+                        daily_sales_lookup = {}
+                        for item in daily_sales:
+                            sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
+                            daily_sales_lookup[sale_date] = {
+                                'orders': item['order_count'],
+                                'revenue': item['total_sales']
+                            }
+                        
+                        # Calculate footfall distribution per day for smarter allocation
+                        from collections import defaultdict
+                        footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
+                        footfall_by_date_total = defaultdict(int)
+                        
+                        for f in footfall_query:
+                            footfall_by_date_hour[f.report_date][f.hour] = f.visitors or 0
+                            footfall_by_date_total[f.report_date] += f.visitors or 0
+                        
+                        # Distribute sales using smart allocation to preserve exact counts
+                        from collections import namedtuple
+                        Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
+                        
+                        # Check if viewing today to filter future hours
+                        current_time_ist = datetime.now(IST)
+                        current_date = current_time_ist.date()
+                        current_hour = current_time_ist.hour
+                        is_viewing_today = end_date == current_date
+                        
+                        for sale_date, sales_data in daily_sales_lookup.items():
+                            if sale_date not in footfall_by_date_total or footfall_by_date_total[sale_date] == 0:
+                                # No footfall data for this day, skip distribution
+                                continue
+                            
+                            daily_orders = sales_data['orders']
+                            daily_revenue = sales_data['revenue']
                             daily_total_footfall = footfall_by_date_total[sale_date]
-                            for hour, visitors in footfall_by_date_hour[sale_date].items():
-                                # CRITICAL FIX: Skip future hours when viewing TODAY
-                                if is_viewing_today and sale_date == current_date and hour > current_hour:
-                                    continue
-                                    
-                                proportion = visitors / daily_total_footfall
-                                # Allocate integer orders per hour (rounded) to avoid fractional order counts
+                            
+                            # Get hours sorted by footfall (descending)
+                            hours_with_footfall = [
+                                (hour, visitors) 
+                                for hour, visitors in footfall_by_date_hour[sale_date].items()
+                                if not (is_viewing_today and sale_date == current_date and hour > current_hour)
+                            ]
+                            hours_with_footfall.sort(key=lambda x: x[1], reverse=True)
+                            
+                            if not hours_with_footfall:
+                                continue
+                            
+                            # Smart allocation: distribute proportionally but adjust to preserve exact total
+                            allocated_orders = []
+                            allocated_revenue = []
+                            remaining_orders = daily_orders
+                            remaining_revenue = daily_revenue
+                            
+                            for i, (hour, visitors) in enumerate(hours_with_footfall):
+                                if i == len(hours_with_footfall) - 1:
+                                    # Last hour gets remainder to ensure exact total
+                                    hour_orders = remaining_orders
+                                    hour_revenue = remaining_revenue
+                                else:
+                                    # Proportional allocation
+                                    proportion = visitors / daily_total_footfall
+                                    hour_orders = int(round(daily_orders * proportion))
+                                    hour_revenue = round(daily_revenue * proportion, 2)
+                                    remaining_orders -= hour_orders
+                                    remaining_revenue -= hour_revenue
+                                
                                 sales_query_results.append(Row(
                                     sale_date=sale_date,
                                     sale_hour=hour,
-                                    orders=int(round(sales_data['orders'] * proportion)),
-                                    revenue=round(sales_data['revenue'] * proportion, 2)
+                                    orders=hour_orders,
+                                    revenue=hour_revenue
                                 ))
-                    
-                    remote_api_used = True
-                    logging.info(f"✅ Fetched {len(daily_sales)} daily records, distributed to {len(sales_query_results)} hourly records")
-                else:
-                    logging.warning(f"Remote API returned non-200 status: {response.status_code}")
-                    raise Exception(f"API returned {response.status_code}")
-            except Exception as api_error:
-                logging.warning(f"⚠️ Remote API unavailable, using local DB: {api_error}")
-                
+                        
+                        remote_api_used = True
+                        logging.info(f"✅ Distributed {len(daily_sales)} daily records to {len(sales_query_results)} hourly records")
+                    else:
+                        logging.warning(f"Daily API returned {response.status_code}")
+                        raise Exception(f"Daily API returned {response.status_code}")
+                        
+                except Exception as daily_error:
+                    logging.warning(f"⚠️ Remote daily API also unavailable: {daily_error}")
+                    # Will fall through to local database fallback below
+            
+            # Final fallback: Local database
+            if not sales_query_results:
+                logging.info(f"📊 Using local database for sales data")
                 # Check if viewing today to filter future hours
                 current_time_ist = datetime.now(IST)
                 current_date = current_time_ist.date()
@@ -2848,6 +2930,11 @@ def get_footfall_conversion():
             logging.info(f"📊 Data Summary: {len(footfall_query)} footfall records, {len(sales_query)} sales records")
             logging.info(f"Using {'REMOTE FastAPI' if remote_api_used else 'LOCAL DATABASE'} for sales data")
             
+            # Verify total order counts for debugging
+            total_orders_from_sales = sum(row.orders for row in sales_query)
+            total_revenue_from_sales = sum(row.revenue for row in sales_query)
+            logging.info(f"📈 Sales data totals: {total_orders_from_sales} orders, ₹{total_revenue_from_sales:.2f} revenue")
+            
             # STEP 3: Combine footfall and sales data
             # Create lookup dictionary for sales data
             sales_lookup = {}
@@ -2910,6 +2997,11 @@ def get_footfall_conversion():
             overall_conversion = (total_orders / total_visitors * 100) if total_visitors > 0 else 0
             overall_revenue_per_visitor = (total_revenue / total_visitors) if total_visitors > 0 else 0
             overall_avg_order_value = (total_revenue / total_orders) if total_orders > 0 else 0
+            
+            # Verify final totals match source data
+            logging.info(f"✅ Final conversion totals: {total_orders} orders, ₹{total_revenue:.2f} revenue")
+            if total_orders_from_sales != total_orders:
+                logging.warning(f"⚠️ Order count mismatch! Sales data: {total_orders_from_sales}, Conversion calc: {total_orders}")
             
             # STEP 4: Identify busiest hours and peak demand patterns
             # Group by hour to find average metrics per hour of day
@@ -3960,15 +4052,30 @@ def menu_time_popularity():
                 logging.warning(f"Error processing order {order_id}: {order_error}")
                 hour = 12  # Default to noon if parsing fails
             
+            # Calculate order-level revenue for accurate allocation
+            order_total = float(order_data.get('order', {}).get('total', 0))
+            order_items = order_data.get('items', [])
+            
+            # Calculate sum of item totals to find allocation ratio
+            items_subtotal = sum(float(item.get('total', 0)) for item in order_items if isinstance(item, dict))
+            
             # Process each item in the order
-            for item in order_data.get('items', []):
+            for item in order_items:
                 if isinstance(item, dict):
                     item_name = item.get('name', 'Unknown')
                     quantity = float(item.get('quantity', 0))
-                    revenue = float(item.get('total', 0))
+                    item_subtotal = float(item.get('total', 0))
                     
                     if not item_name or item_name == 'Unknown':
                         continue
+                    
+                    # Allocate order total proportionally to match sales analytics
+                    # This accounts for taxes, discounts, and delivery charges
+                    if items_subtotal > 0:
+                        allocation_ratio = item_subtotal / items_subtotal
+                        revenue = order_total * allocation_ratio
+                    else:
+                        revenue = item_subtotal
                     
                     # FIXED: Correct time period categorization
                     # Morning: 6-11 (6 AM to 11:59 AM)
@@ -4068,6 +4175,50 @@ def menu_time_popularity():
         # Generate intelligent suggestions based on actual menu data
         suggestions = []
         
+        # Helper function to detect item type and suggest appropriate variations
+        def get_item_suggestions(item_name, revenue):
+            name_lower = item_name.lower()
+            
+            # Detect beverages
+            beverage_keywords = ['coffee', 'cappuccino', 'latte', 'espresso', 'tea', 'chai', 'juice', 
+                                'shake', 'smoothie', 'mojito', 'lassi', 'milk', 'frappe', 'americano', 
+                                'mocha', 'macchiato', 'hot chocolate', 'cold coffee']
+            is_beverage = any(keyword in name_lower for keyword in beverage_keywords)
+            
+            # Detect sandwiches/burgers
+            sandwich_keywords = ['sandwich', 'burger', 'toast', 'panini', 'wrap', 'roll']
+            is_sandwich = any(keyword in name_lower for keyword in sandwich_keywords)
+            
+            # Detect pizza/pasta
+            italian_keywords = ['pizza', 'pasta', 'lasagna', 'ravioli']
+            is_italian = any(keyword in name_lower for keyword in italian_keywords)
+            
+            if is_beverage:
+                return {
+                    'variations': 'size options (Regular/Large), flavor shots (Vanilla/Caramel/Hazelnut), temperature (Hot/Iced)',
+                    'combo_with': 'breakfast items or pastries',
+                    'upsell': 'extra shot, whipped cream, or cookie pairing'
+                }
+            elif is_sandwich:
+                return {
+                    'variations': 'spice levels (mild/medium/spicy), cheese options (regular/premium), bread choices',
+                    'combo_with': 'fries, beverage, or salad',
+                    'upsell': 'extra cheese, bacon, or make it a combo'
+                }
+            elif is_italian:
+                return {
+                    'variations': 'size (personal/medium/large), crust types, topping combinations',
+                    'combo_with': 'garlic bread, beverage, or dessert',
+                    'upsell': 'extra toppings, stuffed crust, or side salad'
+                }
+            else:
+                # Generic food items
+                return {
+                    'variations': 'portion sizes, spice levels, or add-on toppings',
+                    'combo_with': 'beverage or side dish',
+                    'upsell': 'extra portions or premium ingredients'
+                }
+        
         # Calculate metrics per period
         morning_orders = len([o for o in seen_order_ids.values() if 6 <= o.get('order_hour', 0) <= 11])
         afternoon_orders = len([o for o in seen_order_ids.values() if 12 <= o.get('order_hour', 0) <= 16])
@@ -4082,6 +4233,8 @@ def menu_time_popularity():
         # Morning Analysis (6 AM - 12 PM)
         if morning_orders > 0:
             top_morning = sorted(morning_list, key=lambda x: x['quantity'], reverse=True)[:3]
+            top_item = top_morning[0]['name']
+            item_suggestions = get_item_suggestions(top_item, top_morning[0]['revenue'])
             
             if morning_aov < 250:
                 # Low AOV - suggest combos with popular items
@@ -4091,7 +4244,7 @@ def menu_time_popularity():
                     'type': 'combo',
                     'icon': '☕',
                     'reason': f'Average order value is ₹{morning_aov:.0f}. Top sellers: {top_items_str}',
-                    'suggestion': f'Create breakfast combos featuring {top_morning[0]["name"]} + beverage + side at 15% discount to increase AOV to ₹300+'
+                    'suggestion': f'Create breakfast combos: {top_item} + {item_suggestions["combo_with"]} at 15% discount to increase AOV to ₹300+'
                 })
             elif morning_aov >= 250 and morning_orders < 15:
                 # Good AOV but low orders - attract more customers
@@ -4100,7 +4253,7 @@ def menu_time_popularity():
                     'type': 'promotion',
                     'icon': '🎁',
                     'reason': f'Good order value (₹{morning_aov:.0f}) but only {morning_orders} orders',
-                    'suggestion': f'Launch "Early Bird Special" (before 10 AM): Get 20% off on {top_morning[0]["name"]} to drive morning traffic'
+                    'suggestion': f'Launch "Early Bird Special" (before 10 AM): Get 20% off on {top_item} to drive morning traffic'
                 })
             else:
                 # Strong performance - upsell opportunities
@@ -4109,12 +4262,14 @@ def menu_time_popularity():
                     'type': 'upsell',
                     'icon': '⬆️',
                     'reason': f'Strong performance: {morning_orders} orders at ₹{morning_aov:.0f} AOV',
-                    'suggestion': f'Upsell strategy: Suggest premium add-ons (cheese, extra toppings) with popular {top_morning[0]["name"]} to push AOV to ₹350+'
+                    'suggestion': f'Upsell strategy: Offer {item_suggestions["upsell"]} with {top_item} to push AOV to ₹350+'
                 })
         
         # Afternoon Analysis (12 PM - 5 PM)
         if afternoon_orders > 0:
             top_afternoon = sorted(afternoon_list, key=lambda x: x['quantity'], reverse=True)[:3]
+            top_item = top_afternoon[0]['name']
+            item_suggestions = get_item_suggestions(top_item, top_afternoon[0]['revenue'])
             
             if afternoon_aov < 300:
                 top_items_str = ", ".join([item['name'] for item in top_afternoon])
@@ -4123,7 +4278,7 @@ def menu_time_popularity():
                     'type': 'combo',
                     'icon': '🍱',
                     'reason': f'Average order value is ₹{afternoon_aov:.0f}. Most ordered: {top_items_str}',
-                    'suggestion': f'Create "Lunch Deal": {top_afternoon[0]["name"]} + {top_afternoon[1]["name"] if len(top_afternoon) > 1 else "drink"} at bundled price to boost AOV'
+                    'suggestion': f'Create "Lunch Deal": {top_item} + {item_suggestions["combo_with"]} at bundled price to boost AOV'
                 })
             elif afternoon_orders < 20:
                 suggestions.append({
@@ -4131,7 +4286,7 @@ def menu_time_popularity():
                     'type': 'promotion',
                     'icon': '⏰',
                     'reason': f'Peak lunch hours but only {afternoon_orders} orders',
-                    'suggestion': f'Introduce "Express Lunch" (12-2 PM): Fast service guarantee + combo deals to capture office crowd'
+                    'suggestion': f'Introduce "Express Lunch" (12-2 PM): Fast service guarantee + {top_item} combo deals to capture office crowd'
                 })
             else:
                 # Peak period - maximize revenue
@@ -4140,21 +4295,24 @@ def menu_time_popularity():
                     'type': 'premium',
                     'icon': '⭐',
                     'reason': f'Peak period: {afternoon_orders} orders, ₹{afternoon_aov:.0f} AOV',
-                    'suggestion': f'Launch premium "Executive Meal": {top_afternoon[0]["name"]} + premium sides + dessert at ₹{int(afternoon_aov * 1.3)} to target high-value customers'
+                    'suggestion': f'Launch premium option: {top_item} with {item_suggestions["upsell"]} at ₹{int(afternoon_aov * 1.3)} to target high-value customers'
                 })
         
         # Evening Analysis (5 PM - 6 AM)
         if evening_orders > 0:
             top_evening = sorted(evening_list, key=lambda x: x['quantity'], reverse=True)[:3]
+            top_item = top_evening[0]['name'] if top_evening else "menu items"
+            item_suggestions = get_item_suggestions(top_item, top_evening[0]['revenue']) if top_evening else None
             
             if evening_aov < 350:
                 top_items_str = ", ".join([item['name'] for item in top_evening])
+                combo_suggestion = item_suggestions["combo_with"] if item_suggestions else "sides and drinks"
                 suggestions.append({
                     'period': 'Evening (5 PM - 6 AM)',
                     'type': 'combo',
                     'icon': '🌙',
                     'reason': f'Dinner period with ₹{evening_aov:.0f} AOV. Popular: {top_items_str}',
-                    'suggestion': f'Create "Dinner For Two": 2x {top_evening[0]["name"]} + 2 drinks + shared appetizer at ₹{int(evening_aov * 2.2)} value price'
+                    'suggestion': f'Create "Dinner For Two": 2x {top_item} + {combo_suggestion} at ₹{int(evening_aov * 2.2)} value price'
                 })
             elif evening_orders < 10:
                 suggestions.append({
@@ -4162,7 +4320,7 @@ def menu_time_popularity():
                     'type': 'promotion',
                     'icon': '🎉',
                     'reason': f'Evening potential untapped - only {evening_orders} orders',
-                    'suggestion': f'Happy Hours (5-7 PM): Buy {top_evening[0]["name"] if top_evening else "any main"}, get 50% off second item + free beverage'
+                    'suggestion': f'Happy Hours (5-7 PM): Buy {top_item}, get 50% off second item + free beverage'
                 })
             else:
                 suggestions.append({
@@ -4170,7 +4328,7 @@ def menu_time_popularity():
                     'type': 'family',
                     'icon': '👨‍👩‍👧',
                     'reason': f'Dinner rush: {evening_orders} orders at ₹{evening_aov:.0f} AOV',
-                    'suggestion': f'Family Bundle: 4x {top_evening[0]["name"]} + family sides + 4 drinks at ₹{int(evening_aov * 3.5)} - perfect for families'
+                    'suggestion': f'Family Bundle: 4x {top_item} + family-size {item_suggestions["combo_with"] if item_suggestions else "sides"} at ₹{int(evening_aov * 3.5)}'
                 })
         
         # Add cross-period insights
@@ -4193,12 +4351,15 @@ def menu_time_popularity():
                 
                 if consistent_sellers:
                     bestseller = consistent_sellers[0]
+                    bestseller_name = bestseller[0]
+                    item_suggestions = get_item_suggestions(bestseller_name, bestseller[1]['revenue'])
+                    
                     suggestions.append({
                         'period': 'All Day Strategy',
                         'type': 'signature',
                         'icon': '🏆',
-                        'reason': f'{bestseller[0]} is popular across multiple time periods (₹{bestseller[1]["revenue"]:.0f} total)',
-                        'suggestion': f'Make {bestseller[0]} your "Signature Dish" - feature it prominently on menu and create variations (spicy, cheesy, loaded) to boost sales further'
+                        'reason': f'{bestseller_name} is popular across multiple time periods (₹{bestseller[1]["revenue"]:.0f} total)',
+                        'suggestion': f'Make {bestseller_name} your "Signature Item" - feature it prominently and offer {item_suggestions["variations"]} to boost sales further'
                     })
         
         # Use actual date range from data
