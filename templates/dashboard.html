@@ -230,6 +230,9 @@
         <a href="#" data-view="menu-time-popularity" class="nav-link">
           <div class="icon">🕐</div><div>Time-Based Menu</div>
         </a>
+        <a href="#" data-view="promotion-effectiveness" class="nav-link">
+          <div class="icon">🎯</div><div>Promotion Effectiveness</div>
+        </a>
         <div class="section-title">APPLICATIONS</div>
         <a href="#" data-view="people-counter" class="nav-link">
           <div class="icon">👥</div><div>People Counter</div>
@@ -1049,8 +1052,39 @@
             </div>
           </div>
           
+
+        </div>
+      </div>
+
+      <!-- Promotion Effectiveness Section -->
+      <div id="promotion-effectiveness-section" class="section">
+        <button class="back-btn" onclick="switchView('overview')">← Back</button>
+        
+        <div style="padding: 0 6px;">
+          {% if selected_restaurant %}
+          <div style="background: linear-gradient(90deg, #1640ff, #2b3bff); padding: 12px 20px; border-radius: 8px; margin-bottom: 20px; display: flex; align-items: center; gap: 10px;">
+            <span style="font-size: 20px;">📍</span>
+            <div>
+              <div style="font-weight: 600; font-size: 14px;">Showing data for:</div>
+              <div style="font-size: 16px; font-weight: 700;">{{ selected_restaurant.restaurant_name }}{% if selected_restaurant.location %} - {{ selected_restaurant.location }}{% endif %}</div>
+            </div>
+          </div>
+          {% endif %}
+          
+          <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 24px;">
+            <label style="color: #9aa0a6; font-size: 14px;">Date Range:</label>
+            <select id="promotionDaysFilter" onchange="loadPromotionEffectiveness()" style="background: #17181a; border: 1px solid #2a2d31; color: #ddd; padding: 10px 14px; border-radius: 8px; font-size: 14px;">
+              <option value="1">Today</option>
+              <option value="7" selected>Last 7 Days</option>
+            </select>
+            <button onclick="loadPromotionEffectiveness()" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">Refresh Data</button>
+          </div>
+          
+          <div id="promotionErrorContainer"></div>
+          
           <div class="report-section">
-            <h3>Detailed Hourly Data</h3>
+            <h3>🎯 Hourly Performance Data - Track Promotion Impact</h3>
+            <p style="color: #9aa0a6; font-size: 13px; margin-bottom: 16px;">Monitor hourly visitor traffic, orders, and revenue to evaluate the effectiveness of your promotional campaigns. Compare metrics across different time periods to identify successful promotions.</p>
             <div style="overflow-x: auto;">
               <table>
                 <thead>
@@ -1061,13 +1095,12 @@
                     <th>Orders</th>
                     <th>Revenue</th>
                     <th>Conversion %</th>
-                    <th>₹/Visitor</th>
                     <th>Avg Order Value</th>
                   </tr>
                 </thead>
-                <tbody id="conversionDataTableBody">
+                <tbody id="promotionDataTableBody">
                   <tr>
-                    <td colspan="8" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td>
+                    <td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td>
                   </tr>
                 </tbody>
               </table>
@@ -1795,6 +1828,7 @@ function switchView(view) {
     'sales-analytics': { id: 'sales-analytics-section', title: 'Sales Analytics', subtitle: 'Revenue & Orders' },
     'conversion-analytics': { id: 'conversion-analytics-section', title: 'Conversion Analytics', subtitle: 'Footfall-to-Sales Conversion' },
     'menu-time-popularity': { id: 'menu-time-popularity-section', title: 'Menu Time Popularity', subtitle: 'Morning & Evening Analysis' },
+    'promotion-effectiveness': { id: 'promotion-effectiveness-section', title: 'Promotion Effectiveness', subtitle: 'Track Campaign Impact' },
     'people-counter': { id: 'people-counter-section', title: 'People Counter', subtitle: 'Footfall analytics' },
     'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue analytics' },
     'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Safety monitoring' },
@@ -1817,7 +1851,10 @@ function switchView(view) {
     if (view === 'menu-time-popularity') {
         loadMenuTimePopularity();
     }
-    if (view !== 'overview' && view !== 'sales-analytics' && view !== 'conversion-analytics' && view !== 'menu-time-popularity') {
+    if (view === 'promotion-effectiveness') {
+        loadPromotionEffectiveness();
+    }
+    if (view !== 'overview' && view !== 'sales-analytics' && view !== 'conversion-analytics' && view !== 'menu-time-popularity' && view !== 'promotion-effectiveness') {
       // Reset filter when switching views normally (not from filterKitchenViolations)
       if (view !== 'kitchen-compliance') {
         currentViolationFilter = null;
@@ -2134,9 +2171,6 @@ function loadConversionData() {
   const days = document.getElementById('conversionDaysFilter').value;
   document.getElementById('conversionErrorContainer').innerHTML = '';
   
-  // Show loading state
-  document.getElementById('conversionDataTableBody').innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td></tr>';
-  
   // Build URL with restaurant filter if applicable
   let url = `/api/analytics/footfall-conversion?days=${days}`;
   if (selected_restaurant && selected_restaurant.id) {
@@ -2201,25 +2235,6 @@ function loadConversionData() {
         // Load staffing recommendations
         loadStaffingRecommendations(days);
       }
-      
-      // Update table
-      const tbody = document.getElementById('conversionDataTableBody');
-      if (data.hourly_data.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #9aa0a6;">No data available for this period</td></tr>';
-      } else {
-        tbody.innerHTML = data.hourly_data.map(row => `
-          <tr>
-            <td>${row.date}</td>
-            <td>${row.hour_label}</td>
-            <td>${row.visitors}</td>
-            <td>${row.orders}</td>
-            <td>${formatCurrency(row.revenue)}</td>
-            <td>${row.conversion_rate}%</td>
-            <td>${formatCurrency(row.revenue_per_visitor)}</td>
-            <td>${formatCurrency(row.avg_order_value)}</td>
-          </tr>
-        `).join('');
-      }
     })
     .catch(error => {
       console.error('Error loading conversion data:', error);
@@ -2228,13 +2243,137 @@ function loadConversionData() {
           ⚠️ Error loading conversion analytics: ${error.message}
         </div>
       `;
-      document.getElementById('conversionDataTableBody').innerHTML = '<tr><td colspan="8" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load data</td></tr>';
+    });
+}
+
+function loadPromotionEffectiveness() {
+  const days = document.getElementById('promotionDaysFilter').value;
+  document.getElementById('promotionErrorContainer').innerHTML = '';
+  
+  // Show loading state
+  document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td></tr>';
+  
+  // Build URL with restaurant filter if applicable
+  let url = `/api/analytics/footfall-conversion?days=${days}`;
+  if (selected_restaurant && selected_restaurant.id) {
+    url += `&restaurant_id=${selected_restaurant.id}`;
+    console.log('Fetching promotion effectiveness data for restaurant:', selected_restaurant.restaurant_name, 'last', days, 'days');
+  } else {
+    console.log('Fetching promotion effectiveness data for all restaurants, last', days, 'days');
+  }
+  
+  fetch(url, {
+    credentials: 'same-origin',
+    headers: { 'Accept': 'application/json' }
+  })
+    .then(response => {
+      console.log('Response status:', response.status);
+      if (!response.ok) {
+        if (response.status === 302 || response.status === 401) {
+          throw new Error('Please login first');
+        }
+        throw new Error(`Server returned ${response.status}`);
+      }
+      return response.json();
+    })
+    .then(data => {
+      console.log('Received promotion effectiveness data:', data);
+      
+      if (!data || !data.hourly_data) {
+        throw new Error('Invalid data format received');
+      }
+      
+      // Filter data to only show hours >= 9 AM (hour >= 9)
+      const filteredData = data.hourly_data.filter(row => row.hour >= 9);
+      
+      const tbody = document.getElementById('promotionDataTableBody');
+      
+      if (filteredData.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">No data available for this period</td></tr>';
+        return;
+      }
+      
+      // If viewing 7 days, aggregate by date (one row per day)
+      if (days === '7') {
+        const dailyData = {};
+        
+        // Aggregate by date
+        filteredData.forEach(row => {
+          if (!dailyData[row.date]) {
+            dailyData[row.date] = {
+              date: row.date,
+              visitors: 0,
+              orders: 0,
+              revenue: 0
+            };
+          }
+          dailyData[row.date].visitors += row.visitors;
+          dailyData[row.date].orders += row.orders;
+          dailyData[row.date].revenue += row.revenue;
+        });
+        
+        // Convert to array and calculate daily metrics
+        const dailyArray = Object.values(dailyData).map(day => {
+          const conversion_rate = day.visitors > 0 ? ((day.orders / day.visitors) * 100).toFixed(2) : '0.00';
+          const avg_order_value = day.orders > 0 ? (day.revenue / day.orders).toFixed(2) : '0.00';
+          return {
+            ...day,
+            conversion_rate,
+            avg_order_value
+          };
+        });
+        
+        // Sort by date (most recent first)
+        dailyArray.sort((a, b) => new Date(b.date) - new Date(a.date));
+        
+        // Display daily aggregated data
+        tbody.innerHTML = dailyArray.map(row => `
+          <tr>
+            <td><strong>${row.date}</strong></td>
+            <td>9 AM - 11 PM</td>
+            <td><strong>${row.visitors}</strong></td>
+            <td><strong>${row.orders}</strong></td>
+            <td><strong>${formatCurrency(row.revenue)}</strong></td>
+            <td><strong>${row.conversion_rate}%</strong></td>
+            <td><strong>${formatCurrency(row.avg_order_value)}</strong></td>
+          </tr>
+        `).join('');
+      } else {
+        // For today, show hourly breakdown (filtered to >= 9 AM)
+        // Add visual indicators for refunds/cancellations
+        tbody.innerHTML = filteredData.map(row => {
+          const isRefund = row.orders < 0 || row.revenue < 0;
+          const rowStyle = isRefund ? 'background: #3d1717; border-left: 3px solid #ff6b6b;' : '';
+          const refundBadge = isRefund ? '<span style="background: #ff6b6b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">🔄 Refund/Cancellation</span>' : '';
+          
+          return `
+          <tr style="${rowStyle}">
+            <td>${row.date}</td>
+            <td>${row.hour_label}${refundBadge}</td>
+            <td>${row.visitors}</td>
+            <td style="${isRefund ? 'color: #ff6b6b;' : ''}">${row.orders}${isRefund ? ' ↩️' : ''}</td>
+            <td style="${isRefund ? 'color: #ff6b6b;' : ''}">${formatCurrency(row.revenue)}</td>
+            <td>${row.conversion_rate}%</td>
+            <td>${formatCurrency(row.avg_order_value)}</td>
+          </tr>
+        `;
+        }).join('');
+      }
+    })
+    .catch(error => {
+      console.error('Error loading promotion effectiveness data:', error);
+      document.getElementById('promotionErrorContainer').innerHTML = `
+        <div style="background: #3d1717; border: 1px solid #6b2424; color: #ff6b6b; padding: 16px; border-radius: 8px; margin-bottom: 24px;">
+          ⚠️ Error loading promotion effectiveness data: ${error.message}
+        </div>
+      `;
+      document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load data</td></tr>';
     });
 }
 
 function loadStaffingRecommendations(days) {
-  // Build URL with restaurant filter if applicable
-  let url = `/api/analytics/staffing-recommendations?days=${days || 14}`;
+  // Instead of using the staffing API, use the conversion analytics data which has correct order counts
+  let url = `/api/analytics/footfall-conversion?days=${days || 14}`;
   if (selected_restaurant && selected_restaurant.id) {
     url += `&restaurant_id=${selected_restaurant.id}`;
   }
@@ -2248,14 +2387,93 @@ function loadStaffingRecommendations(days) {
       return response.json();
     })
     .then(data => {
-      console.log('Received staffing recommendations:', data);
+      console.log('Calculating staffing recommendations from conversion data:', data);
       
-      if (!data || !data.hourly_recommendations) {
+      if (!data || !data.hourly_data) {
         throw new Error('Invalid data format received');
       }
       
-      // Filter to only show business hours (typically 6 AM to 11 PM)
-      const businessHours = data.hourly_recommendations.filter(h => h.hour >= 6 && h.hour <= 23);
+      // Aggregate data by hour to get averages and max values
+      const hourlyStats = {};
+      
+      data.hourly_data.forEach(row => {
+        const hour = row.hour;
+        if (!hourlyStats[hour]) {
+          hourlyStats[hour] = {
+            visitors: [],
+            orders: [],
+            revenue: []
+          };
+        }
+        // Only include positive values
+        if (row.visitors >= 0) hourlyStats[hour].visitors.push(row.visitors);
+        if (row.orders >= 0) hourlyStats[hour].orders.push(row.orders);
+        if (row.revenue >= 0) hourlyStats[hour].revenue.push(row.revenue);
+      });
+      
+      // Calculate recommendations for each hour
+      const recommendations = [];
+      for (let hour = 0; hour < 24; hour++) {
+        if (!hourlyStats[hour] || hourlyStats[hour].visitors.length === 0) continue;
+        
+        const stats = hourlyStats[hour];
+        const avgVisitors = stats.visitors.reduce((a, b) => a + b, 0) / stats.visitors.length;
+        const maxVisitors = Math.max(...stats.visitors);
+        const avgOrders = stats.orders.length > 0 ? stats.orders.reduce((a, b) => a + b, 0) / stats.orders.length : 0;
+        const maxOrders = stats.orders.length > 0 ? Math.max(...stats.orders) : 0;
+        const avgRevenue = stats.revenue.length > 0 ? stats.revenue.reduce((a, b) => a + b, 0) / stats.revenue.length : 0;
+        
+        // Calculate demand score (0-100)
+        const demandScore = Math.min(100, Math.round((avgVisitors / 50 * 60) + (avgOrders / 30 * 40)));
+        
+        // Determine demand level
+        let demandLevel, demandColor;
+        if (demandScore >= 75) {
+          demandLevel = "Very High";
+          demandColor = "#ef4444";
+        } else if (demandScore >= 50) {
+          demandLevel = "High";
+          demandColor = "#f59e0b";
+        } else if (demandScore >= 25) {
+          demandLevel = "Moderate";
+          demandColor = "#3b82f6";
+        } else {
+          demandLevel = "Low";
+          demandColor = "#22c55e";
+        }
+        
+        // Staffing recommendations: Base 2, +1 per 15 visitors, +1 per 10 orders
+        const baseStaff = 2;
+        const visitorBasedStaff = Math.floor(avgVisitors / 15);
+        const orderBasedStaff = Math.floor(avgOrders / 10);
+        const recommendedStaff = Math.max(baseStaff, Math.min(12, baseStaff + visitorBasedStaff + orderBasedStaff));
+        
+        // Inventory recommendations: Each order ≈ 2 items, add 30% buffer
+        const baseInventory = Math.round(avgOrders * 2.3);
+        const peakBuffer = demandScore >= 50 ? Math.round(maxOrders * 0.5) : 0;
+        const recommendedInventory = baseInventory + peakBuffer;
+        
+        const hourLabel = new Date(2000, 0, 1, hour).toLocaleTimeString('en-US', { hour: 'numeric', hour12: true });
+        
+        recommendations.push({
+          hour,
+          hour_label: hourLabel,
+          hour_range: `${hour}:00 - ${hour}:59`,
+          avg_visitors: avgVisitors,
+          max_visitors: maxVisitors,
+          avg_orders: avgOrders,
+          max_orders: maxOrders,
+          avg_revenue: avgRevenue,
+          demand_score: demandScore,
+          demand_level: demandLevel,
+          demand_color: demandColor,
+          recommended_staff: recommendedStaff,
+          recommended_inventory: recommendedInventory
+        });
+      }
+      
+      // Filter to only show business hours (6 AM to 11 PM)
+      const businessHours = recommendations.filter(h => h.hour >= 6 && h.hour <= 23);
       
       const tbody = document.getElementById('staffingRecommendationsBody');
       if (businessHours.length === 0) {
