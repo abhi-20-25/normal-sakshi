@@ -719,14 +719,26 @@ class MultiModelProcessor(threading.Thread):
                     # Apply smart validation
                     filtered_detections = self.apply_smart_validation(all_detections, task['model'])
                     
+                    # Apply higher confidence threshold for phone detection (reduce false positives)
+                    PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
+                    final_detections = []
+                    for det in filtered_detections:
+                        if det['class_id'] == 7:  # Using_phone
+                            if det['confidence'] >= PHONE_MIN_CONFIDENCE:
+                                final_detections.append(det)
+                            else:
+                                logging.debug(f"Rejected phone detection (conf={det['confidence']:.2f} < {PHONE_MIN_CONFIDENCE})")
+                        else:
+                            final_detections.append(det)
+                    
                     # Debug logging (ALWAYS log what we see)
                     if all_detections:
                         detected_classes_debug = [f"{task['model'].names[det['class_id']]}({det['confidence']:.2f})" for det in all_detections]
-                        filtered_classes_debug = [f"{task['model'].names[det['class_id']]}({det['confidence']:.2f})" for det in filtered_detections]
+                        filtered_classes_debug = [f"{task['model'].names[det['class_id']]}({det['confidence']:.2f})" for det in final_detections]
                         logging.info(f"🔍 Generic {self.channel_name} Frame {frame_count}: Raw: {detected_classes_debug} | After filtering: {filtered_classes_debug}")
                         
                         # Special alert for phone detection
-                        phone_detections = [det for det in filtered_detections if det['class_id'] == 7]
+                        phone_detections = [det for det in final_detections if det['class_id'] == 7]
                         if phone_detections:
                             logging.warning(f"📱 PHONE DETECTED in {self.channel_name}! Confidence: {phone_detections[0]['confidence']:.2f}")
                     
@@ -740,8 +752,8 @@ class MultiModelProcessor(threading.Thread):
                     annotated_frame = frame.copy()
                     violation_detected_classes = []
                     
-                    # Draw ALL detections (violations in red, compliance in green)
-                    for det in filtered_detections:
+                    # Draw ALL detections (violations in red, compliance in green) - use final_detections
+                    for det in final_detections:
                         box = det['box']
                         class_id = det['class_id']
                         class_name = task['model'].names[class_id]
@@ -768,7 +780,7 @@ class MultiModelProcessor(threading.Thread):
                     
                     # ALWAYS add frame info overlay - this proves continuous processing
                     violation_count = len(violation_detected_classes)
-                    info_text = f"Frame: {frame_count} | Detections: {len(filtered_detections)} | Violations: {violation_count}"
+                    info_text = f"Frame: {frame_count} | Detections: {len(final_detections)} | Violations: {violation_count}"
                     # Black background for better visibility
                     cv2.rectangle(annotated_frame, (5, 5), (650, 45), (0, 0, 0), -1)
                     cv2.putText(annotated_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)

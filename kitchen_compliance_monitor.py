@@ -341,13 +341,25 @@ class KitchenComplianceProcessor(threading.Thread):
                 # Apply smart validation to filter out false positives
                 filtered_detections = self.apply_smart_validation(all_detections)
                 
-                # Extract only violation boxes from filtered detections
-                violation_boxes = [det['box'] for det in filtered_detections if det['class_id'] in VIOLATION_CLASSES]
+                # Apply higher confidence threshold for phone detection (reduce false positives)
+                PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
+                final_detections = []
+                for det in filtered_detections:
+                    if det['class_id'] == 7:  # Using_phone
+                        if det['confidence'] >= PHONE_MIN_CONFIDENCE:
+                            final_detections.append(det)
+                        else:
+                            logging.debug(f"Kitchen rejected phone detection (conf={det['confidence']:.2f} < {PHONE_MIN_CONFIDENCE})")
+                    else:
+                        final_detections.append(det)
+                
+                # Extract only violation boxes from final detections
+                violation_boxes = [det['box'] for det in final_detections if det['class_id'] in VIOLATION_CLASSES]
                 
                 # Debug: Log all detected classes (every 50 frames to avoid spam)
                 if frame_count % 50 == 0 and len(all_detections) > 0:
                     detected_classes_debug = [f"{self.unified_model.names[det['class_id']]}({det['confidence']:.2f})" for det in all_detections]
-                    filtered_classes_debug = [f"{self.unified_model.names[det['class_id']]}({det['confidence']:.2f})" for det in filtered_detections]
+                    filtered_classes_debug = [f"{self.unified_model.names[det['class_id']]}({det['confidence']:.2f})" for det in final_detections]
                     logging.info(f"Kitchen {self.channel_name} Frame {frame_count}: Raw detections: {detected_classes_debug} | After filtering: {filtered_classes_debug}")
                 
                 # Log detection results every 100 frames
@@ -371,7 +383,7 @@ class KitchenComplianceProcessor(threading.Thread):
             COLOR_RED = (0, 0, 255)    # Violations
             
             # Draw all filtered detections (both compliance and violations)
-            for det in filtered_detections:
+            for det in final_detections:
                 box = det['box']
                 cls_id = det['class_id']
                 conf = det['confidence']
