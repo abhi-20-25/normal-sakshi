@@ -18,11 +18,12 @@ IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Paths (Unified Model) ---
-UNIFIED_MODEL_PATH = 'models/final_best.pt'  # Single model for all violations
-VIOLATION_CLASSES = [2, 4, 6, 7, 8]  # Classes to detect: without_uniform, without_cap, without_apron, without_gloves, using_phone
+UNIFIED_MODEL_PATH = 'models/kitchen_violation_30_12_2025.pt'  # Single model for all violations
+VIOLATION_CLASSES = [2, 4, 6, 7]  # Classes to detect: without_cap, without_apron, without_gloves, using_phone
+COMPLIANCE_CLASSES = [1, 3, 5]  # Cap_present, With_apron, With_gloves
 
 # --- Detection Configuration ---
-CONFIDENCE_THRESHOLD = 0.50
+CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for more sensitive detection
 FRAME_SKIP_RATE = 5
 PHONE_PERSISTENCE_SECONDS = 3
 ALERT_COOLDOWN_SECONDS = 120  # 2 minutes cooldown between alerts
@@ -90,6 +91,66 @@ class KitchenComplianceProcessor(threading.Thread):
         self.fps_start_time = time.time()
         self.fps_frame_count = 0
         self.current_fps = 0.0
+
+    def apply_smart_validation(self, detections):
+        """
+        Apply smart validation logic using complementary pairs:
+        Compare confidence scores and keep the higher confidence detection.
+        - Cap_present (1) vs Without_cap (2)
+        - With_apron (3) vs Without_apron (4)
+        - With_gloves (5) vs Without_gloves (6)
+        - Using_phone (7) always triggers as violation
+        """
+        if not detections:
+            return detections
+        
+        # Extract confidence scores by class
+        class_confidences = {}
+        for det in detections:
+            class_id = int(det['class_id'])
+            conf = det['confidence']
+            if class_id not in class_confidences:
+                class_confidences[class_id] = []
+            class_confidences[class_id].append(conf)
+        
+        # Get max confidence for each class
+        max_conf_by_class = {cls_id: max(confs) for cls_id, confs in class_confidences.items()}
+        
+        # Apply smart logic - compare confidences
+        filtered_detections = []
+        for det in detections:
+            class_id = int(det['class_id'])
+            conf = det['confidence']
+            should_keep = True
+            
+            # Without_cap (2) vs Cap_present (1) - keep higher confidence
+            if class_id == 2 and 1 in max_conf_by_class:
+                if max_conf_by_class[1] > conf:  # Cap_present has higher confidence
+                    should_keep = False
+            elif class_id == 1 and 2 in max_conf_by_class:
+                if max_conf_by_class[2] > conf:  # Without_cap has higher confidence
+                    should_keep = False
+            
+            # Without_apron (4) vs With_apron (3) - keep higher confidence
+            elif class_id == 4 and 3 in max_conf_by_class:
+                if max_conf_by_class[3] > conf:  # With_apron has higher confidence
+                    should_keep = False
+            elif class_id == 3 and 4 in max_conf_by_class:
+                if max_conf_by_class[4] > conf:  # Without_apron has higher confidence
+                    should_keep = False
+            
+            # Without_gloves (6) vs With_gloves (5) - keep higher confidence
+            elif class_id == 6 and 5 in max_conf_by_class:
+                if max_conf_by_class[5] > conf:  # With_gloves has higher confidence
+                    should_keep = False
+            elif class_id == 5 and 6 in max_conf_by_class:
+                if max_conf_by_class[6] > conf:  # Without_gloves has higher confidence
+                    should_keep = False
+            
+            if should_keep:
+                filtered_detections.append(det)
+        
+        return filtered_detections
 
     @staticmethod
     def initialize_tables(engine):
@@ -253,118 +314,116 @@ class KitchenComplianceProcessor(threading.Thread):
 
             # --- Run Inferences (Unified Model - Single Pass Detection) ---
             try:
-                # Run model ONCE to detect both people AND violations
+                # Run model to detect violations AND compliance items (no person class in this model)
                 results = self.unified_model(
                     frame, 
-                    classes=[0] + VIOLATION_CLASSES,  # Detect person (0) + violations (2,4,6,7,8)
-                    conf=0.35,  # 35% confidence threshold
+                    classes=VIOLATION_CLASSES + COMPLIANCE_CLASSES,  # violations (2,4,6,7) + compliance (1,3,5)
+                    conf=CONFIDENCE_THRESHOLD,  # 0.5 confidence threshold
                     verbose=False
                 )
                 
-                # Separate person boxes from violation boxes
-                person_boxes = []
-                violation_boxes = []
+                # Collect all detections for smart validation
+                all_detections = []
                 
                 if results and results[0].boxes is not None and len(results[0].boxes) > 0:
                     for box in results[0].boxes:
                         cls_id = int(box.cls[0])
-                        if cls_id == 0:  # Person class
-                            person_boxes.append(box)
-                        else:  # Violation classes
-                            violation_boxes.append(box)
+                        conf = float(box.conf[0])
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        
+                        all_detections.append({
+                            'class_id': cls_id,
+                            'confidence': conf,
+                            'bbox': (int(x1), int(y1), int(x2), int(y2)),
+                            'box': box
+                        })
+                
+                # Apply smart validation to filter out false positives
+                filtered_detections = self.apply_smart_validation(all_detections)
+                
+                # Extract only violation boxes from filtered detections
+                violation_boxes = [det['box'] for det in filtered_detections if det['class_id'] in VIOLATION_CLASSES]
+                
+                # Debug: Log all detected classes (every 50 frames to avoid spam)
+                if frame_count % 50 == 0 and len(all_detections) > 0:
+                    detected_classes_debug = [f"{self.unified_model.names[det['class_id']]}({det['confidence']:.2f})" for det in all_detections]
+                    filtered_classes_debug = [f"{self.unified_model.names[det['class_id']]}({det['confidence']:.2f})" for det in filtered_detections]
+                    logging.info(f"Kitchen {self.channel_name} Frame {frame_count}: Raw detections: {detected_classes_debug} | After filtering: {filtered_classes_debug}")
                 
                 # Log detection results every 100 frames
                 if frame_count % 100 == 0:
-                    logging.info(f"Kitchen {self.channel_name}: Detected {len(person_boxes)} people, {len(violation_boxes)} raw violations in frame {frame_count}")
+                    logging.info(f"Kitchen {self.channel_name}: Detected {len(violation_boxes)} violations after smart validation in frame {frame_count}")
                     
             except Exception as e:
                 logging.error(f"❌ Kitchen {self.channel_name}: Model inference error at frame {frame_count}: {e}")
-                person_boxes = []
                 violation_boxes = []
 
             # Draw header info
             h, w = annotated_frame.shape[:2]
 
-            # --- Process Violations from Unified Model (Human-Verified) ---
+            # --- Draw ALL Detections (After Smart Validation) ---
+            # First, draw all filtered detections with appropriate colors
             violation_count = 0
             violations_found = []
             
-            # Get person boxes for verification
-            person_box_coords = []
-            if len(person_boxes) > 0:
-                for person_box in person_boxes:
-                    px1, py1, px2, py2 = map(int, person_box.xyxy[0].cpu().numpy())
-                    person_box_coords.append([px1, py1, px2, py2])
-                    
-                    # Draw green boxes around detected people
-                    cv2.rectangle(annotated_frame, (px1, py1), (px2, py2), (0, 255, 0), 1)
+            # Define colors
+            COLOR_GREEN = (0, 255, 0)  # Compliance
+            COLOR_RED = (0, 0, 255)    # Violations
             
-            # Process violations
-            if len(violation_boxes) > 0:
-                for box in violation_boxes:
-                    # Get box coordinates
-                    vx1, vy1, vx2, vy2 = map(int, box.xyxy[0].cpu().numpy())
-                    conf = float(box.conf[0])
-                    cls_id = int(box.cls[0])
-                    
-                    # Get class name
-                    class_name = self.unified_model.names[cls_id]
-                    
-                    # Calculate violation box center
-                    v_center_x = (vx1 + vx2) / 2
-                    v_center_y = (vy1 + vy2) / 2
-                    
-                    # VERIFY: Check if violation is near/inside any person box
-                    is_human_violation = False
-                    if len(person_box_coords) > 0:
-                        for person_box in person_box_coords:
-                            px1, py1, px2, py2 = person_box
-                            
-                            # Expand person box by 50% to account for slight misalignments
-                            width = px2 - px1
-                            height = py2 - py1
-                            expanded_px1 = px1 - width * 0.5
-                            expanded_py1 = py1 - height * 0.5
-                            expanded_px2 = px2 + width * 0.5
-                            expanded_py2 = py2 + height * 0.5
-                            
-                            # Check if violation center is inside expanded person box
-                            if (expanded_px1 <= v_center_x <= expanded_px2 and 
-                                expanded_py1 <= v_center_y <= expanded_py2):
-                                is_human_violation = True
-                                break
-                    else:
-                        # If no person detected, allow violation (avoid missing real violations)
-                        is_human_violation = True
-                    
-                    # Only process violations associated with people
-                    if is_human_violation:
-                        violations_found.append(class_name)
-                        violation_count += 1
-                        
-                        # Draw red bounding box for verified human violation
-                        cv2.rectangle(annotated_frame, (vx1, vy1), (vx2, vy2), (0, 0, 255), 2)
-                        
-                        # Trigger alert if not in cooldown
-                        time_since_last = current_time - self.last_alert_time[class_name]
-                        if time_since_last > ALERT_COOLDOWN_SECONDS:
-                            self.last_alert_time[class_name] = current_time
-                            details = f"Human violation: {class_name} (confidence: {conf:.2%})"
-                            
-                            # Save screenshot
-                            screenshot_path = self._save_violation_screenshot(frame.copy(), class_name)
-                            
-                            # Send alert
-                            self._trigger_alert(frame.copy(), class_name, details)
-                            
-                            logging.info(f"🚨 Kitchen {self.channel_name}: Human {class_name} violation detected! Screenshot: {screenshot_path}")
-                    else:
-                        # Draw gray box for non-human violations (filtered out)
-                        cv2.rectangle(annotated_frame, (vx1, vy1), (vx2, vy2), (128, 128, 128), 1)
+            # Draw all filtered detections (both compliance and violations)
+            for det in filtered_detections:
+                box = det['box']
+                cls_id = det['class_id']
+                conf = det['confidence']
                 
-                # Log violations every 100 frames
-                if frame_count % 100 == 0 and violation_count > 0:
-                    logging.info(f"Kitchen {self.channel_name}: Found {violation_count} human violations - {', '.join(set(violations_found))}")
+                # Get box coordinates
+                x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                
+                # Get class name
+                class_name = self.unified_model.names[cls_id]
+                
+                # Determine color based on class type
+                if cls_id in VIOLATION_CLASSES:
+                    color = COLOR_RED
+                    violations_found.append(class_name)
+                    violation_count += 1
+                elif cls_id in COMPLIANCE_CLASSES:
+                    color = COLOR_GREEN
+                else:
+                    color = (128, 128, 128)  # Gray for unknown
+                
+                # Draw bounding box
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
+                
+                # Draw label with background
+                label = f"{class_name} ({conf:.2f})"
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                cv2.rectangle(annotated_frame, (x1, y1 - 20), (x1 + label_size[0], y1), color, -1)
+                cv2.putText(annotated_frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                
+                # Trigger alert if it's a violation and not in cooldown
+                if cls_id in VIOLATION_CLASSES:
+                    time_since_last = current_time - self.last_alert_time[class_name]
+                    if time_since_last > ALERT_COOLDOWN_SECONDS:
+                        self.last_alert_time[class_name] = current_time
+                        details = f"Violation: {class_name} (confidence: {conf:.2%})"
+                        
+                        # Save screenshot
+                        screenshot_path = self._save_violation_screenshot(frame.copy(), class_name)
+                        
+                        # Send alert
+                        self._trigger_alert(frame.copy(), class_name, details)
+                        
+                        logging.info(f"🚨 Kitchen {self.channel_name}: {class_name} violation detected! Screenshot: {screenshot_path}")
+                
+            # Draw violation summary on frame
+            # Add frame info overlay (like reference code)
+            info_text = f"Frame: {frame_count} | Violations: {violation_count} | FPS: {self.current_fps:.1f}"
+            cv2.putText(annotated_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Log violations every 100 frames
+            if frame_count % 100 == 0 and violation_count > 0:
+                logging.info(f"Kitchen {self.channel_name}: Found {violation_count} violations - {', '.join(set(violations_found))}")
             
             # Emit SocketIO update every 2 seconds
             if current_time - self.last_socketio_emit >= 2.0:

@@ -90,10 +90,10 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/final_best.pt', 'target_class_id': [0, 2, 4, 6, 7, 8], 'confidence': 0.35, 'is_gif': False},
+    'Generic': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.3, 'is_gif': False},
     'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
     'QueueMonitor': {'model_path': 'models/yolov8n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'models/final_best.pt', 'confidence': 0.35},  # Unified model
+    'KitchenCompliance': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'confidence': 0.3},  # Unified model
     'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15}
 }
 
@@ -512,6 +512,66 @@ class MultiModelProcessor(threading.Thread):
         logging.info(f"Shutting down MultiModel for {self.channel_name} ({self.channel_id})")
         self.is_running = False
     
+    def apply_smart_validation(self, detections, model):
+        """
+        Apply smart validation logic using complementary pairs:
+        Compare confidence scores and keep the higher confidence detection.
+        - Cap_present (1) vs Without_cap (2)
+        - With_apron (3) vs Without_apron (4)
+        - With_gloves (5) vs Without_gloves (6)
+        - Using_phone (7) always triggers as violation
+        """
+        if not detections:
+            return detections
+        
+        # Extract confidence scores by class
+        class_confidences = {}
+        for det in detections:
+            class_id = int(det['class_id'])
+            conf = det['confidence']
+            if class_id not in class_confidences:
+                class_confidences[class_id] = []
+            class_confidences[class_id].append(conf)
+        
+        # Get max confidence for each class
+        max_conf_by_class = {cls_id: max(confs) for cls_id, confs in class_confidences.items()}
+        
+        # Apply smart logic - compare confidences
+        filtered_detections = []
+        for det in detections:
+            class_id = int(det['class_id'])
+            conf = det['confidence']
+            should_keep = True
+            
+            # Without_cap (2) vs Cap_present (1) - keep higher confidence
+            if class_id == 2 and 1 in max_conf_by_class:
+                if max_conf_by_class[1] > conf:  # Cap_present has higher confidence
+                    should_keep = False
+            elif class_id == 1 and 2 in max_conf_by_class:
+                if max_conf_by_class[2] > conf:  # Without_cap has higher confidence
+                    should_keep = False
+            
+            # Without_apron (4) vs With_apron (3) - keep higher confidence
+            elif class_id == 4 and 3 in max_conf_by_class:
+                if max_conf_by_class[3] > conf:  # With_apron has higher confidence
+                    should_keep = False
+            elif class_id == 3 and 4 in max_conf_by_class:
+                if max_conf_by_class[4] > conf:  # Without_apron has higher confidence
+                    should_keep = False
+            
+            # Without_gloves (6) vs With_gloves (5) - keep higher confidence
+            elif class_id == 6 and 5 in max_conf_by_class:
+                if max_conf_by_class[5] > conf:  # With_gloves has higher confidence
+                    should_keep = False
+            elif class_id == 5 and 6 in max_conf_by_class:
+                if max_conf_by_class[6] > conf:  # Without_gloves has higher confidence
+                    should_keep = False
+            
+            if should_keep:
+                filtered_detections.append(det)
+        
+        return filtered_detections
+    
     def get_frame(self):
         """Get the latest frame for video streaming"""
         with self.lock:
@@ -575,16 +635,20 @@ class MultiModelProcessor(threading.Thread):
         return True
 
     def run(self):
+        frame_count = 0
         while self.is_running:
             frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
             if frame is None:
-                time.sleep(0.01)
                 continue
 
             # Validate frame before processing
             if not self._validate_frame(frame):
-                time.sleep(0.01)
                 continue
+            
+            frame_count += 1
+            # Log every 30 frames to show detection is running continuously
+            if frame_count % 30 == 0:
+                logging.info(f"🎬 MultiModel {self.channel_name}: Processing frame {frame_count}")
 
             # Store frame for video streaming (even if no detection)
             with self.lock:
@@ -596,65 +660,163 @@ class MultiModelProcessor(threading.Thread):
                 app_name = task['app_name']
                 if app_name in ['PeopleCounter', 'QueueMonitor']: continue
 
-                else:
-                    if current_time - self.last_detection_times[app_name] > self.cooldown:
-                        model_args = {'conf': task['confidence'], 'verbose': False}
-                        if task.get('target_class_id') is not None:
-                            model_args['classes'] = task['target_class_id']
+                # Run detection every frame (no cooldown for detection itself)
+                model_args = {'conf': task['confidence'], 'verbose': False}
+                if task.get('target_class_id') is not None:
+                    model_args['classes'] = task['target_class_id']
 
-                        # CPU-only mode
-                        try:
-                            with torch.inference_mode():
-                                results = task['model'](
-                                    frame,
-                                    device='cpu',
-                                    half=False,
-                                    **model_args
-                                )
-                            self.consecutive_errors = 0  # Reset on success
-                            
-                            # Debug logging for Generic app
-                            if app_name == 'Generic' and results and len(results[0].boxes) > 0:
-                                logging.info(f"🔍 {app_name} detected {len(results[0].boxes)} objects on {self.channel_name}")
-                        
-                        except RuntimeError as e:
-                            error_msg = str(e)
-                            self.consecutive_errors += 1
-                            logging.error(f"Runtime error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}. Error count: {self.consecutive_errors}")
-                            
-                            # If too many errors, log and continue
-                            if self.consecutive_errors >= self.max_consecutive_errors:
-                                logging.error(f"Too many errors for {self.channel_name} MultiModel. Resetting counter.")
-                                self.consecutive_errors = 0
-                            continue
-                        except Exception as e:
-                            logging.error(f"Unexpected error in MultiModel {self.channel_name} for {app_name}: {e}")
-                            break
-                        
-                        if not results:
-                            continue
+                # CPU-only mode
+                try:
+                    with torch.inference_mode():
+                        results = task['model'](
+                            frame,
+                            device='cpu',
+                            half=False,
+                            **model_args
+                        )
+                    self.consecutive_errors = 0  # Reset on success
+                    
+                except RuntimeError as e:
+                    error_msg = str(e)
+                    self.consecutive_errors += 1
+                    logging.error(f"Runtime error in MultiModel {self.channel_name} for {app_name}: {e}. Frame shape: {frame.shape}. Error count: {self.consecutive_errors}")
+                    
+                    # If too many errors, log and continue
+                    if self.consecutive_errors >= self.max_consecutive_errors:
+                        logging.error(f"Too many errors for {self.channel_name} MultiModel. Resetting counter.")
+                        self.consecutive_errors = 0
+                    continue
+                except Exception as e:
+                    logging.error(f"Unexpected error in MultiModel {self.channel_name} for {app_name}: {e}")
+                    break
+                
+                if not results:
+                    continue
 
-                        if results and len(results[0].boxes) > 0:
-                            # Store annotated frame for streaming
-                            with self.lock:
-                                self.latest_frame = results[0].plot()
+                # Process results - ALWAYS update display, even if no boxes detected
+                if app_name == 'Generic':
+                    # Log that we're processing this frame
+                    if frame_count % 10 == 0:  # Log every 10 frames
+                        logging.info(f"🎯 Generic {self.channel_name} processing frame {frame_count}, boxes: {len(results[0].boxes) if results and results[0].boxes else 0}")
+                    
+                    # Extract all detections
+                    all_detections = []
+                    if results and len(results[0].boxes) > 0:
+                        for box in results[0].boxes:
+                            class_id = int(box.cls[0])
+                            conf = float(box.conf[0])
                             
-                            # Extract detected class names for better message
-                            detected_classes = []
-                            for box in results[0].boxes:
-                                class_id = int(box.cls[0])
-                                class_name = task['model'].names[class_id]
-                                detected_classes.append(class_name)
+                            # Log ALL detections above 0.15 for debugging
+                            if conf >= 0.15:
+                                logging.info(f"🔍 Generic {self.channel_name} RAW: class_id={class_id}, name={task['model'].names.get(class_id, f'Class_{class_id}')}, conf={conf:.3f}")
                             
-                            # Create descriptive message
-                            unique_classes = list(set(detected_classes))
-                            if app_name == 'Generic':
-                                message = f"Front Office Violation: {', '.join(unique_classes)}"
-                            else:
-                                message = f"{app_name}: {', '.join(unique_classes)}"
-                            
+                            all_detections.append({
+                                'class_id': class_id,
+                                'confidence': conf,
+                                'box': box
+                            })
+                    
+                    # Apply smart validation
+                    filtered_detections = self.apply_smart_validation(all_detections, task['model'])
+                    
+                    # Debug logging (ALWAYS log what we see)
+                    if all_detections:
+                        detected_classes_debug = [f"{task['model'].names[det['class_id']]}({det['confidence']:.2f})" for det in all_detections]
+                        filtered_classes_debug = [f"{task['model'].names[det['class_id']]}({det['confidence']:.2f})" for det in filtered_detections]
+                        logging.info(f"🔍 Generic {self.channel_name} Frame {frame_count}: Raw: {detected_classes_debug} | After filtering: {filtered_classes_debug}")
+                        
+                        # Special alert for phone detection
+                        phone_detections = [det for det in filtered_detections if det['class_id'] == 7]
+                        if phone_detections:
+                            logging.warning(f"📱 PHONE DETECTED in {self.channel_name}! Confidence: {phone_detections[0]['confidence']:.2f}")
+                    
+                    # Define class sets and colors
+                    violation_classes = {2, 4, 6, 7}
+                    compliance_classes = {1, 3, 5}
+                    COLOR_GREEN = (0, 255, 0)  # Compliance
+                    COLOR_RED = (0, 0, 255)    # Violations
+                    
+                    # Create annotated frame - START with frame copy (ALWAYS process every frame)
+                    annotated_frame = frame.copy()
+                    violation_detected_classes = []
+                    
+                    # Draw ALL detections (violations in red, compliance in green)
+                    for det in filtered_detections:
+                        box = det['box']
+                        class_id = det['class_id']
+                        class_name = task['model'].names[class_id]
+                        conf = det['confidence']
+                        
+                        # Determine color based on class type
+                        if class_id in violation_classes:
+                            color = COLOR_RED
+                            violation_detected_classes.append(class_name)
+                        elif class_id in compliance_classes:
+                            color = COLOR_GREEN
+                        else:
+                            color = (128, 128, 128)  # Gray for unknown
+                        
+                        # Draw bounding box
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)  # Thicker boxes
+                        
+                        # Draw label with background
+                        label = f"{class_name} {conf:.2f}"
+                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                        cv2.rectangle(annotated_frame, (x1, y1 - 25), (x1 + label_size[0] + 5, y1), color, -1)
+                        cv2.putText(annotated_frame, label, (x1 + 2, y1 - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    
+                    # ALWAYS add frame info overlay - this proves continuous processing
+                    violation_count = len(violation_detected_classes)
+                    info_text = f"Frame: {frame_count} | Detections: {len(filtered_detections)} | Violations: {violation_count}"
+                    # Black background for better visibility
+                    cv2.rectangle(annotated_frame, (5, 5), (650, 45), (0, 0, 0), -1)
+                    cv2.putText(annotated_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    
+                    # Store annotated frame for streaming (ALWAYS update, even with no detections)
+                    with self.lock:
+                        self.latest_frame = annotated_frame
+                    
+                    # Save screenshot/send alert based on violation type
+                    if violation_detected_classes:
+                        # Check if Using_phone (class 7) is in violations - 30 second cooldown for phone
+                        has_phone_violation = any('Using_phone' in cls_name for cls_name in violation_detected_classes)
+                        
+                        if has_phone_violation:
+                            # Phone usage: 30 second cooldown
+                            phone_cooldown = 30
+                            if current_time - self.last_detection_times[app_name] > phone_cooldown:
+                                message = f"Front Office Violation: {', '.join(set(violation_detected_classes))}"
+                                logging.warning(f"📱 PHONE VIOLATION DETECTED! Taking screenshot - {self.channel_name}")
+                                self.last_detection_times[app_name] = current_time
+                                self.detection_callback(app_name, self.channel_id, [annotated_frame], message, False)
+                        elif current_time - self.last_detection_times[app_name] > self.cooldown:
+                            # Other violations: apply 120 second cooldown
+                            message = f"Front Office Violation: {', '.join(set(violation_detected_classes))}"
                             logging.info(f"📸 {self.channel_name} - {message}")
-                            
+                            self.last_detection_times[app_name] = current_time
+                            self.detection_callback(app_name, self.channel_id, [annotated_frame], message, False)
+                
+                elif results and len(results[0].boxes) > 0:
+                        # Original logic for non-Generic apps
+                        # Store annotated frame for streaming
+                        with self.lock:
+                            self.latest_frame = results[0].plot()
+                        
+                        # Extract detected class names for better message
+                        detected_classes = []
+                        for box in results[0].boxes:
+                            class_id = int(box.cls[0])
+                            class_name = task['model'].names[class_id]
+                            detected_classes.append(class_name)
+                        
+                        # Create descriptive message
+                        unique_classes = list(set(detected_classes))
+                        message = f"{app_name}: {', '.join(unique_classes)}"
+                        
+                        # Only save screenshot/send alert if cooldown has passed
+                        if current_time - self.last_detection_times[app_name] > self.cooldown:
+                            logging.info(f"📸 {self.channel_name} - {message}")
                             self.last_detection_times[app_name] = current_time
                             if task['is_gif']:
                                 frames_to_capture = self.gif_duration_seconds * self.fps
@@ -670,7 +832,7 @@ class MultiModelProcessor(threading.Thread):
                                     if not self._validate_frame(frame_gif):
                                         gif_frames.append(frame_gif.copy())  # Use frame even if invalid to maintain frame count
                                         continue
-                                    
+                                
                                     # Run detection on this frame to get annotated version
                                     try:
                                         # CPU-only mode
