@@ -223,47 +223,33 @@ if __name__ == "__main__":
     
     print("\n")
     print("=" * 80)
-    print("INTERACTIVE FIX")
+    print("APPLY FIX")
     print("=" * 80)
-    print("\nWhich fix would you like to apply?")
-    print("1. Update Main Store's Main Entrance camera to use old channel_id 'cam_3df702bb28'")
-    print("2. Update historical footfall data to use new channel_id")
-    print("3. Just show diagnostics (no changes)")
+    print("\nThis will update Main Store's Main Entrance camera to use old channel_id 'cam_3df702bb28'")
+    print("This will restore access to 1,073 historical footfall records.")
     print("\n")
     
-    choice = input("Enter your choice (1/2/3): ").strip()
+    # Find Main Store's Main Entrance camera (restaurant_id = 2, channel 1)
+    main_camera = None
+    for cam in results['cameras']:
+        # Look for Tea Toast - Main restaurant, channel 1 (Main Entrance)
+        if cam[1] == 2 and cam[3] == 1:  # restaurant_id = 2, channel_number = 1
+            main_camera = cam
+            break
     
-    if choice == "1":
-        # Find Main Store's Main Entrance camera
-        main_camera = None
-        for cam in results['main_entrance_cameras']:
-            if 'Main' in cam[2] and 'Mumbai' in cam[2]:  # Main store
-                main_camera = cam
-                break
+    if main_camera:
+        print(f"Found camera: {main_camera[4]} (ID: {main_camera[0]})")
+        print(f"Current channel_id: {main_camera[5]}")
+        print(f"Will change to: cam_3df702bb28")
+        print("\n")
         
-        if main_camera:
-            confirm = input(f"\nUpdate camera '{main_camera[4]}' (ID: {main_camera[0]}) to use 'cam_3df702bb28'? (yes/no): ")
-            if confirm.lower() == 'yes':
-                apply_fix_option_1(main_camera[0], 'cam_3df702bb28')
+        confirm = input("Proceed with fix? (yes/no): ")
+        if confirm.lower() == 'yes':
+            apply_fix_option_1(main_camera[0], 'cam_3df702bb28')
         else:
-            print("❌ Could not find Main Store's Main Entrance camera")
-    
-    elif choice == "2":
-        # Find the new channel_id for Main Store's Main Entrance
-        main_camera = None
-        for cam in results['main_entrance_cameras']:
-            if 'Main' in cam[2] and 'Mumbai' in cam[2]:  # Main store
-                main_camera = cam
-                break
-        
-        if main_camera:
-            confirm = input(f"\nUpdate footfall data from 'cam_3df702bb28' to '{main_camera[5]}'? (yes/no): ")
-            if confirm.lower() == 'yes':
-                apply_fix_option_2('cam_3df702bb28', main_camera[5])
-        else:
-            print("❌ Could not find Main Store's Main Entrance camera")
-    
+            print("\n❌ Fix cancelled. No changes made.")
     else:
-        print("\n✅ Diagnostics complete. No changes made.")
+        print("❌ Could not find Main Store's Main Entrance camera")
+        print("Expected: restaurant_id = 2, channel_number = 1")
     
     print("\n")
