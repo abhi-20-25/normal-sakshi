@@ -2183,8 +2183,8 @@ function loadConversionData() {
   const days = document.getElementById('conversionDaysFilter').value;
   document.getElementById('conversionErrorContainer').innerHTML = '';
   
-  // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
-  if (selected_restaurant && selected_restaurant.id !== 3) {
+  // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
+  if (selected_restaurant && selected_restaurant.id !== 2) {
     console.log('Non-main branch selected - showing zero data for conversion analytics');
     // Show zero data
     document.getElementById('conversionRate').innerHTML = '0<span style="font-size: 16px; color: #6d7377; margin-left: 4px;">%</span>';
@@ -2281,8 +2281,8 @@ function loadPromotionEffectiveness() {
   const days = document.getElementById('promotionDaysFilter').value;
   document.getElementById('promotionErrorContainer').innerHTML = '';
   
-  // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
-  if (selected_restaurant && selected_restaurant.id !== 3) {
+  // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
+  if (selected_restaurant && selected_restaurant.id !== 2) {
     console.log('Non-main branch selected - showing zero data for promotion effectiveness');
     document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">PetPooja API not available for this branch</td></tr>';
     return;
@@ -2553,7 +2553,7 @@ function loadStaffingRecommendations(days) {
 
 function loadInventoryRecommendations() {
   // Check if non-main branch is selected
-  if (selected_restaurant && selected_restaurant.id !== 3) {
+  if (selected_restaurant && selected_restaurant.id !== 2) {
     document.getElementById('inventoryRecommendationsContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #9aa0a6;">PetPooja API not available for this branch</div>';
     return;
   }
@@ -2743,8 +2743,8 @@ async function loadSalesData() {
     console.log("Fetching sales data...");
     updateMonthHeaders();
 
-    // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
-    if (selected_restaurant && selected_restaurant.id !== 3) {
+    // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
+    if (selected_restaurant && selected_restaurant.id !== 2) {
         console.log('Non-main branch selected - showing zero data for sales analytics');
         // Show zero data
         document.getElementById('sa-total-sales').textContent = '₹0';
@@ -2939,8 +2939,8 @@ function updateMonthHeaders() {
 // ============ MENU TIME POPULARITY FUNCTIONS ============
 
 async function loadMenuTimePopularity() {
-    // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
-    if (selected_restaurant && selected_restaurant.id !== 3) {
+    // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
+    if (selected_restaurant && selected_restaurant.id !== 2) {
         console.log('Non-main branch selected - showing zero data for menu time popularity');
         showMenuTimeError('PetPooja API not available for this branch');
         // Clear all period data
