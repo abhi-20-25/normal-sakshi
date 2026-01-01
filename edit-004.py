@@ -53,6 +53,10 @@ TARGET_HEIGHT = 360
 
 # --- Module Imports ---
 from kitchen_compliance_monitor import KitchenComplianceProcessor
+from petpooja_integration import (
+    create_petpooja_services,
+    PetPoojaDatabase
+)
 
 # --- Basic Logging Setup ---
 import sys
@@ -75,6 +79,9 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 IST = pytz.timezone('Asia/Kolkata')
 DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'data/rtsp_links.txt'
+
+# Initialize PetPooja services (will be used in Flask routes)
+pp_sales_analytics, pp_conversion_analytics, pp_time_based_menu, pp_promotion_effectiveness = create_petpooja_services()
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
 TELEGRAM_BOT_TOKEN = "7843300957:AAGVv866cPiDPVD0Wrk_wwEEHDSD64Pgaqs"
@@ -2447,9 +2454,10 @@ def dashboard():
                     for r in restaurant_query
                 ]
                 
-                # Auto-select first restaurant if none specified
-                if not restaurant_id and restaurants:
-                    restaurant_id = restaurants[0]['id']
+                # DO NOT auto-select first restaurant - show all cameras by default
+                # This ensures all Kitchen Compliance cameras are visible
+                # if not restaurant_id and restaurants:
+                #     restaurant_id = restaurants[0]['id']
                 
                 # Get selected restaurant details
                 if restaurant_id:
@@ -2463,7 +2471,7 @@ def dashboard():
         except Exception as e:
             logging.warning(f"Could not load restaurants for dashboard: {e}")
     
-    # Get app configs (filtered by restaurant if specified)
+    # Get app configs (filtered by restaurant if specified, otherwise show all)
     app_configs = get_app_configs(restaurant_id=restaurant_id)
     
     return render_template(
@@ -2819,6 +2827,8 @@ def get_footfall_conversion():
     Fetches footfall from local DB and sales from remote FastAPI (or local DB if available)
     Returns hourly breakdown with conversion rates
     Supports multi-restaurant filtering via restaurant_id query parameter
+    
+    REFACTORED: Now uses petpooja_integration module for clean separation of concerns
     """
     logging.info(f"Conversion API called - Session: {session.get('logged_in')}, User: {session.get('username')}")
     if not db_connected:
@@ -2839,9 +2849,10 @@ def get_footfall_conversion():
             end_date = datetime.now(IST).date()
             start_date = end_date - timedelta(days=days - 1)
         
+        logging.info(f"📅 Date Range Query: days={days}, start={start_date}, end={end_date}, restaurant_id={restaurant_id}")
+        
         with SessionLocal() as db:
             # STEP 1: Get footfall data from local database (hourly_footfall)
-            # Use LEFT JOIN for cameras to handle empty cameras table
             footfall_query = db.query(
                 HourlyFootfall.report_date,
                 HourlyFootfall.hour,
@@ -2850,7 +2861,6 @@ def get_footfall_conversion():
             
             # Only join with cameras if filtering by restaurant AND cameras table has data
             if restaurant_id:
-                # Check if cameras table has any entries
                 camera_count = db.query(Camera).count()
                 if camera_count > 0:
                     footfall_query = footfall_query.join(
@@ -2863,9 +2873,7 @@ def get_footfall_conversion():
             footfall_query = footfall_query.filter(
                 HourlyFootfall.report_date >= start_date,
                 HourlyFootfall.report_date <= end_date
-            )
-            
-            footfall_query = footfall_query.group_by(
+            ).group_by(
                 HourlyFootfall.report_date,
                 HourlyFootfall.hour
             ).order_by(
@@ -2873,309 +2881,76 @@ def get_footfall_conversion():
                 HourlyFootfall.hour
             ).all()
             
-            # STEP 2: Get sales data - Try remote FastAPI first, fallback to local DB
-            import requests
-            FASTAPI_URL = 'http://13.202.92.108:8000'
-            API_TOKEN = 'Z4N8T2W9L3H6Q1P'
+            logging.info(f"📊 Footfall Query Results: {len(footfall_query)} records from {start_date} to {end_date}")
+            if footfall_query:
+                logging.info(f"   First record: {footfall_query[0].report_date} hour {footfall_query[0].hour} - {footfall_query[0].visitors} visitors")
+                logging.info(f"   Last record: {footfall_query[-1].report_date} hour {footfall_query[-1].hour} - {footfall_query[-1].visitors} visitors")
             
-            sales_query_results = []
-            remote_api_used = False
-            try:
-                # Try HOURLY endpoint first (more accurate)
-                logging.info(f"Attempting to fetch hourly sales from remote API: {FASTAPI_URL}/analytics/sales-hourly")
-                response = requests.get(
-                    f"{FASTAPI_URL}/analytics/sales-hourly",
-                    params={
-                        'start_date': start_date.strftime('%Y-%m-%d'),
-                        'end_date': end_date.strftime('%Y-%m-%d'),
-                        'token': API_TOKEN
-                    },
-                    timeout=10
-                )
-                
-                if response.status_code == 200:
-                    hourly_sales = response.json()
-                    logging.info(f"✅ Remote API returned {len(hourly_sales) if hourly_sales else 0} hourly records")
+            # STEP 2: Get sales data using PetPooja integration module
+            sales_query, remote_api_used = pp_sales_analytics.get_sales_data(
+                db, start_date, end_date, use_remote=True
+            )
+            
+            logging.info(f"📊 Sales Query Results: {len(sales_query) if sales_query else 0} records (source: {'REMOTE' if remote_api_used else 'LOCAL'})")
+            if sales_query:
+                logging.info(f"   First sale: {sales_query[0].sale_date} hour {sales_query[0].sale_hour} - {sales_query[0].orders} orders, ₹{sales_query[0].revenue}")
+                logging.info(f"   Last sale: {sales_query[-1].sale_date} hour {sales_query[-1].sale_hour} - {sales_query[-1].orders} orders, ₹{sales_query[-1].revenue}")
+            
+            # If remote API failed, try daily distribution
+            if not sales_query and not remote_api_used:
+                daily_sales = pp_sales_analytics.client.get_daily_sales(start_date, end_date)
+                if daily_sales:
+                    # Build footfall distribution for smart allocation
+                    footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
+                    footfall_by_date_total = defaultdict(int)
                     
-                    # Convert to namedtuple format for compatibility
-                    from collections import namedtuple
-                    Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
+                    for f in footfall_query:
+                        footfall_by_date_hour[f.report_date][f.hour] = f.visitors or 0
+                        footfall_by_date_total[f.report_date] += f.visitors or 0
                     
-                    # Check if viewing today to filter future hours
-                    current_time_ist = datetime.now(IST)
-                    current_date = current_time_ist.date()
-                    current_hour = current_time_ist.hour
-                    is_viewing_today = end_date == current_date
-                    
-                    for item in hourly_sales:
-                        sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
-                        sale_hour = int(item['hour'])
-                        
-                        # Skip future hours when viewing TODAY
-                        if is_viewing_today and sale_date == current_date and sale_hour > current_hour:
-                            continue
-                        
-                        sales_query_results.append(Row(
-                            sale_date=sale_date,
-                            sale_hour=sale_hour,
-                            orders=item['orders'],
-                            revenue=item['revenue']
-                        ))
-                    
+                    # Use conversion analytics to distribute daily to hourly
+                    sales_query = pp_conversion_analytics.distribute_daily_to_hourly(
+                        daily_sales, footfall_by_date_hour, footfall_by_date_total, end_date
+                    )
                     remote_api_used = True
-                    logging.info(f"✅ Using hourly sales data: {len(sales_query_results)} records")
-                else:
-                    logging.warning(f"Hourly endpoint returned {response.status_code}, trying daily endpoint...")
-                    raise Exception(f"Hourly API returned {response.status_code}")
-                    
-            except Exception as hourly_error:
-                logging.info(f"⚠️ Hourly endpoint not available: {hourly_error}")
-                
-                # Fallback to DAILY endpoint and distribute intelligently
-                try:
-                    logging.info(f"Fetching daily sales from remote API: {FASTAPI_URL}/analytics/sales-daily")
-                    response = requests.get(
-                        f"{FASTAPI_URL}/analytics/sales-daily",
-                        params={
-                            'start_date': start_date.strftime('%Y-%m-%d'),
-                            'end_date': end_date.strftime('%Y-%m-%d'),
-                            'token': API_TOKEN
-                        },
-                        timeout=10
-                    )
-                    
-                    if response.status_code == 200:
-                        daily_sales = response.json()
-                        logging.info(f"✅ Remote API returned {len(daily_sales) if daily_sales else 0} daily records")
-                        
-                        # Build daily sales lookup
-                        daily_sales_lookup = {}
-                        for item in daily_sales:
-                            sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
-                            daily_sales_lookup[sale_date] = {
-                                'orders': item['order_count'],
-                                'revenue': item['total_sales']
-                            }
-                        
-                        # Calculate footfall distribution per day for smarter allocation
-                        from collections import defaultdict
-                        footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
-                        footfall_by_date_total = defaultdict(int)
-                        
-                        for f in footfall_query:
-                            footfall_by_date_hour[f.report_date][f.hour] = f.visitors or 0
-                            footfall_by_date_total[f.report_date] += f.visitors or 0
-                        
-                        # Distribute sales using smart allocation to preserve exact counts
-                        from collections import namedtuple
-                        Row = namedtuple('Row', ['sale_date', 'sale_hour', 'orders', 'revenue'])
-                        
-                        # Check if viewing today to filter future hours
-                        current_time_ist = datetime.now(IST)
-                        current_date = current_time_ist.date()
-                        current_hour = current_time_ist.hour
-                        is_viewing_today = end_date == current_date
-                        
-                        for sale_date, sales_data in daily_sales_lookup.items():
-                            if sale_date not in footfall_by_date_total or footfall_by_date_total[sale_date] == 0:
-                                # No footfall data for this day, skip distribution
-                                continue
-                            
-                            daily_orders = sales_data['orders']
-                            daily_revenue = sales_data['revenue']
-                            daily_total_footfall = footfall_by_date_total[sale_date]
-                            
-                            # Get hours sorted by footfall (descending)
-                            hours_with_footfall = [
-                                (hour, visitors) 
-                                for hour, visitors in footfall_by_date_hour[sale_date].items()
-                                if not (is_viewing_today and sale_date == current_date and hour > current_hour)
-                            ]
-                            hours_with_footfall.sort(key=lambda x: x[1], reverse=True)
-                            
-                            if not hours_with_footfall:
-                                continue
-                            
-                            # Smart allocation: distribute proportionally but adjust to preserve exact total
-                            allocated_orders = []
-                            allocated_revenue = []
-                            remaining_orders = daily_orders
-                            remaining_revenue = daily_revenue
-                            
-                            for i, (hour, visitors) in enumerate(hours_with_footfall):
-                                if i == len(hours_with_footfall) - 1:
-                                    # Last hour gets remainder to ensure exact total
-                                    hour_orders = remaining_orders
-                                    hour_revenue = remaining_revenue
-                                else:
-                                    # Proportional allocation
-                                    proportion = visitors / daily_total_footfall
-                                    hour_orders = int(round(daily_orders * proportion))
-                                    hour_revenue = round(daily_revenue * proportion, 2)
-                                    remaining_orders -= hour_orders
-                                    remaining_revenue -= hour_revenue
-                                
-                                sales_query_results.append(Row(
-                                    sale_date=sale_date,
-                                    sale_hour=hour,
-                                    orders=hour_orders,
-                                    revenue=hour_revenue
-                                ))
-                        
-                        remote_api_used = True
-                        logging.info(f"✅ Distributed {len(daily_sales)} daily records to {len(sales_query_results)} hourly records")
-                    else:
-                        logging.warning(f"Daily API returned {response.status_code}")
-                        raise Exception(f"Daily API returned {response.status_code}")
-                        
-                except Exception as daily_error:
-                    logging.warning(f"⚠️ Remote daily API also unavailable: {daily_error}")
-                    # Will fall through to local database fallback below
             
-            # Final fallback: Local database
-            if not sales_query_results:
-                logging.info(f"📊 Using local database for sales data")
-                # Check if viewing today to filter future hours
-                current_time_ist = datetime.now(IST)
-                current_date = current_time_ist.date()
-                current_hour = current_time_ist.hour
-                is_viewing_today = end_date == current_date
-                
-                # Fallback to local database - use same logic as sales-daily (deduplication by orderID)
-                # Use COALESCE to fallback to created_at if created_on is null
-                sales_query_results = db.execute(text("""
-                    WITH unique_orders AS (
-                        SELECT MAX(id) as max_id
-                        FROM petpooja_webhook_events
-                        WHERE content->>'event' = 'orderdetails' OR content->'properties'->'Order' IS NOT NULL
-                        GROUP BY content->'properties'->'Order'->>'orderID'
-                    )
-                    SELECT 
-                        DATE(COALESCE(
-                            CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                            created_at
-                        )) as sale_date,
-                        EXTRACT(HOUR FROM COALESCE(
-                            CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                            created_at
-                        ))::INTEGER as sale_hour,
-                        COUNT(*) as orders,
-                        SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
-                    FROM petpooja_webhook_events
-                    WHERE id IN (SELECT max_id FROM unique_orders)
-                      AND DATE(COALESCE(
-                          CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                          created_at
-                      )) >= :start_date 
-                      AND DATE(COALESCE(
-                          CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                          created_at
-                      )) <= :end_date
-                      -- Filter future hours when viewing TODAY
-                      AND (
-                        :is_viewing_today = FALSE 
-                        OR DATE(COALESCE(
-                            CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                            created_at
-                        )) < :current_date
-                        OR (
-                            DATE(COALESCE(
-                                CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                                created_at
-                            )) = :current_date
-                            AND EXTRACT(HOUR FROM COALESCE(
-                                CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                                created_at
-                            ))::INTEGER <= :current_hour
-                        )
-                      )
-                    GROUP BY sale_date, sale_hour
-                    ORDER BY sale_date, sale_hour
-                """), {
-                    'start_date': start_date,
-                    'end_date': end_date,
-                    'is_viewing_today': is_viewing_today,
-                    'current_date': current_date,
-                    'current_hour': current_hour
-                }).fetchall()
+            # Ensure sales_query is a list (handle None case)
+            if sales_query is None:
+                sales_query = []
             
-            sales_query = sales_query_results
-            
-            logging.info(f"📊 Data Summary: {len(footfall_query)} footfall records, {len(sales_query)} sales records")
+            logging.info(f"📊 Data Summary: {len(footfall_query)} footfall records, {len(sales_query) if sales_query else 0} sales records")
             logging.info(f"Using {'REMOTE FastAPI' if remote_api_used else 'LOCAL DATABASE'} for sales data")
             
-            # Verify total order counts for debugging
-            total_orders_from_sales = sum(row.orders for row in sales_query)
-            total_revenue_from_sales = sum(row.revenue for row in sales_query)
-            logging.info(f"📈 Sales data totals: {total_orders_from_sales} orders, ₹{total_revenue_from_sales:.2f} revenue")
+            # STEP 3: Calculate conversion metrics using PetPooja integration module
+            try:
+                results = pp_conversion_analytics.calculate_conversion_metrics(footfall_query, sales_query)
+                logging.info(f"✅ Calculated {len(results)} hourly conversion records")
+            except Exception as calc_error:
+                logging.error(f"❌ Error calculating conversion metrics: {calc_error}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({"error": f"Failed to calculate conversion metrics: {str(calc_error)}"}), 500
             
-            # STEP 3: Combine footfall and sales data
-            # Create lookup dictionary for sales data
-            sales_lookup = {}
-            for row in sales_query:
-                key = (row.sale_date, row.sale_hour)
-                # Store integer order counts (rounded) to avoid decimals in UI
-                sales_lookup[key] = {
-                    'orders': int(float(row.orders)) if row.orders else 0,
-                    'revenue': float(row.revenue) if row.revenue else 0.0
-                }
+            # Calculate summary statistics
+            try:
+                total_visitors = sum(r['visitors'] for r in results)
+                total_orders = sum(r['orders'] for r in results)
+                total_revenue = sum(r['revenue'] for r in results)
+            except KeyError as ke:
+                logging.error(f"❌ Missing key in results dictionary: {ke}")
+                logging.error(f"Results structure: {results[:2] if results else 'empty'}")
+                return jsonify({"error": f"Invalid results structure: missing key {ke}"}), 500
+            except Exception as summary_error:
+                logging.error(f"❌ Error calculating summary: {summary_error}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({"error": f"Failed to calculate summary: {str(summary_error)}"}), 500
             
-            logging.info(f"Sales data covers {len(sales_lookup)} unique date-hour combinations")
-            
-            # Build result with conversion calculations
-            results = []
-            total_visitors = 0
-            total_orders = 0
-            total_revenue = 0.0
-            matched_hours = 0
-            
-            for footfall_row in footfall_query:
-                date_val = footfall_row.report_date
-                hour_val = footfall_row.hour
-                visitors = footfall_row.visitors or 0
-                
-                # Lookup matching sales data
-                sales_data = sales_lookup.get((date_val, hour_val), {'orders': 0, 'revenue': 0.0})
-                orders = sales_data['orders']
-                revenue = sales_data['revenue']
-                
-                if orders > 0 or revenue > 0:
-                    matched_hours += 1
-                
-                # Calculate metrics
-                conversion_rate = (orders / visitors * 100) if visitors > 0 else 0
-                revenue_per_visitor = (revenue / visitors) if visitors > 0 else 0
-                avg_order_value = (revenue / orders) if orders > 0 else 0
-                
-                # Format hour for display (12-hour format)
-                hour_label = datetime.strptime(str(hour_val), '%H').strftime('%I %p').lstrip('0')
-                
-                results.append({
-                    'date': date_val.strftime('%Y-%m-%d'),
-                    'hour': hour_val,
-                    'hour_label': hour_label,
-                    'visitors': visitors,
-                    'orders': orders,
-                    'revenue': round(revenue, 2),
-                    'conversion_rate': round(conversion_rate, 2),
-                    'revenue_per_visitor': round(revenue_per_visitor, 2),
-                    'avg_order_value': round(avg_order_value, 2)
-                })
-                
-                # Accumulate totals
-                total_visitors += visitors
-                total_orders += orders
-                total_revenue += revenue
-            
-            # Calculate overall metrics
             overall_conversion = (total_orders / total_visitors * 100) if total_visitors > 0 else 0
             overall_revenue_per_visitor = (total_revenue / total_visitors) if total_visitors > 0 else 0
             overall_avg_order_value = (total_revenue / total_orders) if total_orders > 0 else 0
             
-            # Verify final totals match source data
             logging.info(f"✅ Final conversion totals: {total_orders} orders, ₹{total_revenue:.2f} revenue")
-            if total_orders_from_sales != total_orders:
-                logging.warning(f"⚠️ Order count mismatch! Sales data: {total_orders_from_sales}, Conversion calc: {total_orders}")
             
             # STEP 4: Identify busiest hours and peak demand patterns
             # Group by hour to find average metrics per hour of day
@@ -3205,12 +2980,17 @@ def get_footfall_conversion():
                         'total_volume': total_volume
                     })
             
-            # Sort by total volume to find busiest hours
-            hourly_stats.sort(key=lambda x: x['total_volume'], reverse=True)
-            busiest_hours = hourly_stats[:5]  # Top 5 busiest hours
+            # Find busiest hour by visitors and hour with most orders
+            busiest_by_visitors = max(hourly_stats, key=lambda x: x['avg_visitors']) if hourly_stats else None
+            busiest_by_orders = max(hourly_stats, key=lambda x: x['avg_orders']) if hourly_stats else None
+            
+            # Sort by visitors to find peak hours based on footfall
+            hourly_stats_by_visitors = sorted(hourly_stats, key=lambda x: x['avg_visitors'], reverse=True)
+            top_visitor_hours = hourly_stats_by_visitors[:5]  # Top 5 by visitors for peak period calculation
             
             # Calculate staffing recommendations based on demand
             # Base staff: 2, +1 for every 20 visitors/hour
+            matched_hours = 0  # Initialize counter for matched hours
             for hour_stat in hourly_stats:
                 visitors_per_hour = hour_stat['avg_visitors']
                 orders_per_hour = hour_stat['avg_orders']
@@ -3222,7 +3002,7 @@ def get_footfall_conversion():
                 
                 # Inventory recommendation (scale with orders)
                 # Assume 1.5x buffer for peak hours
-                inventory_multiplier = 1.5 if hour_stat in busiest_hours[:3] else 1.2
+                inventory_multiplier = 1.5 if hour_stat in top_visitor_hours[:3] else 1.2
                 recommended_inventory_units = int(orders_per_hour * inventory_multiplier)
                 
                 hour_stat['recommended_staff'] = recommended_staff
@@ -3234,10 +3014,10 @@ def get_footfall_conversion():
             # Re-sort by hour for display
             hourly_stats.sort(key=lambda x: x['hour'])
             
-            # Identify peak periods
-            peak_morning = [h for h in busiest_hours if 6 <= h['hour'] < 12]
-            peak_afternoon = [h for h in busiest_hours if 12 <= h['hour'] < 17]
-            peak_evening = [h for h in busiest_hours if 17 <= h['hour'] < 24]
+            # Identify peak periods based on visitor numbers only
+            peak_morning = [h for h in top_visitor_hours if 6 <= h['hour'] < 12]
+            peak_afternoon = [h for h in top_visitor_hours if 12 <= h['hour'] < 17]
+            peak_evening = [h for h in top_visitor_hours if 17 <= h['hour'] < 24]
             
             peak_periods = {
                 'morning': [h['hour_label'] for h in peak_morning],
@@ -3262,7 +3042,8 @@ def get_footfall_conversion():
                 },
                 'hourly_data': results,
                 'peak_analysis': {
-                    'busiest_hours': busiest_hours,
+                    'busiest_by_visitors': busiest_by_visitors,
+                    'busiest_by_orders': busiest_by_orders,
                     'peak_periods': peak_periods,
                     'hourly_recommendations': hourly_stats
                 }
@@ -3296,23 +3077,9 @@ def conversion_debug():
                 HourlyFootfall.report_date <= end_date
             ).order_by(HourlyFootfall.report_date.desc(), HourlyFootfall.hour.desc()).limit(5).all()
             
-            # Check PetPooja data
-            petpooja_count = db.execute(text("SELECT COUNT(*) FROM petpooja_webhook_events")).scalar()
-            
-            petpooja_sample_raw = db.execute(text("""
-                SELECT 
-                    id,
-                    created_at,
-                    COALESCE(
-                        CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                        created_at
-                    ) as effective_time,
-                    content->'properties'->'Order'->>'orderID' as order_id,
-                    content->'properties'->'Order'->>'total' as total
-                FROM petpooja_webhook_events
-                ORDER BY id DESC
-                LIMIT 5
-            """)).fetchall()
+            # Check PetPooja data using PetPoojaDatabase helper
+            petpooja_count = PetPoojaDatabase.get_petpooja_count(db)
+            petpooja_sample_raw = PetPoojaDatabase.get_petpooja_sample(db, limit=5)
             
             return jsonify({
                 'debug_info': 'This shows what data is available for conversion analytics',
@@ -4155,9 +3922,8 @@ def menu_time_popularity():
                             if order_date_ist < start_date_ist or order_date_ist > end_date_ist:
                                 continue
                             
-                            # Filter future hours when viewing TODAY
-                            if is_viewing_today and order_date_ist == current_date and order_hour_ist > current_hour:
-                                continue
+                            # REMOVED: Future hour filtering to match Sales Analytics behavior
+                            # All orders within date range are now included
                             
                             # NOW deduplicate - keep highest event_id for each order_id
                             event_id = event.get('id', 0)
@@ -4569,7 +4335,7 @@ def menu_time_popularity():
                 'total_quantity': sum(item['quantity'] for item in morning_list),
                 'footfall': {
                     'total_visitors': footfall_data['morning']['visitors'],
-                    'avg_per_day': round(morning_avg_footfall, 1),
+                    'avg_per_day': round(morning_avg_footfall),
                     'days_tracked': footfall_data['morning']['days_count']
                 }
             },
@@ -4581,7 +4347,7 @@ def menu_time_popularity():
                 'total_quantity': sum(item['quantity'] for item in afternoon_list),
                 'footfall': {
                     'total_visitors': footfall_data['afternoon']['visitors'],
-                    'avg_per_day': round(afternoon_avg_footfall, 1),
+                    'avg_per_day': round(afternoon_avg_footfall),
                     'days_tracked': footfall_data['afternoon']['days_count']
                 }
             },
@@ -4593,7 +4359,7 @@ def menu_time_popularity():
                 'total_quantity': sum(item['quantity'] for item in evening_list),
                 'footfall': {
                     'total_visitors': footfall_data['evening']['visitors'],
-                    'avg_per_day': round(evening_avg_footfall, 1),
+                    'avg_per_day': round(evening_avg_footfall),
                     'days_tracked': footfall_data['evening']['days_count']
                 },
                 'note': 'Includes late-night orders (11 PM - 6 AM)'

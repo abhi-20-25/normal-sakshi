@@ -172,10 +172,7 @@ class PetPoojaClient:
             # Process events into hourly aggregates
             hourly_data = defaultdict(lambda: {'orders': 0, 'revenue': 0.0})
             seen_orders = set()
-            current_time_ist = datetime.now(IST)
-            current_date_ist = current_time_ist.date()
-            current_hour_ist = current_time_ist.hour
-            is_viewing_today = end_date == current_date_ist
+            # REMOVED: Unused time variables since future hour filtering is removed
             
             for event in all_events:
                 if event.get('content', {}).get('event') == 'orderdetails':
@@ -205,9 +202,8 @@ class PetPoojaClient:
                         if order_date_ist < start_date or order_date_ist > end_date:
                             continue
                         
-                        # Skip future hours when viewing today
-                        if is_viewing_today and order_date_ist == current_date_ist and order_hour_ist > current_hour_ist:
-                            continue
+                        # REMOVED: Future hour filtering to match Sales Analytics behavior
+                        # All hours within date range are now included
                         
                         # Aggregate
                         key = (order_date_ist.strftime('%Y-%m-%d'), order_hour_ist)
@@ -254,15 +250,12 @@ class PetPoojaDatabase:
             db: Database session
             start_date: Start date for query
             end_date: End date for query
-            filter_future: Whether to filter future hours when viewing today
+            filter_future: (DEPRECATED) No longer used - kept for backward compatibility
             
         Returns:
             List of database result rows
         """
-        current_time_ist = datetime.now(IST)
-        current_date = current_time_ist.date()
-        current_hour = current_time_ist.hour
-        is_viewing_today = end_date == current_date and filter_future
+        # REMOVED: Unused time variables since future hour filtering is removed
         
         query = text("""
             WITH unique_orders AS (
@@ -292,34 +285,19 @@ class PetPoojaDatabase:
                   CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
                   created_at
               )) <= :end_date
-              -- Filter future hours when viewing TODAY
-              AND (
-                :is_viewing_today = FALSE 
-                OR DATE(COALESCE(
-                    CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                    created_at
-                )) < :current_date
-                OR (
-                    DATE(COALESCE(
-                        CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                        created_at
-                    )) = :current_date
-                    AND EXTRACT(HOUR FROM COALESCE(
-                        CAST(content->'properties'->'Order'->>'created_on' AS TIMESTAMP),
-                        created_at
-                    ))::INTEGER <= :current_hour
+              -- REMOVED: Future hour filtering to match Sales Analytics behavior
+              -- All hours within date range are now included
                 )
               )
             GROUP BY sale_date, sale_hour
             ORDER BY sale_date, sale_hour
         """)
         
+        # REMOVED: is_viewing_today, current_date, current_hour parameters
+        # No longer needed since future hour filtering is removed
         return db.execute(query, {
             'start_date': start_date,
-            'end_date': end_date,
-            'is_viewing_today': is_viewing_today,
-            'current_date': current_date,
-            'current_hour': current_hour
+            'end_date': end_date
         }).fetchall()
     
     @staticmethod
@@ -377,18 +355,14 @@ class SalesAnalytics:
             
             if hourly_sales:
                 # Process remote hourly data
-                current_time_ist = datetime.now(IST)
-                current_date = current_time_ist.date()
-                current_hour = current_time_ist.hour
-                is_viewing_today = end_date == current_date
+                # REMOVED: Unused time variables since future hour filtering is removed
                 
                 for item in hourly_sales:
                     sale_date = datetime.strptime(item['date'], '%Y-%m-%d').date()
                     sale_hour = int(item['hour'])
                     
-                    # Skip future hours when viewing TODAY
-                    if is_viewing_today and sale_date == current_date and sale_hour > current_hour:
-                        continue
+                    # REMOVED: Future hour filtering to match Sales Analytics behavior
+                    # All hours within date range are now included
                     
                     sales_results.append(Row(
                         sale_date=sale_date,
@@ -441,11 +415,8 @@ class ConversionAnalytics:
                 'revenue': item['total_sales']
             }
         
-        # Check if viewing today to filter future hours
-        current_time_ist = datetime.now(IST)
-        current_date = current_time_ist.date()
-        current_hour = current_time_ist.hour
-        is_viewing_today = end_date == current_date
+        # REMOVED: Future hour filtering to match Sales Analytics behavior
+        # All hours within date range are now included
         
         for sale_date, sales_data in daily_sales_lookup.items():
             if sale_date not in footfall_by_date_total or footfall_by_date_total[sale_date] == 0:
@@ -496,6 +467,7 @@ class ConversionAnalytics:
     def calculate_conversion_metrics(self, footfall_data: List, sales_data: List) -> List[Dict]:
         """
         Calculate conversion rates from footfall and sales data
+        FIXED: Now includes ALL sales hours, not just hours with footfall data
         
         Args:
             footfall_data: List of footfall records
@@ -504,6 +476,12 @@ class ConversionAnalytics:
         Returns:
             List of hourly records with conversion metrics
         """
+        # Build lookup for footfall data
+        footfall_lookup = {}
+        for f in footfall_data:
+            key = (f.report_date, f.hour)
+            footfall_lookup[key] = f.visitors or 0
+        
         # Build lookup for sales data
         sales_lookup = {}
         for row in sales_data:
@@ -513,26 +491,42 @@ class ConversionAnalytics:
                 'revenue': float(row.revenue) if row.revenue else 0
             }
         
+        # Combine all unique date-hour combinations from BOTH footfall and sales
+        all_keys = set(footfall_lookup.keys()) | set(sales_lookup.keys())
+        
         # Combine footfall with sales
         hourly_records = []
-        for f in footfall_data:
-            key = (f.report_date, f.hour)
-            sales_info = sales_lookup.get(key, {'orders': 0, 'revenue': 0})
+        for key in sorted(all_keys):  # Sort by (date, hour)
+            sale_date, hour = key
             
-            visitors = f.visitors or 0
+            # Get footfall (0 if not tracked)
+            visitors = footfall_lookup.get(key, 0)
+            
+            # Get sales data
+            sales_info = sales_lookup.get(key, {'orders': 0, 'revenue': 0})
             orders = sales_info['orders']
             revenue = sales_info['revenue']
             
-            # Calculate conversion rate
-            conversion_rate = (orders / visitors * 100) if visitors > 0 else 0
+            # Calculate conversion rate with validation
+            if visitors > 0:
+                conversion_rate = (orders / visitors * 100)
+                # Flag impossible conversion rates (>100% indicates data quality issues)
+                if conversion_rate > 100:
+                    logging.warning(f"⚠️ Impossible conversion rate at {sale_date} {hour}:00 - {orders} orders but only {visitors} visitors")
+            elif orders > 0:
+                # Orders exist but no footfall tracked - likely tracking failure OR delivery orders
+                conversion_rate = -1  # Special flag for "data unavailable"
+                logging.warning(f"⚠️ Footfall data missing at {sale_date} {hour}:00 - {orders} orders but 0 visitors (could be delivery orders or tracking failure)")
+            else:
+                conversion_rate = 0
             
             # Calculate average order value
             avg_order_value = (revenue / orders) if orders > 0 else 0
             
             hourly_records.append({
-                'date': f.report_date.strftime('%Y-%m-%d'),
-                'hour': f.hour,
-                'hour_label': datetime.strptime(str(f.hour), '%H').strftime('%I %p').lstrip('0'),
+                'date': sale_date.strftime('%Y-%m-%d'),
+                'hour': hour,
+                'hour_label': datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0'),
                 'visitors': visitors,
                 'orders': orders,
                 'revenue': round(revenue, 2),

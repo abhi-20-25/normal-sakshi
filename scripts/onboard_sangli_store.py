@@ -1,0 +1,359 @@
+#!/usr/bin/env python3
+"""
+Sangli Store Onboarding Script
+Automatically adds Sangli restaurant with all cameras and use cases
+"""
+
+import sys
+import hashlib
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import sessionmaker, declarative_base
+from datetime import datetime
+import logging
+import pytz
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Configuration
+IST = pytz.timezone('Asia/Kolkata')
+DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
+
+Base = declarative_base()
+
+# ============================================================================
+# Database Models
+# ============================================================================
+
+class Restaurant(Base):
+    __tablename__ = "restaurants"
+    id = Column(Integer, primary_key=True)
+    restaurant_code = Column(String(50), unique=True, nullable=False)
+    restaurant_name = Column(String(200), nullable=False)
+    location = Column(String(200))
+    dvr_ip = Column(String(50))
+    dvr_username = Column(String(100))
+    dvr_password = Column(String(100))
+    telegram_chat_id = Column(String(50))
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+    updated_at = Column(DateTime, default=lambda: datetime.now(IST))
+
+class Camera(Base):
+    __tablename__ = "cameras"
+    id = Column(Integer, primary_key=True)
+    restaurant_id = Column(Integer, ForeignKey('restaurants.id'))
+    channel_number = Column(Integer)
+    channel_name = Column(String(255), nullable=False)
+    rtsp_url = Column(Text, nullable=False)
+    channel_id = Column(String(50), unique=True, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+    updated_at = Column(DateTime, default=lambda: datetime.now(IST))
+
+class CameraApp(Base):
+    __tablename__ = "camera_apps"
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(Integer, ForeignKey('cameras.id'))
+    app_name = Column(String(50), nullable=False)
+    is_active = Column(Boolean, default=True)
+    config = Column(JSONB)
+    created_at = Column(DateTime, default=lambda: datetime.now(IST))
+
+# ============================================================================
+# Sangli Store Configuration
+# ============================================================================
+
+SANGLI_CONFIG = {
+    'restaurant': {
+        'restaurant_code': 'sangli_store',
+        'restaurant_name': 'Tea Toast - Sangli',
+        'location': 'Sangli, Maharashtra',
+        'dvr_ip': '110.227.214.137',
+        'dvr_username': 'admin',
+        'dvr_password': 'Cctv@4321',
+        'telegram_chat_id': '-4835836048',  # Same as Tea Toast for now
+        'is_active': True
+    },
+    'cameras': [
+        {
+            'channel_number': 1,
+            'channel_name': 'Main Entrance',
+            'rtsp_url': 'rtsp://admin:Cctv%404321@110.227.214.137:554/cam/realmonitor?channel=1&subtype=0',
+            'apps': [
+                {'name': 'PeopleCounter', 'config': {'confidence': 0.15, 'model_path': 'models/yolo11n.pt'}}
+            ]
+        },
+        {
+            'channel_number': 4,
+            'channel_name': 'Front Office',
+            'rtsp_url': 'rtsp://admin:Cctv%404321@110.227.214.137:554/cam/realmonitor?channel=4&subtype=0',
+            'apps': [
+                {'name': 'OccupancyMonitor', 'config': {'confidence': 0.15, 'model_path': 'models/yolo11n.pt'}}
+            ]
+        },
+        {
+            'channel_number': 5,
+            'channel_name': 'Checkout & Kitchen Area',
+            'rtsp_url': 'rtsp://admin:Cctv%404321@110.227.214.137:554/cam/realmonitor?channel=5&subtype=0',
+            'apps': [
+                {'name': 'QueueMonitor', 'config': {'confidence': 0.15, 'model_path': 'models/yolo11n.pt', 'alert_threshold': 3}},
+                {'name': 'Generic', 'config': {'confidence': 0.3, 'model_path': 'models/kitchen_violation_30_12_2025.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7]}}
+            ]
+        },
+        {
+            'channel_number': 7,
+            'channel_name': 'Kitchen Compliance Zone',
+            'rtsp_url': 'rtsp://admin:Cctv%404321@110.227.214.137:554/cam/realmonitor?channel=7&subtype=0',
+            'apps': [
+                {'name': 'KitchenCompliance', 'config': {'confidence': 0.3, 'model_path': 'models/kitchen_violation_30_12_2025.pt'}}
+            ]
+        }
+    ]
+}
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+def get_stable_channel_id(rtsp_url: str) -> str:
+    """Generate stable hash-based channel ID from URL"""
+    parsed = rtsp_url.lower().strip()
+    hash_obj = hashlib.sha256(parsed.encode('utf-8'))
+    return f"cam_{hash_obj.hexdigest()[:12]}"
+
+# ============================================================================
+# Main Onboarding Function
+# ============================================================================
+
+def onboard_sangli_store():
+    """Main function to onboard Sangli store"""
+    
+    logging.info("=" * 80)
+    logging.info("🚀 SANGLI STORE ONBOARDING - STARTING")
+    logging.info("=" * 80)
+    logging.info("")
+    
+    # Create database connection
+    try:
+        engine = create_engine(DATABASE_URL)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        logging.info("✅ Database connection established")
+    except Exception as e:
+        logging.error(f"❌ Failed to connect to database: {e}")
+        return False
+    
+    try:
+        # =====================================================================
+        # STEP 1: Create Restaurant
+        # =====================================================================
+        logging.info("")
+        logging.info("📍 STEP 1: Creating Sangli Restaurant")
+        logging.info("-" * 80)
+        
+        # Check if restaurant already exists
+        existing = session.query(Restaurant).filter_by(
+            restaurant_code=SANGLI_CONFIG['restaurant']['restaurant_code']
+        ).first()
+        
+        if existing:
+            logging.warning(f"⚠️  Restaurant '{existing.restaurant_name}' already exists (ID: {existing.id})")
+            restaurant = existing
+        else:
+            restaurant = Restaurant(**SANGLI_CONFIG['restaurant'])
+            session.add(restaurant)
+            session.flush()
+            logging.info(f"✅ Restaurant created: {restaurant.restaurant_name}")
+            logging.info(f"   ID: {restaurant.id}")
+            logging.info(f"   Code: {restaurant.restaurant_code}")
+            logging.info(f"   Location: {restaurant.location}")
+            logging.info(f"   DVR IP: {restaurant.dvr_ip}")
+        
+        # =====================================================================
+        # STEP 2: Add Cameras
+        # =====================================================================
+        logging.info("")
+        logging.info("📹 STEP 2: Adding Cameras")
+        logging.info("-" * 80)
+        
+        cameras_added = 0
+        cameras_updated = 0
+        
+        for cam_config in SANGLI_CONFIG['cameras']:
+            channel_id = get_stable_channel_id(cam_config['rtsp_url'])
+            
+            # Check if camera exists
+            existing_cam = session.query(Camera).filter_by(channel_id=channel_id).first()
+            
+            if existing_cam:
+                logging.info(f"ℹ️  Camera '{cam_config['channel_name']}' already exists (updating)")
+                camera = existing_cam
+                camera.is_active = True
+                cameras_updated += 1
+            else:
+                camera = Camera(
+                    restaurant_id=restaurant.id,
+                    channel_number=cam_config['channel_number'],
+                    channel_name=cam_config['channel_name'],
+                    rtsp_url=cam_config['rtsp_url'],
+                    channel_id=channel_id,
+                    is_active=True
+                )
+                session.add(camera)
+                session.flush()
+                cameras_added += 1
+                
+            logging.info(f"✅ Channel {cam_config['channel_number']}: {cam_config['channel_name']}")
+            logging.info(f"   Camera ID: {channel_id}")
+            logging.info(f"   RTSP: {cam_config['rtsp_url'][:50]}...")
+            
+            # =====================================================================
+            # STEP 3: Link Apps to Camera
+            # =====================================================================
+            for app_config in cam_config['apps']:
+                # Check if app already linked
+                existing_app = session.query(CameraApp).filter_by(
+                    camera_id=camera.id,
+                    app_name=app_config['name']
+                ).first()
+                
+                if existing_app:
+                    logging.info(f"   ℹ️  App '{app_config['name']}' already linked")
+                    continue
+                
+                camera_app = CameraApp(
+                    camera_id=camera.id,
+                    app_name=app_config['name'],
+                    is_active=True,
+                    config=app_config['config']
+                )
+                session.add(camera_app)
+                logging.info(f"   ✅ Linked: {app_config['name']}")
+                logging.info(f"      Model: {app_config['config'].get('model_path', 'default')}")
+                logging.info(f"      Confidence: {app_config['config'].get('confidence', 'default')}")
+        
+        # Commit all changes
+        session.commit()
+        
+        # =====================================================================
+        # STEP 4: Verification
+        # =====================================================================
+        logging.info("")
+        logging.info("🔍 STEP 4: Verification")
+        logging.info("-" * 80)
+        
+        # Count cameras
+        total_cameras = session.query(Camera).filter_by(
+            restaurant_id=restaurant.id,
+            is_active=True
+        ).count()
+        
+        # Count apps
+        total_apps = session.query(CameraApp).join(Camera).filter(
+            Camera.restaurant_id == restaurant.id,
+            CameraApp.is_active == True
+        ).count()
+        
+        logging.info(f"✅ Total Active Cameras: {total_cameras}")
+        logging.info(f"✅ Total Active Apps: {total_apps}")
+        
+        # List all cameras and apps
+        cameras = session.query(Camera).filter_by(
+            restaurant_id=restaurant.id,
+            is_active=True
+        ).all()
+        
+        logging.info("")
+        logging.info("📋 Camera & App Summary:")
+        for cam in cameras:
+            apps = session.query(CameraApp).filter_by(
+                camera_id=cam.id,
+                is_active=True
+            ).all()
+            app_names = ', '.join([a.app_name for a in apps])
+            logging.info(f"   • Ch{cam.channel_number}: {cam.channel_name}")
+            logging.info(f"     Apps: {app_names}")
+        
+        # =====================================================================
+        # SUCCESS
+        # =====================================================================
+        logging.info("")
+        logging.info("=" * 80)
+        logging.info("✅ SANGLI STORE ONBOARDING - COMPLETED SUCCESSFULLY!")
+        logging.info("=" * 80)
+        logging.info("")
+        logging.info("📊 Summary:")
+        logging.info(f"   • Restaurant: {restaurant.restaurant_name}")
+        logging.info(f"   • Location: {restaurant.location}")
+        logging.info(f"   • Cameras Added: {cameras_added}")
+        logging.info(f"   • Cameras Updated: {cameras_updated}")
+        logging.info(f"   • Total Active Cameras: {total_cameras}")
+        logging.info(f"   • Total Apps Configured: {total_apps}")
+        logging.info("")
+        logging.info("⚠️  IMPORTANT NEXT STEPS:")
+        logging.info("   1. Restart the application to load new cameras:")
+        logging.info("      sudo systemctl restart sakshi-ai.service")
+        logging.info("")
+        logging.info("   2. Configure ROI (Region of Interest) for:")
+        logging.info("      • PeopleCounter (Channel 1) - Draw counting line")
+        logging.info("      • QueueMonitor (Channel 5) - Draw queue area")
+        logging.info("      • OccupancyMonitor (Channel 4) - Draw monitoring zone")
+        logging.info("")
+        logging.info("   3. Test dashboard filtering:")
+        logging.info("      http://localhost:5001/dashboard?restaurant_id={}".format(restaurant.id))
+        logging.info("")
+        logging.info("   4. Verify cameras are streaming:")
+        logging.info("      Check dashboard for 'Sangli' in restaurant dropdown")
+        logging.info("")
+        logging.info("📝 NOTE: PetPooja integration will be added when API is available")
+        logging.info("=" * 80)
+        
+        return True
+        
+    except Exception as e:
+        session.rollback()
+        logging.error("")
+        logging.error("=" * 80)
+        logging.error("❌ ONBOARDING FAILED")
+        logging.error("=" * 80)
+        logging.error(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        logging.error("")
+        logging.error("💡 Troubleshooting:")
+        logging.error("   1. Check database connection")
+        logging.error("   2. Verify database schema is up to date")
+        logging.error("   3. Run: psql -U postgres -d sakshi -c 'SELECT * FROM restaurants;'")
+        return False
+        
+    finally:
+        session.close()
+
+# ============================================================================
+# Main Execution
+# ============================================================================
+
+if __name__ == "__main__":
+    print("")
+    print("╔" + "=" * 78 + "╗")
+    print("║" + " " * 20 + "SANGLI STORE ONBOARDING SCRIPT" + " " * 28 + "║")
+    print("╚" + "=" * 78 + "╝")
+    print("")
+    
+    success = onboard_sangli_store()
+    
+    if success:
+        print("")
+        print("🎉 Onboarding completed successfully!")
+        print("")
+        sys.exit(0)
+    else:
+        print("")
+        print("❌ Onboarding failed. Check logs above for details.")
+        print("")
+        sys.exit(1)

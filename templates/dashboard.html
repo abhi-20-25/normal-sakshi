@@ -973,6 +973,17 @@
             <button onclick="loadConversionData()" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">Refresh Data</button>
           </div>
           
+          <!-- Info Banner about Delivery Orders -->
+          <div style="background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%); border-left: 4px solid #3b82f6; padding: 16px; border-radius: 8px; margin-bottom: 24px; display: flex; align-items: start; gap: 12px;">
+            <div style="font-size: 24px; line-height: 1;">ℹ️</div>
+            <div style="flex: 1;">
+              <div style="font-weight: 600; color: #fff; margin-bottom: 4px; font-size: 14px;">Data Includes All Order Types</div>
+              <div style="color: #bfdbfe; font-size: 13px; line-height: 1.5;">
+                Order count includes <strong>Delivery, Takeaway, and Dine-in</strong> orders. Online delivery orders (Swiggy/Zomato) don't generate footfall but appear in sales. Hours with 0 visitors + orders indicate delivery-only periods.
+              </div>
+            </div>
+          </div>
+          
           <div id="conversionErrorContainer"></div>
           
           <div class="metrics" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 32px;">
@@ -1008,29 +1019,11 @@
             <div id="peakHoursContainer" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 16px;">
               <div style="text-align: center; color: #9aa0a6; padding: 20px;">Loading peak hours...</div>
             </div>
-            
-            <div style="margin-top: 24px;">
-              <h4 style="color: #ddd; margin-bottom: 12px;">Peak Periods by Time of Day</h4>
-              <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
-                <div style="background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%); padding: 16px; border-radius: 8px;">
-                  <div style="font-size: 14px; opacity: 0.9;">Morning (6 AM - 12 PM)</div>
-                  <div style="font-size: 20px; font-weight: 700; margin-top: 8px;" id="peakMorning">--</div>
-                </div>
-                <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 16px; border-radius: 8px;">
-                  <div style="font-size: 14px; opacity: 0.9;">Afternoon (12 PM - 5 PM)</div>
-                  <div style="font-size: 20px; font-weight: 700; margin-top: 8px;" id="peakAfternoon">--</div>
-                </div>
-                <div style="background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%); padding: 16px; border-radius: 8px;">
-                  <div style="font-size: 14px; opacity: 0.9;">Evening (5 PM - 12 AM)</div>
-                  <div style="font-size: 20px; font-weight: 700; margin-top: 8px;" id="peakEvening">--</div>
-                </div>
-              </div>
-            </div>
           </div>
           
-          <!-- Staffing & Inventory Recommendations -->
+          <!-- Staffing Recommendations -->
           <div class="report-section" style="margin-bottom: 32px;">
-            <h3>👥 Staffing & Inventory Recommendations</h3>
+            <h3>👥 Staffing Recommendations</h3>
             <div style="overflow-x: auto; margin-top: 16px;">
               <table>
                 <thead>
@@ -1040,18 +1033,26 @@
                     <th>Avg Visitors</th>
                     <th>Avg Orders</th>
                     <th>Recommended Staff</th>
-                    <th>Recommended Inventory</th>
                   </tr>
                 </thead>
                 <tbody id="staffingRecommendationsBody">
                   <tr>
-                    <td colspan="6" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading recommendations...</td>
+                    <td colspan="5" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading recommendations...</td>
                   </tr>
                 </tbody>
               </table>
             </div>
           </div>
           
+          <!-- Inventory Recommendations Based on Shelf Life -->
+          <div class="report-section" style="margin-bottom: 32px;">
+            <h3>📦 Inventory Recommendations (Shelf Life Optimized)</h3>
+            <p style="color: #9aa0a6; font-size: 13px; margin-bottom: 8px;">Storage recommendations based on popular items and their typical shelf life. Prepare inventory considering peak selling times.</p>
+            <p style="color: #f59e0b; font-size: 12px; margin-bottom: 16px; font-weight: 600;">📊 Data based on last 30 days of sales • Updates in real-time when you refresh this page</p>
+            <div id="inventoryRecommendationsContainer" style="margin-top: 16px;">
+              <div style="text-align: center; padding: 40px; color: #9aa0a6;">Loading inventory recommendations...</div>
+            </div>
+          </div>
 
         </div>
       </div>
@@ -1078,6 +1079,17 @@
               <option value="7" selected>Last 7 Days</option>
             </select>
             <button onclick="loadPromotionEffectiveness()" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600;">Refresh Data</button>
+          </div>
+          
+          <!-- Info Banner about Delivery Orders -->
+          <div style="background: linear-gradient(135deg, #1e3a8a 0%, #1e40af 100%); border-left: 4px solid #3b82f6; padding: 16px; border-radius: 8px; margin-bottom: 24px; display: flex; align-items: start; gap: 12px;">
+            <div style="font-size: 24px; line-height: 1;">ℹ️</div>
+            <div style="flex: 1;">
+              <div style="font-weight: 600; color: #fff; margin-bottom: 4px; font-size: 14px;">Data Includes All Order Types</div>
+              <div style="color: #bfdbfe; font-size: 13px; line-height: 1.5;">
+                Order count includes <strong>Delivery, Takeaway, and Dine-in</strong> orders. Online delivery orders don't generate footfall (0 visitors) but appear in sales. This may result in hours showing orders without corresponding visitor traffic.
+              </div>
+            </div>
           </div>
           
           <div id="promotionErrorContainer"></div>
@@ -2171,14 +2183,23 @@ function loadConversionData() {
   const days = document.getElementById('conversionDaysFilter').value;
   document.getElementById('conversionErrorContainer').innerHTML = '';
   
+  // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
+  if (selected_restaurant && selected_restaurant.id !== 3) {
+    console.log('Non-main branch selected - showing zero data for conversion analytics');
+    // Show zero data
+    document.getElementById('conversionRate').innerHTML = '0<span style="font-size: 16px; color: #6d7377; margin-left: 4px;">%</span>';
+    document.getElementById('conversionTotalVisitors').textContent = '0';
+    document.getElementById('conversionTotalOrders').textContent = '0';
+    document.getElementById('conversionTotalRevenue').textContent = '₹0';
+    document.getElementById('conversionRevenuePerVisitor').textContent = '₹0';
+    document.getElementById('conversionAvgOrderValue').textContent = '₹0';
+    document.getElementById('peakHoursContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #9aa0a6;">PetPooja API not available for this branch</div>';
+    return;
+  }
+  
   // Build URL with restaurant filter if applicable
   let url = `/api/analytics/footfall-conversion?days=${days}`;
-  if (selected_restaurant && selected_restaurant.id) {
-    url += `&restaurant_id=${selected_restaurant.id}`;
-    console.log('Fetching conversion data for restaurant:', selected_restaurant.restaurant_name, 'last', days, 'days');
-  } else {
-    console.log('Fetching conversion data for all restaurants, last', days, 'days');
-  }
+  console.log('Fetching conversion data for main branch, last', days, 'days');
   
   fetch(url, {
     credentials: 'same-origin',
@@ -2209,31 +2230,41 @@ function loadConversionData() {
       document.getElementById('conversionRevenuePerVisitor').textContent = formatCurrency(data.summary.revenue_per_visitor);
       document.getElementById('conversionAvgOrderValue').textContent = formatCurrency(data.summary.avg_order_value);
       
-      // Update peak hours analysis
-      if (data.peak_analysis && data.peak_analysis.busiest_hours) {
-        const peakHoursHTML = data.peak_analysis.busiest_hours.map((hour, index) => {
-          const colors = ['#ef4444', '#f59e0b', '#eab308', '#84cc16', '#22c55e'];
-          const labels = ['🔥 Busiest', '🔥 Very Busy', '⚡ Busy', '📈 Active', '✅ Moderate'];
-          return `
-            <div style="background: ${colors[index]}20; border: 2px solid ${colors[index]}; padding: 16px; border-radius: 8px; text-align: center;">
-              <div style="font-size: 14px; color: ${colors[index]}; font-weight: 600;">${labels[index]}</div>
-              <div style="font-size: 24px; font-weight: 700; margin: 8px 0; color: #fff;">${hour.hour_label}</div>
-              <div style="font-size: 12px; color: #9aa0a6; margin-top: 4px;">
-                ${Math.round(hour.avg_visitors)} visitors • ${Math.round(hour.avg_orders)} orders
-              </div>
-            </div>
-          `;
-        }).join('');
-        document.getElementById('peakHoursContainer').innerHTML = peakHoursHTML;
+      // Update peak hours analysis - show busiest by visitors and by orders
+      if (data.peak_analysis && data.peak_analysis.busiest_by_visitors && data.peak_analysis.busiest_by_orders) {
+        const busiestVisitors = data.peak_analysis.busiest_by_visitors;
+        const busiestOrders = data.peak_analysis.busiest_by_orders;
         
-        // Update peak periods
-        const peakPeriods = data.peak_analysis.peak_periods;
-        document.getElementById('peakMorning').textContent = peakPeriods.morning.length > 0 ? peakPeriods.morning.join(', ') : 'No peak hours';
-        document.getElementById('peakAfternoon').textContent = peakPeriods.afternoon.length > 0 ? peakPeriods.afternoon.join(', ') : 'No peak hours';
-        document.getElementById('peakEvening').textContent = peakPeriods.evening.length > 0 ? peakPeriods.evening.join(', ') : 'No peak hours';
+        const peakHoursHTML = `
+          <div style="background: #ef444420; border: 2px solid #ef4444; padding: 20px; border-radius: 8px; text-align: center; flex: 1;">
+            <div style="font-size: 14px; color: #ef4444; font-weight: 600; margin-bottom: 8px;">🔥 Busiest Hour (Visitors)</div>
+            <div style="font-size: 32px; font-weight: 700; margin: 12px 0; color: #fff;">${busiestVisitors.hour_label}</div>
+            <div style="font-size: 14px; color: #9aa0a6; margin-top: 8px;">
+              ${Math.round(busiestVisitors.avg_visitors)} visitors
+            </div>
+            <div style="font-size: 12px; color: #6d7377; margin-top: 4px;">
+              ${Math.round(busiestOrders.avg_orders)} orders
+            </div>
+          </div>
+          
+          <div style="background: #f59e0b20; border: 2px solid #f59e0b; padding: 20px; border-radius: 8px; text-align: center; flex: 1;">
+            <div style="font-size: 14px; color: #f59e0b; font-weight: 600; margin-bottom: 8px;">📦 Peak Orders Hour</div>
+            <div style="font-size: 32px; font-weight: 700; margin: 12px 0; color: #fff;">${busiestOrders.hour_label}</div>
+            <div style="font-size: 14px; color: #9aa0a6; margin-top: 8px;">
+              ${Math.round(busiestOrders.avg_orders)} orders
+            </div>
+            <div style="font-size: 12px; color: #6d7377; margin-top: 4px;">
+              ${Math.round(busiestOrders.avg_visitors)} visitors
+            </div>
+          </div>
+        `;
+        document.getElementById('peakHoursContainer').innerHTML = peakHoursHTML;
         
         // Load staffing recommendations
         loadStaffingRecommendations(days);
+        
+        // Load inventory recommendations
+        loadInventoryRecommendations();
       }
     })
     .catch(error => {
@@ -2250,17 +2281,19 @@ function loadPromotionEffectiveness() {
   const days = document.getElementById('promotionDaysFilter').value;
   document.getElementById('promotionErrorContainer').innerHTML = '';
   
+  // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
+  if (selected_restaurant && selected_restaurant.id !== 3) {
+    console.log('Non-main branch selected - showing zero data for promotion effectiveness');
+    document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">PetPooja API not available for this branch</td></tr>';
+    return;
+  }
+  
   // Show loading state
   document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td></tr>';
   
-  // Build URL with restaurant filter if applicable
+  // Build URL for main branch
   let url = `/api/analytics/footfall-conversion?days=${days}`;
-  if (selected_restaurant && selected_restaurant.id) {
-    url += `&restaurant_id=${selected_restaurant.id}`;
-    console.log('Fetching promotion effectiveness data for restaurant:', selected_restaurant.restaurant_name, 'last', days, 'days');
-  } else {
-    console.log('Fetching promotion effectiveness data for all restaurants, last', days, 'days');
-  }
+  console.log('Fetching promotion effectiveness data for main branch, last', days, 'days');
   
   fetch(url, {
     credentials: 'same-origin',
@@ -2283,8 +2316,9 @@ function loadPromotionEffectiveness() {
         throw new Error('Invalid data format received');
       }
       
-      // Filter data to only show hours >= 9 AM (hour >= 9)
-      const filteredData = data.hourly_data.filter(row => row.hour >= 9);
+      // REMOVED: Hour >= 9 AM filtering to match Sales Analytics behavior
+      // All hours are now included to show consistent order counts
+      const filteredData = data.hourly_data;
       
       const tbody = document.getElementById('promotionDataTableBody');
       
@@ -2346,14 +2380,30 @@ function loadPromotionEffectiveness() {
           const rowStyle = isRefund ? 'background: #3d1717; border-left: 3px solid #ff6b6b;' : '';
           const refundBadge = isRefund ? '<span style="background: #ff6b6b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">🔄 Refund/Cancellation</span>' : '';
           
+          // Handle data quality issues
+          const hasDeliveryOrders = (row.visitors === 0 && row.orders > 0);
+          const hasImpossibleConversion = (row.conversion_rate > 100);
+          const hasDataIssue = hasDeliveryOrders || hasImpossibleConversion;
+          const issueStyle = hasDataIssue ? 'background: #1e3a5a; border-left: 3px solid #3b82f6;' : rowStyle;
+          const dataQualityBadge = hasDeliveryOrders ? '<span style="background: #3b82f6; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">🛵 Likely delivery orders</span>' : 
+                                   hasImpossibleConversion ? '<span style="background: #f59e0b; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 8px;">⚠️ Data issue</span>' : '';
+          
+          // Display conversion rate with special handling
+          let conversionDisplay = row.conversion_rate + '%';
+          if (row.conversion_rate === -1) {
+            conversionDisplay = '<span style="color: #f59e0b;">N/A</span>';
+          } else if (row.conversion_rate > 100) {
+            conversionDisplay = `<span style="color: #f59e0b;">${row.conversion_rate}% ⚠️</span>`;
+          }
+          
           return `
-          <tr style="${rowStyle}">
+          <tr style="${issueStyle}">
             <td>${row.date}</td>
-            <td>${row.hour_label}${refundBadge}</td>
+            <td>${row.hour_label}${refundBadge}${dataQualityBadge}</td>
             <td>${row.visitors}</td>
             <td style="${isRefund ? 'color: #ff6b6b;' : ''}">${row.orders}${isRefund ? ' ↩️' : ''}</td>
             <td style="${isRefund ? 'color: #ff6b6b;' : ''}">${formatCurrency(row.revenue)}</td>
-            <td>${row.conversion_rate}%</td>
+            <td>${conversionDisplay}</td>
             <td>${formatCurrency(row.avg_order_value)}</td>
           </tr>
         `;
@@ -2477,12 +2527,11 @@ function loadStaffingRecommendations(days) {
       
       const tbody = document.getElementById('staffingRecommendationsBody');
       if (businessHours.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #9aa0a6;">No recommendations available</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #9aa0a6;">No recommendations available</td></tr>';
       } else {
         tbody.innerHTML = businessHours.map(rec => {
           const demandBadge = `<span style="background: ${rec.demand_color}; color: white; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;">${rec.demand_level}</span>`;
           const staffBadge = `<span style="background: #3b82f6; color: white; padding: 4px 10px; border-radius: 6px; font-weight: 600;">${rec.recommended_staff} staff</span>`;
-          const inventoryBadge = `<span style="background: #10b981; color: white; padding: 4px 10px; border-radius: 6px; font-weight: 600;">${rec.recommended_inventory} units</span>`;
           
           return `
             <tr style="${rec.demand_score >= 70 ? 'background: rgba(239, 68, 68, 0.1);' : ''}">
@@ -2491,7 +2540,6 @@ function loadStaffingRecommendations(days) {
               <td>${Math.round(rec.avg_visitors)} <small style="color: #9aa0a6;">(max: ${rec.max_visitors})</small></td>
               <td>${Math.round(rec.avg_orders)} <small style="color: #9aa0a6;">(max: ${rec.max_orders})</small></td>
               <td>${staffBadge}</td>
-              <td>${inventoryBadge}</td>
             </tr>
           `;
         }).join('');
@@ -2499,7 +2547,186 @@ function loadStaffingRecommendations(days) {
     })
     .catch(error => {
       console.error('Error loading staffing recommendations:', error);
-      document.getElementById('staffingRecommendationsBody').innerHTML = '<tr><td colspan="6" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load recommendations</td></tr>';
+      document.getElementById('staffingRecommendationsBody').innerHTML = '<tr><td colspan="5" style="text-align: center; padding: 40px; color: #ff6b6b;">Failed to load recommendations</td></tr>';
+    });
+}
+
+function loadInventoryRecommendations() {
+  // Check if non-main branch is selected
+  if (selected_restaurant && selected_restaurant.id !== 3) {
+    document.getElementById('inventoryRecommendationsContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #9aa0a6;">PetPooja API not available for this branch</div>';
+    return;
+  }
+  
+  // Fetch time-based menu data to get popular items by time of day
+  fetch('/api/menu-time-popularity?days=30', {
+    credentials: 'same-origin',
+    headers: { 'Accept': 'application/json' }
+  })
+    .then(response => response.json())
+    .then(data => {
+      if (!data.success || !data.has_data) {
+        document.getElementById('inventoryRecommendationsContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #9aa0a6;">Insufficient data for inventory recommendations</div>';
+        return;
+      }
+      
+      // Define shelf life categories (in hours) - Updated for Tea Toast menu
+      const shelfLifeData = {
+        // Beverages - Short shelf life after preparation
+        'tea': { hours: 2, category: 'Beverage', storage: 'Prepare fresh every 2 hours' },
+        'coffee': { hours: 2, category: 'Beverage', storage: 'Prepare fresh every 2 hours' },
+        'chai': { hours: 2, category: 'Beverage', storage: 'Prepare fresh every 2 hours' },
+        'cappuccino': { hours: 1, category: 'Beverage', storage: 'Prepare fresh to order (espresso-based)' },
+        'cold coffee': { hours: 4, category: 'Beverage', storage: 'Refrigerate, consume within 4 hours' },
+        'hot chocolate': { hours: 2, category: 'Beverage', storage: 'Prepare fresh every 2 hours' },
+        'juice': { hours: 4, category: 'Beverage', storage: 'Refrigerate, consume within 4 hours' },
+        'milk': { hours: 24, category: 'Dairy', storage: 'Refrigerate at 4°C' },
+        
+        // Snacks & Fried items
+        'fries': { hours: 1, category: 'Fried Snack', storage: 'Serve immediately, prepare fresh batches' },
+        'samosa': { hours: 6, category: 'Fried Snack', storage: 'Keep warm, best consumed within 6 hours' },
+        'kachori': { hours: 6, category: 'Fried Snack', storage: 'Keep warm, best consumed within 6 hours' },
+        'vada': { hours: 4, category: 'Fried Snack', storage: 'Serve hot, consume within 4 hours' },
+        'pakora': { hours: 4, category: 'Fried Snack', storage: 'Serve hot, consume within 4 hours' },
+        
+        // Baked goods
+        'bun': { hours: 24, category: 'Baked', storage: 'Store in airtight container at room temperature' },
+        'maska': { hours: 24, category: 'Baked', storage: 'Refrigerate butter, toast bread fresh' },
+        'biscuit': { hours: 720, category: 'Packaged', storage: 'Store in airtight container (30 days)' },
+        'bread': { hours: 48, category: 'Baked', storage: 'Store at room temperature (2 days)' },
+        'toast': { hours: 1, category: 'Baked', storage: 'Prepare fresh to order' },
+        
+        // Pasta & main dishes
+        'pasta': { hours: 2, category: 'Cooked', storage: 'Prepare fresh to order, pre-cook pasta only' },
+        'alfredo': { hours: 2, category: 'Cooked', storage: 'Prepare sauce fresh, assemble to order' },
+        'dosa': { hours: 1, category: 'Cooked', storage: 'Prepare fresh to order' },
+        'idli': { hours: 4, category: 'Cooked', storage: 'Steam fresh, refrigerate batter' },
+        'paratha': { hours: 2, category: 'Cooked', storage: 'Prepare fresh, dough lasts 24 hours' },
+        'poha': { hours: 4, category: 'Cooked', storage: 'Prepare fresh daily' },
+        'upma': { hours: 4, category: 'Cooked', storage: 'Prepare fresh daily' },
+        'biryani': { hours: 6, category: 'Cooked', storage: 'Refrigerate at 4°C within 2 hours' },
+        'rice': { hours: 6, category: 'Cooked', storage: 'Keep warm or refrigerate' },
+        'pulao': { hours: 6, category: 'Cooked', storage: 'Keep warm or refrigerate' },
+        
+        // Sandwiches & wraps
+        'sandwich': { hours: 4, category: 'Prepared', storage: 'Refrigerate if not served immediately' },
+        'wrap': { hours: 4, category: 'Prepared', storage: 'Refrigerate if not served immediately' },
+        
+        // Condiments - Longer shelf life
+        'chutney': { hours: 24, category: 'Condiment', storage: 'Refrigerate in airtight container' },
+        'pickle': { hours: 2160, category: 'Preserved', storage: 'Store in cool dry place (90 days)' },
+        'raita': { hours: 12, category: 'Dairy', storage: 'Refrigerate at 4°C' },
+        'curd': { hours: 48, category: 'Dairy', storage: 'Refrigerate at 4°C' },
+        'butter': { hours: 168, category: 'Dairy', storage: 'Refrigerate at 4°C (7 days)' }
+      };
+      
+      // Function to estimate shelf life for any item
+      function getShelfLife(itemName) {
+        const nameLower = itemName.toLowerCase();
+        
+        // Check for exact or partial matches
+        for (const [key, value] of Object.entries(shelfLifeData)) {
+          if (nameLower.includes(key) || key.includes(nameLower)) {
+            return value;
+          }
+        }
+        
+        // Default for unknown items
+        return { hours: 6, category: 'Other', storage: 'Follow standard food safety guidelines' };
+      }
+      
+      // Process each time period
+      const periods = [
+        { name: 'Morning', data: data.morning, icon: '🌅', color: '#ff6b6b' },
+        { name: 'Afternoon', data: data.afternoon, icon: '☀️', color: '#f59e0b' },
+        { name: 'Evening', data: data.evening, icon: '🌙', color: '#8b5cf6' }
+      ];
+      
+      let html = '<div style=\"display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px;\">';
+      
+      periods.forEach(period => {
+        const topItems = period.data.top_items.slice(0, 5); // Top 5 items
+        
+        html += `
+          <div style=\"background: linear-gradient(135deg, ${period.color}15, ${period.color}05); border: 1px solid ${period.color}40; border-radius: 12px; padding: 20px;\">
+            <h4 style=\"color: #fff; margin-bottom: 16px; display: flex; align-items: center; gap: 8px;\">
+              <span style=\"font-size: 24px;\">${period.icon}</span>
+              ${period.name} Inventory (${period.data.period})
+            </h4>
+            <div style=\"font-size: 12px; color: #9aa0a6; margin-bottom: 16px;\">
+              Avg footfall: ${period.data.footfall.avg_per_day} visitors/day
+            </div>
+        `;
+        
+        if (topItems.length === 0) {
+          html += '<div style=\"padding: 20px; text-align: center; color: #9aa0a6;\">No data available</div>';
+        } else {
+          topItems.forEach((item, index) => {
+            const shelfLife = getShelfLife(item.name);
+            const prepFrequency = shelfLife.hours <= 4 ? '⚠️ Prepare every few hours' : 
+                                  shelfLife.hours <= 24 ? '✅ Prepare daily' : 
+                                  '📦 Stock weekly';
+            
+            html += `
+              <div style=\"background: #17181a; border: 1px solid #2a2d31; border-radius: 8px; padding: 16px; margin-bottom: 12px;\">
+                <div style=\"display: flex; justify-content: space-between; align-items: start; margin-bottom: 8px;\">
+                  <div style=\"flex: 1;\">
+                    <div style=\"font-weight: 600; color: #fff; font-size: 14px;\">${index + 1}. ${item.name}</div>
+                    <div style=\"font-size: 12px; color: ${period.color}; margin-top: 4px;\">
+                      ${item.quantity} orders • ₹${item.revenue.toFixed(0)} revenue
+                    </div>
+                  </div>
+                  <div style=\"text-align: right;\">
+                    <span style=\"background: ${period.color}; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;\">${shelfLife.category}</span>
+                  </div>
+                </div>
+                <div style=\"border-top: 1px solid #2a2d31; padding-top: 8px; margin-top: 8px;\">
+                  <div style=\"font-size: 11px; color: #9aa0a6; margin-bottom: 4px;\">
+                    <strong>Shelf Life:</strong> ${shelfLife.hours < 24 ? shelfLife.hours + ' hours' : Math.round(shelfLife.hours/24) + ' days'}
+                  </div>
+                  <div style=\"font-size: 11px; color: #6d7377;\">
+                    <strong>Storage:</strong> ${shelfLife.storage}
+                  </div>
+                  <div style=\"font-size: 11px; color: #10b981; margin-top: 6px; font-weight: 600;\">
+                    ${prepFrequency}
+                  </div>
+                </div>
+              </div>
+            `;
+          });
+        }
+        
+        html += '</div>';
+      });
+      
+      html += '</div>';
+      
+      // Add general recommendations
+      html += `
+        <div style=\"margin-top: 24px; padding: 20px; background: #17181a; border: 1px solid #2a2d31; border-radius: 12px;\">
+          <h4 style=\"color: #fff; margin-bottom: 12px;\">💡 General Inventory Guidelines</h4>
+          <div style=\"display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px;\">
+            <div>
+              <div style=\"font-weight: 600; color: #ef4444; font-size: 13px; margin-bottom: 6px;\">⚠️ High Turnover (< 4 hours)</div>
+              <div style=\"font-size: 12px; color: #9aa0a6;\">Prepare in small batches throughout the day. Monitor demand closely.</div>
+            </div>
+            <div>
+              <div style=\"font-weight: 600; color: #f59e0b; font-size: 13px; margin-bottom: 6px;\">✅ Daily Fresh (4-24 hours)</div>
+              <div style=\"font-size: 12px; color: #9aa0a6;\">Prepare fresh each morning. Discard leftovers at end of day.</div>
+            </div>
+            <div>
+              <div style=\"font-weight: 600; color: #10b981; font-size: 13px; margin-bottom: 6px;\">📦 Stock Items (> 24 hours)</div>
+              <div style=\"font-size: 12px; color: #9aa0a6;\">Maintain adequate stock levels. Check expiry dates weekly.</div>
+            </div>
+          </div>
+        </div>
+      `;
+      
+      document.getElementById('inventoryRecommendationsContainer').innerHTML = html;
+    })
+    .catch(error => {
+      console.error('Error loading inventory recommendations:', error);
+      document.getElementById('inventoryRecommendationsContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #ff6b6b;">Failed to load inventory recommendations</div>';
     });
 }
 
@@ -2516,9 +2743,25 @@ async function loadSalesData() {
     console.log("Fetching sales data...");
     updateMonthHeaders();
 
+    // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
+    if (selected_restaurant && selected_restaurant.id !== 3) {
+        console.log('Non-main branch selected - showing zero data for sales analytics');
+        // Show zero data
+        document.getElementById('sa-total-sales').textContent = '₹0';
+        document.getElementById('sa-order-count').textContent = '0';
+        document.getElementById('sa-avg-value').textContent = '₹0';
+        renderSalesTrend([]);
+        renderPaymentModes([]);
+        renderOrderTypes([]);
+        const tbody = document.querySelector('#sa-top-items-table tbody');
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #9aa0a6;">PetPooja API not available for this branch</td></tr>';
+        return;
+    }
+
     try {
         // 1. Fetch Daily Sales (Last 7 days)
         const salesRes = await fetch(`${FASTAPI_URL}/analytics/sales-daily?days=7&token=${API_TOKEN}`);
+        if (!salesRes.ok) throw new Error(`HTTP ${salesRes.status}`);
         const salesData = await salesRes.json();
         renderSalesTrend(salesData);
         
@@ -2536,21 +2779,33 @@ async function loadSalesData() {
 
         // 2. Fetch Payment Modes
         const payRes = await fetch(`${FASTAPI_URL}/analytics/payment-modes?token=${API_TOKEN}`);
+        if (!payRes.ok) throw new Error(`HTTP ${payRes.status}`);
         const payData = await payRes.json();
         renderPaymentModes(payData);
 
         // 3. Fetch Order Types (Online/Offline)
         const typeRes = await fetch(`${FASTAPI_URL}/analytics/order-types?token=${API_TOKEN}`);
+        if (!typeRes.ok) throw new Error(`HTTP ${typeRes.status}`);
         const typeData = await typeRes.json();
         renderOrderTypes(typeData);
 
         // 4. Fetch Top Items
         const itemRes = await fetch(`${FASTAPI_URL}/analytics/top-items?limit=5&token=${API_TOKEN}`);
+        if (!itemRes.ok) throw new Error(`HTTP ${itemRes.status}`);
         const itemData = await itemRes.json();
         renderTopItems(itemData);
 
     } catch (error) {
         console.error("Error fetching sales data:", error);
+        // Show error message when external API is unreachable
+        document.getElementById('sa-total-sales').textContent = '₹0';
+        document.getElementById('sa-order-count').textContent = '0';
+        document.getElementById('sa-avg-value').textContent = '₹0';
+        renderSalesTrend([]);
+        renderPaymentModes([]);
+        renderOrderTypes([]);
+        const tbody = document.querySelector('#sa-top-items-table tbody');
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #ff6b6b;">⚠️ External PetPooja API Server Unreachable</td></tr>';
     }
 }
 
@@ -2684,6 +2939,27 @@ function updateMonthHeaders() {
 // ============ MENU TIME POPULARITY FUNCTIONS ============
 
 async function loadMenuTimePopularity() {
+    // Check if non-main branch is selected (only main branch id=3 has PetPooja API)
+    if (selected_restaurant && selected_restaurant.id !== 3) {
+        console.log('Non-main branch selected - showing zero data for menu time popularity');
+        showMenuTimeError('PetPooja API not available for this branch');
+        // Clear all period data
+        ['morning', 'afternoon', 'evening'].forEach(period => {
+            const revenueEl = document.getElementById(`mtp-${period}-revenue`);
+            const qtyEl = document.getElementById(`mtp-${period}-qty`);
+            const footfallEl = document.getElementById(`mtp-${period}-footfall`);
+            const tableBody = document.getElementById(`mtp-${period}-table`);
+            const chartContainer = document.getElementById(`mtp-${period}-chart`);
+            if (revenueEl) revenueEl.textContent = '₹0';
+            if (qtyEl) qtyEl.textContent = '0';
+            if (footfallEl) footfallEl.textContent = '0';
+            if (tableBody) tableBody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">No data available for this branch</td></tr>';
+            if (chartContainer) chartContainer.innerHTML = '<div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>';
+        });
+        document.getElementById('mtp-suggestions').innerHTML = '<div style="padding: 20px; text-align: center; color: #6d7377;">No suggestions available</div>';
+        return;
+    }
+
     try {
         const daysFilter = document.getElementById('menuPopularityDaysFilter');
         const days = daysFilter ? daysFilter.value : 30;
