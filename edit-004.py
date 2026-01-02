@@ -1286,12 +1286,13 @@ class PeopleCounterProcessor(threading.Thread):
         # No cap to release when using FrameHub
 
 class QueueMonitorProcessor(threading.Thread):
-    def __init__(self, rtsp_url, channel_id, channel_name, model):
+    def __init__(self, rtsp_url, channel_id, channel_name, model, restaurant_id=None):
         super().__init__(name=channel_name)
         self.rtsp_url = rtsp_url
         self.channel_id = channel_id
         self.channel_name = channel_name
         self.model = model
+        self.restaurant_id = restaurant_id  # Store restaurant ID
         self.is_running = True
         self.lock = threading.Lock()
         self.latest_frame = None
@@ -1330,7 +1331,19 @@ class QueueMonitorProcessor(threading.Thread):
     #             logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
     #             self._use_fallback_roi()
     def _load_roi_from_db(self):
-        """Load ROI from database"""
+        """Load ROI from database or use hardcoded values based on restaurant ID
+        
+        For main Tea Toast store (restaurant_id=2), always use hardcoded ROI from code.
+        For other stores (like Sangli, restaurant_id=1), fetch from database.
+        """
+        # Check if this is the main Tea Toast store (ID 2)
+        if self.restaurant_id == 2:
+            logging.info(f"🏪 Main Tea Toast store (ID 2) detected - using hardcoded ROI for {self.channel_name}")
+            self._use_fallback_roi()
+            return
+        
+        # For other restaurants (like Sangli), fetch from database
+        logging.info(f"🏪 Restaurant ID {self.restaurant_id} - attempting to load ROI from database for {self.channel_name}")
         with SessionLocal() as db:
             roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
             if roi_record and roi_record.roi_points:
@@ -4521,10 +4534,12 @@ def _start_streams_from_data(stream_assignments):
         if 'QueueMonitor' in active_app_names:
             model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
             if model_obj:
-                qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj)
+                # Pass restaurant_id to QueueMonitor processor
+                restaurant_id = restaurant.id if restaurant else None
+                qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj, restaurant_id=restaurant_id)
                 qm_processor.frame_hub = hub
                 stream_processors[channel_id].append(qm_processor); qm_processor.start()
-                logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}).")
+                logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}) - Restaurant ID: {restaurant_id}")
                 atexit.register(qm_processor.shutdown); active_app_names.remove('QueueMonitor')
         if 'KitchenCompliance' in active_app_names:
             # KitchenComplianceProcessor loads its own unified model internally
