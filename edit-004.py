@@ -178,8 +178,8 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
 # THIS IS NOW A FALLBACK if no ROI is in the database.
 QUEUE_MONITOR_ROI_CONFIG = {
     "Checkout Queue": {
-        "roi_points": [[0.391,0.206],[0.732,0.553],[0.356,0.668],[0.247,0.311]], #[[0.436, 0.288], [0.624, 0.509], [0.846, 0.438], [0.643, 0.19]],
-        "secondary_roi_points":[[0.451,0.273],[0.598,0.214],[0.803,0.371],[0.635,0.508]],#[[0.399, 0.181], [0.163, 0.425], [0.361, 0.931], [0.861, 0.653]],
+        "roi_points": [[0.5549999952316285, 0.5744444105360244], [0.4456249952316284, 0.5272221883138021], [0.3081249952316284, 0.3105555216471354], [0.08624999523162842, 0.4272221883138021], [0.19249999523162842, 0.7938888549804688]],
+        "secondary_roi_points": [[0.5924999952316284, 0.5355555216471354], [0.49874999523162844, 0.502222188313802], [0.3487499952316284, 0.31333329942491317], [0.38156249523162844, 0.3105555216471354], [0.3940624952316284, 0.2883332994249132], [0.5003124952316285, 0.26888885498046877], [0.6721874952316285, 0.4633332994249132]],
     }
 }
 QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
@@ -1332,24 +1332,18 @@ class QueueMonitorProcessor(threading.Thread):
     #             logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
     #             self._use_fallback_roi()
     def _load_roi_from_db(self):
-        """Load ROI from database or use hardcoded values based on restaurant ID
+        """Load ROI from database first, fallback to hardcoded values if not found
         
-        For main Tea Toast store (restaurant_id=2), always use hardcoded ROI from code.
-        For other stores (like Sangli, restaurant_id=1), fetch from database.
+        Priority: Database ROI > Hardcoded ROI
+        This ensures server and local use the same ROI from database.
         """
-        # Check if this is the main Tea Toast store (ID 2)
-        if self.restaurant_id == 2:
-            logging.info(f"🏪 Main Tea Toast store (ID 2) detected - using hardcoded ROI for {self.channel_name}")
-            self._use_fallback_roi()
-            return
-        
-        # For other restaurants (like Sangli), fetch from database
+        # Always try to load from database first
         logging.info(f"🏪 Restaurant ID {self.restaurant_id} - attempting to load ROI from database for {self.channel_name}")
         with SessionLocal() as db:
             roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
             if roi_record and roi_record.roi_points:
                 try:
-                    points = json.loads(roi_record.roi_points)
+                    points = json.loads(roi_record.roi_points) if isinstance(roi_record.roi_points, str) else roi_record.roi_points
                     self.normalized_main_roi = points.get("main", [])
                     self.normalized_secondary_roi = points.get("secondary", [])
                     
@@ -1365,7 +1359,7 @@ class QueueMonitorProcessor(threading.Thread):
                     logging.error(f"Failed to parse ROI JSON from DB: {e}. Using fallback.")
                     self._use_fallback_roi()
             else:
-                logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
+                logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using hardcoded fallback.")
                 self._use_fallback_roi()
 
     def _use_fallback_roi(self):
