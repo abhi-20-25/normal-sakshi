@@ -1581,7 +1581,7 @@ class QueueMonitorProcessor(threading.Thread):
     def process_frame(self, frame):
         current_time = time.time()
         # Use lower confidence for better detection of partially occluded people (especially in counter area)
-        results = safe_track_persons(self.model, frame, conf=0.15, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
+        results = safe_track_persons(self.model, frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results and len(results) > 0) else None
@@ -1756,32 +1756,32 @@ class QueueMonitorProcessor(threading.Thread):
         # Create annotated frame with person bounding boxes
         annotated_frame = frame.copy()
         
-        # Draw ROI polygons on the frame for monitoring - HIDDEN FOR PRODUCTION
+        # Draw ROI polygons on the frame for monitoring
         # Main ROI (Queue area) - Blue polygon
-        # if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-        #     try:
-        #         roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
-        #         cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
-        #         # Add label for main ROI
-        #         if len(roi_points) > 0:
-        #             label_pos = tuple(roi_points[0])
-        #             cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
-        #                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-        #     except Exception as e:
-        #         logging.warning(f"Could not draw main ROI: {e}")
+        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+            try:
+                roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
+                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
+                # Add label for main ROI
+                if len(roi_points) > 0:
+                    label_pos = tuple(roi_points[0])
+                    cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+            except Exception as e:
+                logging.warning(f"Could not draw main ROI: {e}")
         
         # Secondary ROI (Counter area) - Green polygon
-        # if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-        #     try:
-        #         roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
-        #         cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
-        #         # Add label for secondary ROI
-        #         if len(roi_points) > 0:
-        #             label_pos = tuple(roi_points[0])
-        #             cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
-        #                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        #     except Exception as e:
-        #         logging.warning(f"Could not draw secondary ROI: {e}")
+        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+            try:
+                roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
+                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
+                # Add label for secondary ROI
+                if len(roi_points) > 0:
+                    label_pos = tuple(roi_points[0])
+                    cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            except Exception as e:
+                logging.warning(f"Could not draw secondary ROI: {e}")
         
         # Draw person bounding boxes
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
@@ -2760,7 +2760,7 @@ def dashboard():
     if db_connected:
         try:
             with SessionLocal() as db:
-                restaurant_query = db.query(Restaurant).filter(Restaurant.is_active == True).order_by(Restaurant.id.desc()).all()
+                restaurant_query = db.query(Restaurant).filter(Restaurant.is_active == True).order_by(Restaurant.restaurant_name).all()
                 restaurants = [
                     {
                         'id': r.id,
