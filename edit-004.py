@@ -1581,7 +1581,7 @@ class QueueMonitorProcessor(threading.Thread):
     def process_frame(self, frame):
         current_time = time.time()
         # Use lower confidence for better detection of partially occluded people (especially in counter area)
-        results = safe_track_persons(self.model, frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
+        results = safe_track_persons(self.model, frame, conf=0.15, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results and len(results) > 0) else None
