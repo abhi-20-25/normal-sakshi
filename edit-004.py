@@ -1756,32 +1756,32 @@ class QueueMonitorProcessor(threading.Thread):
         # Create annotated frame with person bounding boxes
         annotated_frame = frame.copy()
         
-        # Draw ROI polygons on the frame for monitoring
+        # Draw ROI polygons on the frame for monitoring - HIDDEN FOR PRODUCTION
         # Main ROI (Queue area) - Blue polygon
-        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-            try:
-                roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
-                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
-                # Add label for main ROI
-                if len(roi_points) > 0:
-                    label_pos = tuple(roi_points[0])
-                    cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            except Exception as e:
-                logging.warning(f"Could not draw main ROI: {e}")
+        # if self.roi_poly.is_valid and not self.roi_poly.is_empty:
+        #     try:
+        #         roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
+        #         cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
+        #         # Add label for main ROI
+        #         if len(roi_points) > 0:
+        #             label_pos = tuple(roi_points[0])
+        #             cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
+        #                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        #     except Exception as e:
+        #         logging.warning(f"Could not draw main ROI: {e}")
         
         # Secondary ROI (Counter area) - Green polygon
-        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-            try:
-                roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
-                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
-                # Add label for secondary ROI
-                if len(roi_points) > 0:
-                    label_pos = tuple(roi_points[0])
-                    cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            except Exception as e:
-                logging.warning(f"Could not draw secondary ROI: {e}")
+        # if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
+        #     try:
+        #         roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
+        #         cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
+        #         # Add label for secondary ROI
+        #         if len(roi_points) > 0:
+        #             label_pos = tuple(roi_points[0])
+        #             cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
+        #                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        #     except Exception as e:
+        #         logging.warning(f"Could not draw secondary ROI: {e}")
         
         # Draw person bounding boxes
         if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
@@ -2760,7 +2760,7 @@ def dashboard():
     if db_connected:
         try:
             with SessionLocal() as db:
-                restaurant_query = db.query(Restaurant).filter(Restaurant.is_active == True).order_by(Restaurant.restaurant_name).all()
+                restaurant_query = db.query(Restaurant).filter(Restaurant.is_active == True).order_by(Restaurant.id.desc()).all()
                 restaurants = [
                     {
                         'id': r.id,
