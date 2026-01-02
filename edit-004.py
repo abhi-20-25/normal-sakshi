@@ -4790,6 +4790,21 @@ def start_streams():
                         
                         logging.info(f"  📹 {camera.channel_name} → {', '.join(app_names)}")
                     
+                    # HARDCODED: Add IdleTimeMonitor for cam_f822b0bf4e if not in database
+                    hardcoded_idle_rtsp = "rtsp://admin:TNEURAL123@103.211.216.58:554/Streaming/Channels/501"
+                    if hardcoded_idle_rtsp not in stream_assignments:
+                        logging.info("💡 Adding hardcoded IdleTimeMonitor configuration")
+                        stream_assignments[hardcoded_idle_rtsp]['apps'].add('IdleTimeMonitor')
+                        stream_assignments[hardcoded_idle_rtsp]['name'] = 'Checkout Queue'
+                        stream_assignments[hardcoded_idle_rtsp]['id'] = 'cam_f822b0bf4e'
+                        stream_assignments[hardcoded_idle_rtsp]['restaurant'] = restaurant if cameras_data else None
+                        logging.info(f"  📹 Checkout Queue (HARDCODED) → IdleTimeMonitor")
+                    else:
+                        # Add IdleTimeMonitor to existing stream if not present
+                        if 'IdleTimeMonitor' not in stream_assignments[hardcoded_idle_rtsp]['apps']:
+                            stream_assignments[hardcoded_idle_rtsp]['apps'].add('IdleTimeMonitor')
+                            logging.info(f"  ➕ Added IdleTimeMonitor to existing Checkout Queue stream")
+                    
                     # Start streams from database data
                     _start_streams_from_data(stream_assignments)
                     logging.info("=" * 70)
@@ -4809,6 +4824,14 @@ def start_streams():
         return
     
     stream_assignments = defaultdict(lambda: {'apps': set(), 'name': '', 'id': '', 'restaurant': None})
+    
+    # HARDCODED: Add IdleTimeMonitor for cam_f822b0bf4e
+    hardcoded_idle_rtsp = "rtsp://admin:TNEURAL123@103.211.216.58:554/Streaming/Channels/501"
+    stream_assignments[hardcoded_idle_rtsp]['apps'].add('IdleTimeMonitor')
+    stream_assignments[hardcoded_idle_rtsp]['name'] = 'Checkout Queue'
+    stream_assignments[hardcoded_idle_rtsp]['id'] = 'cam_f822b0bf4e'
+    logging.info("💡 Added hardcoded IdleTimeMonitor → Checkout Queue")
+    
     with open(RTSP_LINKS_FILE, 'r') as f:
         for line in f:
             if line.strip() and not line.startswith('#'):
