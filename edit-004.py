@@ -2771,10 +2771,15 @@ def dashboard():
                     for r in restaurant_query
                 ]
                 
-                # DO NOT auto-select first restaurant - show all cameras by default
-                # This ensures all Kitchen Compliance cameras are visible
-                # if not restaurant_id and restaurants:
-                #     restaurant_id = restaurants[0]['id']
+                # Default to main_store (restaurant_id=2) if no restaurant specified
+                if not restaurant_id and restaurants:
+                    # Find main_store (id=2) and set as default
+                    main_store = next((r for r in restaurants if r['id'] == 2), None)
+                    if main_store:
+                        restaurant_id = 2
+                    elif restaurants:
+                        # Fallback to first restaurant if main_store not found
+                        restaurant_id = restaurants[0]['id']
                 
                 # Get selected restaurant details
                 if restaurant_id:
