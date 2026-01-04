@@ -509,15 +509,61 @@
                 <span id="ov-kitchen-gloves" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
               
-              <div onclick="filterKitchenViolations('uniform')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
+              <div onclick="filterKitchenViolations('uniform')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
                 <div style="display: flex; align-items: center; gap: 10px;">
                   <span style="font-size: 24px;">👕</span>
                   <span style="font-size: 14px; color: #e0e0e0;">Uniform</span>
                 </div>
                 <span id="ov-kitchen-uniform" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
               </div>
+              
+              <div onclick="filterKitchenViolations('phone')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">📱</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Mobile Usage</span>
+                </div>
+                <span id="ov-kitchen-phone" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
+              </div>
             </div>
             <div onclick="event.stopPropagation(); clearKitchenFilter(); switchView('kitchen-compliance');" style="margin-top:15px;color:#3b82f6;font-size:14px;cursor:pointer;">Click to view details →</div>
+          </div>
+          
+          <div class="card" onclick="switchView('front-end-violation')" style="min-height: 280px;">
+            <h3 style="font-size: 16px; margin-bottom: 15px;">🚨 Front Office Violation</h3>
+            <div style="margin-top: 10px;">
+              <div onclick="filterFrontOfficeViolations('cap')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">🧢</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Cap</span>
+                </div>
+                <span id="ov-frontoffice-cap" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
+              </div>
+              
+              <div onclick="filterFrontOfficeViolations('apron')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">👔</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Apron</span>
+                </div>
+                <span id="ov-frontoffice-apron" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
+              </div>
+              
+              <div onclick="filterFrontOfficeViolations('gloves')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">🧤</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Gloves</span>
+                </div>
+                <span id="ov-frontoffice-gloves" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
+              </div>
+              
+              <div onclick="filterFrontOfficeViolations('phone')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: background 0.2s;" onmouseover="this.style.background='#252830'" onmouseout="this.style.background='#1a1d21'">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                  <span style="font-size: 24px;">📱</span>
+                  <span style="font-size: 14px; color: #e0e0e0;">Mobile Usage</span>
+                </div>
+                <span id="ov-frontoffice-phone" style="color: #9aa0a6; font-size: 13px; font-weight: 600;"></span>
+              </div>
+            </div>
+            <div onclick="event.stopPropagation(); clearFrontOfficeFilter(); switchView('front-end-violation');" style="margin-top:15px;color:#3b82f6;font-size:14px;cursor:pointer;">Click to view details →</div>
           </div>
           
           <div class="card" onclick="switchView('occupancy')" style="min-height: 280px;">
@@ -1986,6 +2032,7 @@ socket.on('kitchen_update', (data) => {
     const apronCompliant = data.apron_compliant || 0;
     const glovesCompliant = data.gloves_compliant || 0;
     const uniformCompliant = data.uniform_compliant || 0;
+    const phoneViolation = data.phone_violation || false;
     
     // Update Chef Cap status
     const capEl = document.getElementById('ov-kitchen-cap');
@@ -2044,6 +2091,73 @@ socket.on('kitchen_update', (data) => {
       } else {
         uniformEl.textContent = '⚠ Violation Detected';
         uniformEl.style.color = '#e04b4b';
+      }
+    }
+    
+    // Update Phone status
+    const phoneEl = document.getElementById('ov-kitchen-phone');
+    if (phoneEl) {
+      if (phoneViolation) {
+        phoneEl.textContent = '⚠ Violation Detected';
+        phoneEl.style.color = '#e04b4b';
+      } else {
+        phoneEl.textContent = '✓ OK';
+        phoneEl.style.color = '#26a44b';
+      }
+    }
+  }
+});
+
+// Front Office Violation updates (using Generic app socket events)
+socket.on('generic_update', (data) => {
+  if (data.channel_id === channels.Generic) {
+    const violations = data.violations || {};
+    
+    // Update Cap status
+    const capEl = document.getElementById('ov-frontoffice-cap');
+    if (capEl) {
+      if (violations.cap) {
+        capEl.textContent = '⚠ Violation Detected';
+        capEl.style.color = '#e04b4b';
+      } else {
+        capEl.textContent = '✓ OK';
+        capEl.style.color = '#26a44b';
+      }
+    }
+    
+    // Update Apron status
+    const apronEl = document.getElementById('ov-frontoffice-apron');
+    if (apronEl) {
+      if (violations.apron) {
+        apronEl.textContent = '⚠ Violation Detected';
+        apronEl.style.color = '#e04b4b';
+      } else {
+        apronEl.textContent = '✓ OK';
+        apronEl.style.color = '#26a44b';
+      }
+    }
+    
+    // Update Gloves status
+    const glovesEl = document.getElementById('ov-frontoffice-gloves');
+    if (glovesEl) {
+      if (violations.gloves) {
+        glovesEl.textContent = '⚠ Violation Detected';
+        glovesEl.style.color = '#e04b4b';
+      } else {
+        glovesEl.textContent = '✓ OK';
+        glovesEl.style.color = '#26a44b';
+      }
+    }
+    
+    // Update Phone status
+    const phoneEl = document.getElementById('ov-frontoffice-phone');
+    if (phoneEl) {
+      if (violations.phone) {
+        phoneEl.textContent = '⚠ Violation Detected';
+        phoneEl.style.color = '#e04b4b';
+      } else {
+        phoneEl.textContent = '✓ OK';
+        phoneEl.style.color = '#26a44b';
       }
     }
   }
