@@ -2886,11 +2886,12 @@ def get_history(app_name):
                     start_date, end_date = datetime.strptime(start_date_str, '%Y-%m-%d').date(), datetime.strptime(end_date_str, '%Y-%m-%d').date()
                     query = query.filter(Detection.timestamp.between(start_date, datetime.combine(end_date, datetime.max.time())))
                 except ValueError: return jsonify({"error": "Invalid date format. Use YYYY-MM-DD."}), 400
-            # Filter by violation type for Kitchen Compliance
-            if violation_type and app_name == 'KitchenCompliance':
+            # Filter by violation type for Kitchen Compliance and Generic (Front Office)
+            if violation_type and app_name in ['KitchenCompliance', 'Generic']:
                 query = query.filter(Detection.message.like(f'%{violation_type}%'))
             total_detections, detections = query.count(), query.order_by(Detection.timestamp.desc()).offset(offset).limit(limit).all()
-            return jsonify({'detections': [{'timestamp': d.timestamp.strftime("%Y-%m-%d %H:%M:%S"),'message': d.message,'channel_id': d.channel_id,'media_url': url_for('static', filename=d.media_path)} for d in detections],'total': total_detections, 'page': page, 'limit': limit})
+            total_pages = (total_detections + limit - 1) // limit  # Calculate total pages
+            return jsonify({'detections': [{'timestamp': d.timestamp.strftime("%Y-%m-%d %H:%M:%S"),'message': d.message,'channel_id': d.channel_id,'media_url': url_for('static', filename=d.media_path)} for d in detections],'total': total_detections, 'page': page, 'limit': limit, 'total_pages': total_pages})
         except Exception as e:
             logging.error(f"Error fetching history: {e}")
             return jsonify({"error": "Could not fetch history from database"}), 500

@@ -207,6 +207,105 @@
 .restaurant-badge .icon {
     font-size: 14px;
 }
+
+/* Mobile Responsive Styles */
+@media (max-width: 768px) {
+    .container {
+        grid-template-columns: 1fr;
+        padding: 12px;
+        gap: 12px;
+    }
+    
+    .sidebar {
+        position: static;
+        padding: 12px;
+    }
+    
+    .brand h1 {
+        font-size: 14px;
+    }
+    
+    .nav a {
+        padding: 10px;
+        font-size: 13px;
+    }
+    
+    .nav .icon {
+        width: 28px;
+        height: 28px;
+        font-size: 16px;
+    }
+    
+    .topbar {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 12px;
+    }
+    
+    .title h2 {
+        font-size: 22px;
+    }
+    
+    .restaurant-selector {
+        width: 100%;
+        margin-right: 0;
+    }
+    
+    .restaurant-selector select {
+        min-width: 100%;
+    }
+    
+    .metrics {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+    
+    .camera-grid {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+    
+    .stats-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+    
+    .history-grid {
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 10px;
+    }
+    
+    .video-box {
+        max-width: 100%;
+    }
+    
+    /* Filter cards responsive */
+    div[style*="flex-wrap: wrap"] {
+        gap: 8px !important;
+    }
+    
+    div[style*="flex-wrap: wrap"] > div {
+        min-width: calc(50% - 4px) !important;
+        padding: 10px 12px !important;
+    }
+}
+
+@media (max-width: 480px) {
+    .history-grid {
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    }
+    
+    .pagination button {
+        padding: 6px 12px;
+        font-size: 12px;
+        margin: 0 3px;
+    }
+    
+    .back-btn {
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+}
   </style>
 </head>
 <body>
@@ -875,10 +974,62 @@
           </div>
         </div>
         <div class="report-section">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <h3 style="margin: 0;">History</h3>
-            <button id="clear-filter-btn" onclick="clearKitchenFilter()" style="display: none; padding: 6px 12px; background: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 12px;">Clear Filter</button>
+          <h3>Detection History</h3>
+          
+          <!-- Violation Filter Cards -->
+          <div style="margin-bottom: 20px;">
+            <h4 style="color: #9aa0a6; font-size: 13px; margin-bottom: 12px; font-weight: 500;">📊 Filter by Violation Type</h4>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <!-- All Violations -->
+              <div onclick="clearKitchenFilter()" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="kc-filter-all" class="active-filter">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">📋</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">All</span>
+                </div>
+              </div>
+              
+              <!-- Cap Filter -->
+              <div onclick="filterKitchenViolations('cap')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="kc-filter-cap">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🧢</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Cap</span>
+                </div>
+              </div>
+              
+              <!-- Apron Filter -->
+              <div onclick="filterKitchenViolations('apron')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="kc-filter-apron">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">👔</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Apron</span>
+                </div>
+              </div>
+              
+              <!-- Gloves Filter -->
+              <div onclick="filterKitchenViolations('gloves')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="kc-filter-gloves">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🧤</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Gloves</span>
+                </div>
+              </div>
+              
+              <!-- Uniform Filter -->
+              <div onclick="filterKitchenViolations('uniform')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="kc-filter-uniform">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">👕</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Uniform</span>
+                </div>
+              </div>
+              
+              <!-- Phone Filter -->
+              <div onclick="filterKitchenViolations('phone')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="kc-filter-phone">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">📱</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Phone</span>
+                </div>
+              </div>
+            </div>
           </div>
+          
           <div class="history-grid" id="kc-history"></div>
           <div class="pagination" id="kc-pagination"></div>
         </div>
@@ -899,6 +1050,53 @@
         </div>
         <div class="report-section">
           <h3>Detection History</h3>
+          
+          <!-- Violation Filter Cards -->
+          <div style="margin-bottom: 20px;">
+            <h4 style="color: #9aa0a6; font-size: 13px; margin-bottom: 12px; font-weight: 500;">📊 Filter by Violation Type</h4>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+              <!-- All Violations -->
+              <div onclick="clearFrontOfficeFilter()" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="fev-filter-all" class="active-filter">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">📋</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">All</span>
+                </div>
+              </div>
+              
+              <!-- Cap Filter -->
+              <div onclick="filterFrontOfficeViolations('cap')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="fev-filter-cap">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🧢</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Cap</span>
+                </div>
+              </div>
+              
+              <!-- Apron Filter -->
+              <div onclick="filterFrontOfficeViolations('apron')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="fev-filter-apron">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">👔</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Apron</span>
+                </div>
+              </div>
+              
+              <!-- Gloves Filter -->
+              <div onclick="filterFrontOfficeViolations('gloves')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="fev-filter-gloves">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">🧤</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Gloves</span>
+                </div>
+              </div>
+              
+              <!-- Phone Filter -->
+              <div onclick="filterFrontOfficeViolations('phone')" style="display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: #1a1d21; border-radius: 8px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; min-width: 100px;" onmouseover="this.style.background='#252830'" onmouseout="if(!this.classList.contains('active-filter'))this.style.background='#1a1d21'" id="fev-filter-phone">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <span style="font-size: 18px;">📱</span>
+                  <span style="color: #e0e0e0; font-weight: 500; font-size: 14px;">Phone</span>
+                </div>
+              </div>
+            </div>
+          </div>
+          
           <div class="history-grid" id="fev-history"></div>
           <div class="pagination" id="fev-pagination"></div>
         </div>
@@ -1859,19 +2057,87 @@ document.querySelectorAll('.nav-link').forEach(link => {
 });
 function filterKitchenViolations(violationType) {
   currentViolationFilter = violationType;
-  switchView('kitchen-compliance');
+  
+  // Update active state on filter cards
+  document.querySelectorAll('[id^="kc-filter-"]').forEach(card => {
+    card.classList.remove('active-filter');
+    card.style.border = '2px solid transparent';
+    card.style.background = '#1a1d21';
+  });
+  
+  const activeCard = document.getElementById('kc-filter-' + violationType);
+  if (activeCard) {
+    activeCard.classList.add('active-filter');
+    activeCard.style.border = '2px solid #3b82f6';
+    activeCard.style.background = '#1e293b';
+  }
+  
   loadHistory('kitchen-compliance', 1, violationType);
-  // Show clear filter button
-  const clearBtn = document.getElementById('clear-filter-btn');
-  if (clearBtn) clearBtn.style.display = 'block';
 }
 
 function clearKitchenFilter() {
   currentViolationFilter = null;
+  
+  // Reset all filter cards
+  document.querySelectorAll('[id^="kc-filter-"]').forEach(card => {
+    card.classList.remove('active-filter');
+    card.style.border = '2px solid transparent';
+    card.style.background = '#1a1d21';
+  });
+  
+  // Highlight "All" card
+  const allCard = document.getElementById('kc-filter-all');
+  if (allCard) {
+    allCard.classList.add('active-filter');
+    allCard.style.border = '2px solid #3b82f6';
+    allCard.style.background = '#1e293b';
+  }
+  
   loadHistory('kitchen-compliance', 1, null);
-  // Hide clear filter button
-  const clearBtn = document.getElementById('clear-filter-btn');
-  if (clearBtn) clearBtn.style.display = 'none';
+}
+
+// Front Office Violation Filtering
+let currentFrontOfficeFilter = null;
+
+function filterFrontOfficeViolations(violationType) {
+  currentFrontOfficeFilter = violationType;
+  
+  // Update active state on filter cards
+  document.querySelectorAll('[id^="fev-filter-"]').forEach(card => {
+    card.classList.remove('active-filter');
+    card.style.border = '2px solid transparent';
+    card.style.background = '#1a1d21';
+  });
+  
+  const activeCard = document.getElementById('fev-filter-' + violationType);
+  if (activeCard) {
+    activeCard.classList.add('active-filter');
+    activeCard.style.border = '2px solid #3b82f6';
+    activeCard.style.background = '#1e293b';
+  }
+  
+  loadHistory('front-end-violation', 1, violationType);
+}
+
+function clearFrontOfficeFilter() {
+  currentFrontOfficeFilter = null;
+  
+  // Reset all filter cards
+  document.querySelectorAll('[id^="fev-filter-"]').forEach(card => {
+    card.classList.remove('active-filter');
+    card.style.border = '2px solid transparent';
+    card.style.background = '#1a1d21';
+  });
+  
+  // Highlight "All" card
+  const allCard = document.getElementById('fev-filter-all');
+  if (allCard) {
+    allCard.classList.add('active-filter');
+    allCard.style.border = '2px solid #3b82f6';
+    allCard.style.background = '#1e293b';
+  }
+  
+  loadHistory('front-end-violation', 1, null);
 }
 
 function switchView(view) {
@@ -1910,11 +2176,17 @@ function switchView(view) {
         loadPromotionEffectiveness();
     }
     if (view !== 'overview' && view !== 'sales-analytics' && view !== 'conversion-analytics' && view !== 'menu-time-popularity' && view !== 'promotion-effectiveness') {
-      // Reset filter when switching views normally (not from filterKitchenViolations)
-      if (view !== 'kitchen-compliance') {
+      // Reset filters when switching views
+      if (view === 'kitchen-compliance') {
+        // Reset to "All" filter for kitchen
+        clearKitchenFilter();
+      } else if (view === 'front-end-violation') {
+        // Reset to "All" filter for front office
+        clearFrontOfficeFilter();
+      } else {
+        // Clear all filters for other views
         currentViolationFilter = null;
-        const clearBtn = document.getElementById('clear-filter-btn');
-        if (clearBtn) clearBtn.style.display = 'none';
+        currentFrontOfficeFilter = null;
       }
       loadHistory(view);
     }
@@ -1949,9 +2221,22 @@ function loadHistory(view, page = 1, violationType = null) {
   const h = histMap[view];
   if (!h) return;
   
-  // Store current filter for pagination
-  if (violationType !== null) currentViolationFilter = violationType;
-  const filterParam = (currentViolationFilter && view === 'kitchen-compliance') ? '&violation_type=' + currentViolationFilter : '';
+  // Store current filter for pagination (kitchen or front office)
+  if (violationType !== null) {
+    if (view === 'kitchen-compliance') {
+      currentViolationFilter = violationType;
+    } else if (view === 'front-end-violation') {
+      currentFrontOfficeFilter = violationType;
+    }
+  }
+  
+  // Build filter parameter based on view
+  let filterParam = '';
+  if (view === 'kitchen-compliance' && currentViolationFilter) {
+    filterParam = '&violation_type=' + currentViolationFilter;
+  } else if (view === 'front-end-violation' && currentFrontOfficeFilter) {
+    filterParam = '&violation_type=' + currentFrontOfficeFilter;
+  }
   
   fetch('/history/' + h.app + '?page=' + page + '&limit=12&channel_id=' + h.ch + filterParam)
     .then(res => res.json())
@@ -2780,6 +3065,13 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Refresh peak analytics every 5 minutes
   setInterval(loadPeakAnalytics, 5 * 60 * 1000);
+  
+  // Initialize Front Office filter - highlight "All" by default
+  const allCard = document.getElementById('fev-filter-all');
+  if (allCard) {
+    allCard.style.border = '2px solid #3b82f6';
+    allCard.style.background = '#1e293b';
+  }
 });
 
 async function loadSalesData() {
