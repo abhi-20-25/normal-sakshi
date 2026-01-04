@@ -97,16 +97,16 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.1, 'is_gif': False},
-    'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.1},
-    'QueueMonitor': {'model_path': 'models/yolov8n.pt' , 'confidence': 0.1},
-    'KitchenCompliance': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'confidence': 0.1},  # Unified model
-    'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.1},
-    'IdleTimeMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.1}
+    'Generic': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.3, 'is_gif': False},
+    'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
+    'QueueMonitor': {'model_path': 'models/yolov8n.pt' , 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'confidence': 0.3},  # Unified model
+    'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
+    'IdleTimeMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15}
 }
 
 # --- YOLO tracking helper (CPU-only mode) ---
-def safe_track_persons(model, frame, conf=0.1, iou=0.5, processor_name=None):
+def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
     # Validate frame before processing
     if frame is None:
         logging.warning("safe_track_persons: frame is None, returning empty result")
@@ -728,7 +728,7 @@ class MultiModelProcessor(threading.Thread):
                     filtered_detections = self.apply_smart_validation(all_detections, task['model'])
                     
                     # Apply higher confidence threshold for phone detection (reduce false positives)
-                    PHONE_MIN_CONFIDENCE = 0.1  # Lowered confidence threshold for phone detection
+                    PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
                     final_detections = []
                     for det in filtered_detections:
                         if det['class_id'] == 7:  # Using_phone
@@ -1117,7 +1117,7 @@ class PeopleCounterProcessor(threading.Thread):
                 enhanced_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_LAB2BGR)
                 
                 # Use YOLO predict (no tracking needed for line-crossing!)
-                results = safe_track_persons(self.model, enhanced_frame, conf=0.1, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
+                results = safe_track_persons(self.model, enhanced_frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
                 consecutive_errors = 0  # Reset on successful frame
                 r0 = results[0] if (results and len(results) > 0) else None
                 
@@ -1134,7 +1134,7 @@ class PeopleCounterProcessor(threading.Thread):
                     frame_area = frame_width * frame_height
                     min_box_area = frame_area * 0.003  # Minimum 0.3% of frame area
                     max_box_area = frame_area * 0.9    # Maximum 90% of frame area
-                    min_confidence = 0.1  # Lowered threshold
+                    min_confidence = 0.20  # Balanced threshold
                     
                     # Collect current frame centroids
                     current_centroids = []
@@ -1581,7 +1581,7 @@ class QueueMonitorProcessor(threading.Thread):
     def process_frame(self, frame):
         current_time = time.time()
         # Use lower confidence for better detection of partially occluded people (especially in counter area)
-        results = safe_track_persons(self.model, frame, conf=0.1, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
+        results = safe_track_persons(self.model, frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
         current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
 
         r0 = results[0] if (results and len(results) > 0) else None
@@ -1596,9 +1596,23 @@ class QueueMonitorProcessor(threading.Thread):
                 logging.info(f"Normalized secondary ROI: {self.normalized_secondary_roi}")
             self._roi_logged_once = True
         
-        if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
+        # FALLBACK: If tracking IDs are not available, use detection indices as pseudo-IDs
+        if r0 is not None and getattr(r0, 'boxes', None) is not None:
             boxes = r0.boxes.xyxy.cpu()
-            track_ids = r0.boxes.id.int().cpu().tolist()
+            
+            # Try to get tracking IDs, fallback to using detection indices
+            if getattr(r0.boxes, 'id', None) is not None:
+                track_ids = r0.boxes.id.int().cpu().tolist()
+            else:
+                # Tracking failed - use hash of box coordinates as pseudo-ID for this frame
+                track_ids = []
+                for i, box in enumerate(boxes):
+                    # Create a stable ID based on box position (will be consistent across frames for stationary objects)
+                    pseudo_id = hash((int(box[0]/10)*10, int(box[1]/10)*10, int(box[2]/10)*10, int(box[3]/10)*10)) % 100000
+                    track_ids.append(pseudo_id)
+                if len(boxes) > 0 and not hasattr(self, '_tracking_fallback_logged'):
+                    logging.warning(f"{self.channel_name}: Tracking IDs not available, using position-based pseudo-IDs")
+                    self._tracking_fallback_logged = True
             
             # Debug: Log number of detections
             if len(boxes) > 0:
@@ -1996,7 +2010,7 @@ class OccupancyMonitorProcessor(threading.Thread):
             with torch.inference_mode():
                 results = self.model(
                     frame, 
-                    conf=0.1,
+                    conf=0.15,
                     iou=0.40,
                     classes=[0],
                     verbose=False,
@@ -2189,7 +2203,7 @@ class OccupancyMonitorProcessor(threading.Thread):
     def run(self):
         """Enhanced processing loop - SMOOTH STREAMING with continuous detection"""
         logging.info(f"Starting Enhanced Occupancy Monitor for {self.channel_name}...")
-        logging.info(f"Device: {self.device.upper()}, Confidence: 0.1, Mode: CONTINUOUS (Smooth streaming)")
+        logging.info(f"Device: {self.device.upper()}, Confidence: 0.15, Mode: CONTINUOUS (Smooth streaming)")
         
         # Use FrameHub for frames
         frame_delay = 0.01
@@ -2378,7 +2392,7 @@ class IdleTimeMonitorProcessor(threading.Thread):
             results = self.model.track(
                 frame,
                 persist=True,
-                conf=0.1,
+                conf=0.15,
                 iou=0.40,
                 classes=[0],  # Person class only
                 verbose=False,
@@ -4729,7 +4743,7 @@ def load_model(model_path: str):
             dummy = _np.zeros((640, 640, 3), dtype=_np.uint8)
             with torch.inference_mode():
                 for _ in range(2):  # Reduced warmup iterations for CPU
-                    _ = model(dummy, conf=0.1, iou=0.45, imgsz=640, device='cpu', verbose=False)
+                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device='cpu', verbose=False)
         except Exception:
             pass
         
