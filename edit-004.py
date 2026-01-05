@@ -97,11 +97,11 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.3, 'is_gif': False},
+    'Generic': {'model_path': 'models/02_01_2026_teatost_best.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.3, 'is_gif': False},
     'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
-    'QueueMonitor': {'model_path': 'models/yolov8n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'models/kitchen_violation_30_12_2025.pt', 'confidence': 0.3},  # Unified model
-    'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
+    'QueueMonitor': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Unified model
+    'OccupancyMonitor': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.15},
     'IdleTimeMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15}
 }
 
