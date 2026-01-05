@@ -348,6 +348,9 @@
         <a href="#" data-view="occupancy" class="nav-link">
           <div class="icon">📊</div><div>Occupancy</div>
         </a>
+        <a href="#" data-view="idle-time" class="nav-link">
+          <div class="icon">⏰</div><div>Idle Time Monitor</div>
+        </a>
       </nav>
     </aside>
     <main class="main">
@@ -1188,6 +1191,45 @@
           <h3>History</h3>
           <div class="history-grid" id="occ-history"></div>
           <div class="pagination" id="occ-pagination"></div>
+        </div>
+      </div>
+
+      <!-- Idle Time Monitor Section -->
+      <div id="idle-time-section" class="section">
+        <button class="back-btn" onclick="switchView('overview')">← Back</button>
+        
+        <div class="video-container">
+          <div class="video-box">
+            <div class="video-feed">
+              {% if app_configs.get('IdleTimeMonitor') and app_configs['IdleTimeMonitor'].get('channels') %}
+              <img src="/video_feed/IdleTimeMonitor/{{ app_configs['IdleTimeMonitor']['channels'][0]['id'] }}?t={{ timestamp }}" id="idle-monitor-feed">
+              {% else %}
+              <img src="" alt="No camera configured">
+              {% endif %}
+            </div>
+            <div class="video-meta"><strong>Idle Time Monitor</strong></div>
+          </div>
+        </div>
+        
+        <div class="stats-row">
+          <div class="stat-card">
+            <h4>TOTAL IDLE TIME TODAY</h4>
+            <div class="value" id="idle-total-today">0 min</div>
+          </div>
+          <div class="stat-card">
+            <h4>CURRENT STATUS</h4>
+            <div class="value" id="idle-current-status" style="font-size: 20px;">Active</div>
+          </div>
+          <div class="stat-card">
+            <h4>AVG IDLE DURATION</h4>
+            <div class="value" id="idle-avg-duration">0 min</div>
+          </div>
+        </div>
+        
+        <div class="report-section">
+          <h3>Idle Time History</h3>
+          <div class="history-grid" id="idle-history"></div>
+          <div class="pagination" id="idle-pagination"></div>
         </div>
       </div>
 
@@ -2225,7 +2267,8 @@ function switchView(view) {
     'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue analytics' },
     'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Safety monitoring' },
     'front-end-violation': { id: 'front-end-violation-section', title: 'Front Office Violation', subtitle: 'Violation detection' },
-    'occupancy': { id: 'occupancy-section', title: 'Kitchen Attendance', subtitle: 'Attendance tracking' }
+    'occupancy': { id: 'occupancy-section', title: 'Kitchen Attendance', subtitle: 'Attendance tracking' },
+    'idle-time': { id: 'idle-time-section', title: 'Idle Time Monitor', subtitle: 'Counter idle tracking' }
   };
   const config = viewMap[view];
   if (config) {
