@@ -4,6 +4,7 @@ ttenv/
 .venv/
 ENV/
 env/
+DB/
 
 # Python cache
 __pycache__/
