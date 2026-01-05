@@ -18,9 +18,10 @@ IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Paths (Unified Model) ---
-UNIFIED_MODEL_PATH = 'models/kitchen_violation_30_12_2025.pt'  # Single model for all violations
-VIOLATION_CLASSES = [2, 4, 6, 7]  # Classes to detect: without_cap, without_apron, without_gloves, using_phone
+UNIFIED_MODEL_PATH = 'models/02_01_2026_teatost_best.pt'  # Single model with person detection
+VIOLATION_CLASSES = [2, 4, 6, 7, 8]  # Classes to detect: without_cap, without_apron, without_gloves, using_phone, without_uniform
 COMPLIANCE_CLASSES = [1, 3, 5]  # Cap_present, With_apron, With_gloves
+PERSON_CLASS = [0]  # Person detection class
 
 # --- Detection Configuration ---
 CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for more sensitive detection
@@ -100,6 +101,8 @@ class KitchenComplianceProcessor(threading.Thread):
         - With_apron (3) vs Without_apron (4)
         - With_gloves (5) vs Without_gloves (6)
         - Using_phone (7) always triggers as violation
+        - Without_uniform (8) triggers as violation
+        Note: Person class (0) is now available for enhanced detection
         """
         if not detections:
             return detections
@@ -314,11 +317,11 @@ class KitchenComplianceProcessor(threading.Thread):
 
             # --- Run Inferences (Unified Model - Single Pass Detection) ---
             try:
-                # Run model to detect violations AND compliance items (no person class in this model)
+                # Run model to detect violations, compliance items, and persons
                 results = self.unified_model(
                     frame, 
-                    classes=VIOLATION_CLASSES + COMPLIANCE_CLASSES,  # violations (2,4,6,7) + compliance (1,3,5)
-                    conf=CONFIDENCE_THRESHOLD,  # 0.5 confidence threshold
+                    classes=VIOLATION_CLASSES + COMPLIANCE_CLASSES + PERSON_CLASS,  # violations (2,4,6,7,8) + compliance (1,3,5) + person (0)
+                    conf=CONFIDENCE_THRESHOLD,  # 0.3 confidence threshold
                     verbose=False
                 )
                 

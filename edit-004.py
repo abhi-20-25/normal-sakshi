@@ -97,11 +97,11 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/02_01_2026_teatost_best.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7], 'confidence': 0.3, 'is_gif': False},
+    'Generic': {'model_path': 'models/02_01_2026_teatost_best.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7, 8], 'confidence': 0.3, 'is_gif': False},
     'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
     'QueueMonitor': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Unified model
-    'OccupancyMonitor': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.15},
+    'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Unified model with person detection
+    'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
     'IdleTimeMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15}
 }
 
@@ -528,6 +528,7 @@ class MultiModelProcessor(threading.Thread):
         - With_apron (3) vs Without_apron (4)
         - With_gloves (5) vs Without_gloves (6)
         - Using_phone (7) always triggers as violation
+        - Without_uniform (8) triggers as violation
         """
         if not detections:
             return detections
@@ -751,8 +752,8 @@ class MultiModelProcessor(threading.Thread):
                             logging.warning(f"📱 PHONE DETECTED in {self.channel_name}! Confidence: {phone_detections[0]['confidence']:.2f}")
                     
                     # Define class sets and colors
-                    violation_classes = {2, 4, 6, 7}
-                    compliance_classes = {1, 3, 5}
+                    violation_classes = {2, 4, 6, 7, 8}  # Without_cap, Without_apron, Without_gloves, Using_phone, Without_uniform
+                    compliance_classes = {1, 3, 5}  # Cap_present, With_apron, With_gloves
                     COLOR_GREEN = (0, 255, 0)  # Compliance
                     COLOR_RED = (0, 0, 255)    # Violations
                     
