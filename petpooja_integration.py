@@ -36,26 +36,32 @@ class PetPoojaClient:
         self.api_token = api_token
         self.timeout = REQUEST_TIMEOUT
     
-    def get_hourly_sales(self, start_date: date, end_date: date) -> Optional[List[Dict]]:
+    def get_hourly_sales(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
         """
         Fetch hourly sales data from remote FastAPI
         
         Args:
             start_date: Start date for data fetch
             end_date: End date for data fetch
+            restaurant_id: Optional restaurant ID to filter data (e.g., 'mc96bfd0' or '38vpyhwq19')
             
         Returns:
             List of hourly sales records or None if API fails
         """
         try:
-            logging.info(f"Fetching hourly sales from remote API: {self.base_url}/analytics/sales-hourly")
+            logging.info(f"Fetching hourly sales from remote API: {self.base_url}/analytics/sales-hourly"
+                        f"{' for restaurant: ' + restaurant_id if restaurant_id else ''}")
+            params = {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'token': self.api_token
+            }
+            if restaurant_id:
+                params['restaurant_id'] = restaurant_id
+            
             response = requests.get(
                 f"{self.base_url}/analytics/sales-hourly",
-                params={
-                    'start_date': start_date.strftime('%Y-%m-%d'),
-                    'end_date': end_date.strftime('%Y-%m-%d'),
-                    'token': self.api_token
-                },
+                params=params,
                 timeout=self.timeout
             )
             
@@ -65,32 +71,38 @@ class PetPoojaClient:
                 return hourly_sales
             else:
                 logging.warning(f"Hourly endpoint returned {response.status_code}, trying raw events endpoint")
-                return self._process_raw_events_to_hourly(start_date, end_date)
+                return self._process_raw_events_to_hourly(start_date, end_date, restaurant_id)
                 
         except Exception as e:
             logging.warning(f"⚠️ Hourly endpoint not available: {e}, trying raw events endpoint")
-            return self._process_raw_events_to_hourly(start_date, end_date)
+            return self._process_raw_events_to_hourly(start_date, end_date, restaurant_id)
     
-    def get_daily_sales(self, start_date: date, end_date: date) -> Optional[List[Dict]]:
+    def get_daily_sales(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
         """
         Fetch daily sales data from remote FastAPI
         
         Args:
             start_date: Start date for data fetch
             end_date: End date for data fetch
+            restaurant_id: Optional restaurant ID to filter data (e.g., 'mc96bfd0' or '38vpyhwq19')
             
         Returns:
             List of daily sales records or None if API fails
         """
         try:
-            logging.info(f"Fetching daily sales from remote API: {self.base_url}/analytics/sales-daily")
+            logging.info(f"Fetching daily sales from remote API: {self.base_url}/analytics/sales-daily"
+                        f"{' for restaurant: ' + restaurant_id if restaurant_id else ''}")
+            params = {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'token': self.api_token
+            }
+            if restaurant_id:
+                params['restaurant_id'] = restaurant_id
+            
             response = requests.get(
                 f"{self.base_url}/analytics/sales-daily",
-                params={
-                    'start_date': start_date.strftime('%Y-%m-%d'),
-                    'end_date': end_date.strftime('%Y-%m-%d'),
-                    'token': self.api_token
-                },
+                params=params,
                 timeout=self.timeout
             )
             
@@ -100,28 +112,34 @@ class PetPoojaClient:
                 return daily_sales
             else:
                 logging.warning(f"Daily API returned {response.status_code}")
-                return None
-                
-        except Exception as e:
-            logging.warning(f"⚠️ Daily endpoint not available: {e}")
-            return None
-    
-    def get_menu_items(self, start_date: date, end_date: date) -> Optional[List[Dict]]:
+    def get_menu_items(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
         """
         Fetch menu item details from remote FastAPI
         
         Args:
             start_date: Start date for data fetch
             end_date: End date for data fetch
+            restaurant_id: Optional restaurant ID to filter data (e.g., 'mc96bfd0' or '38vpyhwq19')
             
         Returns:
             List of menu item records or None if API fails
         """
         try:
-            logging.info(f"Fetching menu items from remote API: {self.base_url}/analytics/menu-items")
+            logging.info(f"Fetching menu items from remote API: {self.base_url}/analytics/menu-items"
+                        f"{' for restaurant: ' + restaurant_id if restaurant_id else ''}")
+            params = {
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'token': self.api_token
+            }
+            if restaurant_id:
+                params['restaurant_id'] = restaurant_id
+            
             response = requests.get(
                 f"{self.base_url}/analytics/menu-items",
-                params={
+                params=params,
+                timeout=self.timeout
+            )   params={
                     'start_date': start_date.strftime('%Y-%m-%d'),
                     'end_date': end_date.strftime('%Y-%m-%d'),
                     'token': self.api_token
@@ -129,11 +147,16 @@ class PetPoojaClient:
                 timeout=self.timeout
             )
             
-            if response.status_code == 200:
-                menu_items = response.json()
-                logging.info(f"✅ Remote API returned {len(menu_items) if menu_items else 0} menu item records")
-                return menu_items
-            else:
+    def _process_raw_events_to_hourly(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
+        """
+        Fetch raw webhook events and process them into hourly sales data
+        This is a fallback when the dedicated hourly endpoint is not available
+        
+        Args:
+            start_date: Start date for data fetch
+            end_date: End date for data fetch
+            restaurant_id: Optional restaurant ID to filter data
+        """ else:
                 logging.warning(f"Menu items endpoint returned {response.status_code}")
                 return None
                 
@@ -141,10 +164,42 @@ class PetPoojaClient:
             logging.warning(f"⚠️ Menu items endpoint not available: {e}")
             return None
     
-    def _process_raw_events_to_hourly(self, start_date: date, end_date: date) -> Optional[List[Dict]]:
+    def get_restaurants(self) -> Optional[List[Dict]]:
+        """
+        Fetch list of all restaurants from remote FastAPI
+        
+        Returns:
+            List of restaurant info or None if API fails
+        """
+        try:
+            logging.info(f"Fetching restaurants from remote API: {self.base_url}/restaurants")
+            response = requests.get(
+                f"{self.base_url}/restaurants",
+                params={'token': self.api_token},
+                timeout=self.timeout
+            )
+            
+            if response.status_code == 200:
+                restaurants = response.json()
+                logging.info(f"✅ Remote API returned {len(restaurants)} restaurants")
+                return restaurants
+            else:
+                logging.warning(f"Restaurants endpoint returned {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Restaurants endpoint not available: {e}")
+            return None
+    
+    def _process_raw_events_to_hourly(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
         """
         Fetch raw webhook events and process them into hourly sales data
         This is a fallback when the dedicated hourly endpoint is not available
+        
+        Args:
+            start_date: Start date for data fetch
+            end_date: End date for data fetch
+            restaurant_id: Optional restaurant ID to filter data
         """
         try:
             # Add buffer for timezone differences
@@ -176,7 +231,15 @@ class PetPoojaClient:
             
             for event in all_events:
                 if event.get('content', {}).get('event') == 'orderdetails':
-                    order = event.get('content', {}).get('properties', {}).get('Order', {})
+                    properties = event.get('content', {}).get('properties', {})
+                    
+                    # Filter by restaurant if specified
+                    if restaurant_id:
+                        event_rest_id = properties.get('Restaurant', {}).get('restID')
+                        if event_rest_id != restaurant_id:
+                            continue
+                    
+                    order = properties.get('Order', {})
                     order_id = order.get('orderID')
                     
                     if not order_id or order_id in seen_orders:
@@ -332,7 +395,7 @@ class SalesAnalytics:
         self.db_helper = db_helper
     
     def get_sales_data(self, db: Session, start_date: date, end_date: date, 
-                      use_remote: bool = True) -> Tuple[List, bool]:
+                      use_remote: bool = True, restaurant_id: Optional[str] = None) -> Tuple[List, bool]:
         """
         Get sales data from remote API or fallback to local DB
         
@@ -341,6 +404,7 @@ class SalesAnalytics:
             start_date: Start date for data
             end_date: End date for data
             use_remote: Whether to try remote API first
+            restaurant_id: Optional restaurant ID to filter data (e.g., 'mc96bfd0' or '38vpyhwq19')
             
         Returns:
             Tuple of (sales_data, remote_api_used)
@@ -351,7 +415,7 @@ class SalesAnalytics:
         
         if use_remote:
             # Try remote API first
-            hourly_sales = self.client.get_hourly_sales(start_date, end_date)
+            hourly_sales = self.client.get_hourly_sales(start_date, end_date, restaurant_id)
             
             if hourly_sales:
                 # Process remote hourly data

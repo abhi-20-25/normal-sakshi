@@ -73,6 +73,12 @@ class TopItem(BaseModel):
     quantity_sold: int
     total_revenue: float
 
+class RestaurantInfo(BaseModel):
+    rest_id: str
+    name: str
+    address: str
+    contact: str
+
 class DashboardResponse(BaseModel):
     sales_timeline: List[SalesStats]
     payment_modes: List[PaymentStats]
@@ -170,6 +176,43 @@ def root():
         "message": "PetPooja Webhook API is running",
         "version": "1.0.0"
     }
+
+# Get list of all restaurants
+@app.get("/restaurants", response_model=List[RestaurantInfo])
+def get_restaurants(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+    """
+    Get list of all unique restaurants from webhook data.
+    Returns restaurant ID, name, address, and contact information.
+    """
+    try:
+        sql = text("""
+            SELECT DISTINCT
+                content->'properties'->'Restaurant'->>'restID' as rest_id,
+                content->'properties'->'Restaurant'->>'res_name' as name,
+                content->'properties'->'Restaurant'->>'address' as address,
+                content->'properties'->'Restaurant'->>'contact_information' as contact
+            FROM petpooja_webhook_events
+            WHERE content->>'event' = 'orderdetails'
+            AND content->'properties'->'Restaurant'->>'restID' IS NOT NULL
+            ORDER BY name
+        """)
+        
+        results = db.execute(sql).fetchall()
+        
+        return [
+            RestaurantInfo(
+                rest_id=r[0] or "unknown",
+                name=r[1] or "Unknown Restaurant",
+                address=r[2] or "",
+                contact=r[3] or ""
+            ) for r in results
+        ]
+    except Exception as e:
+        logging.error(f"Error fetching restaurants: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"status": "error", "message": f"Failed to fetch restaurants: {str(e)}"}
+        )
 
 # CREATE - Add new webhook event
 @app.post(
@@ -547,6 +590,7 @@ def get_daily_sales(
     days: int = None, 
     start_date: str = None, 
     end_date: str = None,
+    restaurant_id: str = Query(None, description="Filter by restaurant ID (restID from webhook)"),
     token: str = Depends(verify_token), 
     db: Session = Depends(get_db)
 ):
@@ -554,8 +598,12 @@ def get_daily_sales(
     
     order_id_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'orderID')
     
+    subquery_filters = [PetpoojaWebhookEvent.content['event'].astext == 'orderdetails']
+    if restaurant_id:
+        subquery_filters.append(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Restaurant', 'restID') == restaurant_id)
+    
     subquery = db.query(func.max(PetpoojaWebhookEvent.id))\
-        .filter(PetpoojaWebhookEvent.content['event'].astext == 'orderdetails')\
+        .filter(*subquery_filters)\
         .group_by(order_id_path)
     
     date_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on'), DateTime).cast(Date)
@@ -588,6 +636,7 @@ def get_daily_sales(
 def get_hourly_sales(
     start_date: str = Query(..., description="Start date YYYY-MM-DD"), 
     end_date: str = Query(..., description="End date YYYY-MM-DD"),
+    restaurant_id: str = Query(None, description="Filter by restaurant ID (restID from webhook)"),
     token: str = Depends(verify_token), 
     db: Session = Depends(get_db)
 ):
@@ -596,8 +645,12 @@ def get_hourly_sales(
     # Step 1: Get unique orders only (deduplicate by orderID, keep latest version)
     order_id_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'orderID')
     
+    subquery_filters = [PetpoojaWebhookEvent.content['event'].astext == 'orderdetails']
+    if restaurant_id:
+        subquery_filters.append(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Restaurant', 'restID') == restaurant_id)
+    
     subquery = db.query(func.max(PetpoojaWebhookEvent.id))\
-        .filter(PetpoojaWebhookEvent.content['event'].astext == 'orderdetails')\
+        .filter(*subquery_filters)\
         .group_by(order_id_path)\
         .subquery()
     
@@ -629,10 +682,18 @@ def get_hourly_sales(
     ]
 
 @app.get("/analytics/payment-modes", response_model=List[PaymentStats])
-def get_payment_stats(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+def get_payment_stats(
+    restaurant_id: str = Query(None, description="Filter by restaurant ID (restID from webhook)"),
+    token: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
     start_date = get_current_month_start()
     
-    sql = text("""
+    restaurant_filter = ""
+    if restaurant_id:
+        restaurant_filter = "AND content->'properties'->'Restaurant'->>'restID' = :restaurant_id"
+    
+    sql = text(f"""
         WITH unique_orders AS (
             SELECT content
             FROM petpooja_webhook_events
@@ -641,6 +702,7 @@ def get_payment_stats(token: str = Depends(verify_token), db: Session = Depends(
                 FROM petpooja_webhook_events
                 WHERE created_at >= :start_date 
                 AND content->>'event' = 'orderdetails'
+                {restaurant_filter}
                 GROUP BY content->'properties'->'Order'->>'orderID'
             )
         )
@@ -652,7 +714,10 @@ def get_payment_stats(token: str = Depends(verify_token), db: Session = Depends(
         GROUP BY method
     """)
     
-    results = db.execute(sql, {"start_date": start_date}).fetchall()
+    params = {"start_date": start_date}
+    if restaurant_id:
+        params["restaurant_id"] = restaurant_id
+    results = db.execute(sql, params).fetchall()
     
     # FIX: Access by index (0, 1, 2) instead of name
     return [
@@ -664,10 +729,18 @@ def get_payment_stats(token: str = Depends(verify_token), db: Session = Depends(
     ]
 
 @app.get("/analytics/order-types", response_model=List[OrderTypeStats])
-def get_order_types(token: str = Depends(verify_token), db: Session = Depends(get_db)):
+def get_order_types(
+    restaurant_id: str = Query(None, description="Filter by restaurant ID (restID from webhook)"),
+    token: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
     start_date = get_current_month_start()
     
-    sql = text("""
+    restaurant_filter = ""
+    if restaurant_id:
+        restaurant_filter = "AND content->'properties'->'Restaurant'->>'restID' = :restaurant_id"
+    
+    sql = text(f"""
         WITH unique_orders AS (
             SELECT content
             FROM petpooja_webhook_events
@@ -676,6 +749,7 @@ def get_order_types(token: str = Depends(verify_token), db: Session = Depends(ge
                 FROM petpooja_webhook_events
                 WHERE created_at >= :start_date 
                 AND content->>'event' = 'orderdetails'
+                {restaurant_filter}
                 GROUP BY content->'properties'->'Order'->>'orderID'
             )
         )
@@ -688,7 +762,10 @@ def get_order_types(token: str = Depends(verify_token), db: Session = Depends(ge
         GROUP BY s, t
     """)
     
-    results = db.execute(sql, {"start_date": start_date}).fetchall()
+    params = {"start_date": start_date}
+    if restaurant_id:
+        params["restaurant_id"] = restaurant_id
+    results = db.execute(sql, params).fetchall()
     
     # FIX: Access by index (0=source, 1=type, 2=count, 3=total)
     return [
@@ -701,10 +778,19 @@ def get_order_types(token: str = Depends(verify_token), db: Session = Depends(ge
     ]
 
 @app.get("/analytics/top-items", response_model=List[TopItem])
-def get_top_items(limit: int = 5, token: str = Depends(verify_token), db: Session = Depends(get_db)):
+def get_top_items(
+    limit: int = 5,
+    restaurant_id: str = Query(None, description="Filter by restaurant ID (restID from webhook)"),
+    token: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
     start_date = get_current_month_start()
     
-    sql_query = text("""
+    restaurant_filter = ""
+    if restaurant_id:
+        restaurant_filter = "AND content->'properties'->'Restaurant'->>'restID' = :restaurant_id"
+    
+    sql_query = text(f"""
         WITH unique_orders AS (
             SELECT content
             FROM petpooja_webhook_events
@@ -713,6 +799,7 @@ def get_top_items(limit: int = 5, token: str = Depends(verify_token), db: Sessio
                 FROM petpooja_webhook_events
                 WHERE created_at >= :start_date 
                 AND content->>'event' = 'orderdetails'
+                {restaurant_filter}
                 GROUP BY content->'properties'->'Order'->>'orderID'
             )
         )
@@ -734,8 +821,11 @@ def get_top_items(limit: int = 5, token: str = Depends(verify_token), db: Sessio
         LIMIT :limit
     """)
     
+    params = {"start_date": start_date, "limit": limit}
+    if restaurant_id:
+        params["restaurant_id"] = restaurant_id
     try:
-        results = db.execute(sql_query, {"limit": limit, "start_date": start_date}).fetchall()
+        results = db.execute(sql_query, params).fetchall()
         
         # FIX: Access by index (0=name, 1=qty, 2=rev)
         return [
@@ -750,7 +840,12 @@ def get_top_items(limit: int = 5, token: str = Depends(verify_token), db: Sessio
         return []
 
 @app.get("/analytics/items-by-hour")
-def get_items_by_hour(days: int = 30, token: str = Depends(verify_token), db: Session = Depends(get_db)):
+def get_items_by_hour(
+    days: int = 30,
+    restaurant_id: str = Query(None, description="Filter by restaurant ID (restID from webhook)"),
+    token: str = Depends(verify_token), 
+    db: Session = Depends(get_db)
+):
     """
     Get item-level sales data grouped by hour for menu time popularity analysis.
     Returns: [{'item_name': str, 'quantity': int, 'revenue': float, 'hour': int}]
@@ -759,8 +854,12 @@ def get_items_by_hour(days: int = 30, token: str = Depends(verify_token), db: Se
         # Deduplicate orders by orderID, keep latest version
         order_id_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'orderID')
         
+        subquery_filters = [PetpoojaWebhookEvent.content['event'].astext == 'orderdetails']
+        if restaurant_id:
+            subquery_filters.append(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Restaurant', 'restID') == restaurant_id)
+        
         subquery = db.query(func.max(PetpoojaWebhookEvent.id))\
-            .filter(PetpoojaWebhookEvent.content['event'].astext == 'orderdetails')\
+            .filter(*subquery_filters)\
             .group_by(order_id_path)\
             .subquery()
         
@@ -768,7 +867,11 @@ def get_items_by_hour(days: int = 30, token: str = Depends(verify_token), db: Se
         created_on_path = func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on')
         hour_col = func.extract('hour', cast(created_on_path, DateTime))
         
-        sql_query = text("""
+        restaurant_filter = ""
+        if restaurant_id:
+            restaurant_filter = "AND content->'properties'->'Restaurant'->>'restID' = :restaurant_id"
+        
+        sql_query = text(f"""
             WITH unique_orders AS (
                 SELECT content
                 FROM petpooja_webhook_events
@@ -776,6 +879,7 @@ def get_items_by_hour(days: int = 30, token: str = Depends(verify_token), db: Se
                     SELECT MAX(id)
                     FROM petpooja_webhook_events
                     WHERE content->>'event' = 'orderdetails'
+                    {restaurant_filter}
                     GROUP BY content->'properties'->'Order'->>'orderID'
                 )
                 AND created_at >= CURRENT_DATE - INTERVAL ':days days'
@@ -798,7 +902,10 @@ def get_items_by_hour(days: int = 30, token: str = Depends(verify_token), db: Se
                 item_name, hour
         """)
         
-        results = db.execute(sql_query, {"days": days}).fetchall()
+        params = {"days": days}
+        if restaurant_id:
+            params["restaurant_id"] = restaurant_id
+        results = db.execute(sql_query, params).fetchall()
         
         return [
             {
