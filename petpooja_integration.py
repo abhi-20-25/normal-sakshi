@@ -112,6 +112,12 @@ class PetPoojaClient:
                 return daily_sales
             else:
                 logging.warning(f"Daily API returned {response.status_code}")
+                return None
+                
+        except Exception as e:
+            logging.warning(f"⚠️ Daily endpoint not available: {e}")
+            return None
+    
     def get_menu_items(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
         """
         Fetch menu item details from remote FastAPI
@@ -139,24 +145,13 @@ class PetPoojaClient:
                 f"{self.base_url}/analytics/menu-items",
                 params=params,
                 timeout=self.timeout
-            )   params={
-                    'start_date': start_date.strftime('%Y-%m-%d'),
-                    'end_date': end_date.strftime('%Y-%m-%d'),
-                    'token': self.api_token
-                },
-                timeout=self.timeout
             )
             
-    def _process_raw_events_to_hourly(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
-        """
-        Fetch raw webhook events and process them into hourly sales data
-        This is a fallback when the dedicated hourly endpoint is not available
-        
-        Args:
-            start_date: Start date for data fetch
-            end_date: End date for data fetch
-            restaurant_id: Optional restaurant ID to filter data
-        """ else:
+            if response.status_code == 200:
+                menu_items = response.json()
+                logging.info(f"✅ Remote API returned {len(menu_items) if menu_items else 0} menu item records")
+                return menu_items
+            else:
                 logging.warning(f"Menu items endpoint returned {response.status_code}")
                 return None
                 
