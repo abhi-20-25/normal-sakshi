@@ -5,6 +5,7 @@ fastapi==0.109.0
 uvicorn==0.27.0
 python-multipart==0.0.6
 python-dotenv==1.0.0
+gunicorn==23.0.0
 
 # Database
 psycopg2-binary==2.9.9
@@ -13,19 +14,25 @@ SQLAlchemy==2.0.44
 # Computer Vision & ML
 ultralytics==8.3.235
 opencv-python==4.12.0.88
-torch==2.9.1
-torchvision==0.24.1
 numpy==2.2.6
 pillow==12.0.0
 
+# PyTorch (CPU-only version - currently installed with GPU dependencies)
+# Note: Installed version has CUDA libraries. For clean CPU-only, reinstall with:
+# pip install torch==2.5.1+cpu torchvision==0.20.1+cpu --index-url https://download.pytorch.org/whl/cpu
+torch==2.9.1+cpu
+torchvision==0.24.1+cpu
+
 # Data Processing
 pandas==2.3.3
+shapely==2.1.2
 polars==1.35.2
 openpyxl==3.1.5
 
-# Visualization
+# Visualization (optional but installed)
 matplotlib==3.10.7
 seaborn==0.13.2
+scipy==1.15.3
 
 # Utilities
 requests==2.32.5
@@ -40,6 +47,7 @@ python-socketio==5.15.0
 python-engineio==4.12.3
 eventlet==0.40.4
 bidict==0.23.1
+simple-websocket==1.1.0
 
 # Image & Video Processing
 imageio==2.37.2
@@ -50,20 +58,13 @@ PyYAML==6.0.3
 pydantic==2.5.3
 certifi==2025.11.12
 urllib3==2.6.0
-simple-websocket==1.1.0
 six==1.17.0
-SQLAlchemy==2.0.44
+Werkzeug==3.1.4
 sympy==1.14.0
 tabulate==0.9.0
 thop==0.1.1.post2209072238
-torch==2.9.1+cpu
-torchvision==0.24.1+cpu
-tqdm==4.67.1
 typing_extensions==4.15.0
 tzdata==2025.2
 tzlocal==5.3.1
-ultralytics==8.3.235
 ultralytics-thop==2.0.18
-urllib3==2.5.0
-Werkzeug==3.1.4
 wsproto==1.3.2
