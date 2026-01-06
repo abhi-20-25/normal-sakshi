@@ -17,11 +17,10 @@ opencv-python==4.12.0.88
 numpy==2.2.6
 pillow==12.0.0
 
-# PyTorch (CPU-only version - currently installed with GPU dependencies)
-# Note: Installed version has CUDA libraries. For clean CPU-only, reinstall with:
-# pip install torch==2.5.1+cpu torchvision==0.20.1+cpu --index-url https://download.pytorch.org/whl/cpu
-torch==2.9.1+cpu
-torchvision==0.24.1+cpu
+# PyTorch (CPU-only version)
+# Install separately with: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch==2.9.1
+torchvision==0.24.1
 
 # Data Processing
 pandas==2.3.3
