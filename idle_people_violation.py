@@ -19,11 +19,11 @@ IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Configuration ---
-MODEL_PATH = 'models/yolo11n.pt'  # YOLO11 model for person detection
+MODEL_PATH = 'models/yolo11n.pt'  # YOLO11n - Better for detecting people at all distances
 PERSON_CLASS_ID = 0  # Person class in COCO dataset
-CONFIDENCE_THRESHOLD = 0.9  # Detection confidence threshold
+CONFIDENCE_THRESHOLD = 0.1  # Detection confidence threshold (0.1 = very sensitive, catches distant people too)
 IDLE_FRAME_THRESHOLD = 15  # Number of frames a person must be detected to be considered idle (adjustable)
-FRAME_SKIP_RATE = 2  # Process every nth frame for efficiency
+FRAME_SKIP_RATE = 1  # Process every frame for maximum accuracy (was 2)
 ALERT_COOLDOWN_SECONDS = 60  # Cooldown between alerts for same person
 
 # --- Database Table Definition ---
@@ -132,14 +132,16 @@ class IdlePeopleViolationProcessor(threading.Thread):
             logging.error(f"Error loading ROI for {self.channel_name}: {e}")
             self.roi_polygon = None
 
-    def _is_in_roi(self, x, y):
-        """Check if a point is within the ROI polygon"""
+    def _is_in_roi(self, x1, y1, x2, y2):
+        """Check if bounding box intersects/overlaps with the ROI polygon"""
         if self.roi_polygon is None:
             return True  # No ROI means monitor entire frame
         
         try:
-            point = Point(x, y)
-            return self.roi_polygon.contains(point)
+            # Create a polygon from the bounding box coordinates
+            bbox_polygon = Polygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+            # Check if bounding box intersects or overlaps with ROI
+            return self.roi_polygon.intersects(bbox_polygon)
         except Exception as e:
             logging.error(f"Error checking ROI: {e}")
             return True  # Default to allowing detection on error
@@ -222,8 +224,23 @@ class IdlePeopleViolationProcessor(threading.Thread):
                 telegram_message = f"🚨 Idle Person Alert: {self.channel_name}\nPerson ID: {person_id}\nIdle Duration: {frame_count} frames\nLocation: {bbox}"
                 self.send_telegram_notification(telegram_message)
                 
+                # Create frame with bounding box annotation (without ROI polygon)
+                annotated_frame = frame.copy()
+                x1, y1, x2, y2 = bbox
+                
+                # Draw red bounding box for violation
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                
+                # Draw label with background
+                label = f"IDLE! ID:{person_id} Frames:{frame_count}"
+                (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(annotated_frame, (x1, y1 - label_h - 10), 
+                            (x1 + label_w, y1), (0, 0, 255), -1)
+                cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
                 media_path = self.handle_main_detection(
-                    'IdlePeopleViolation', self.channel_id, [frame], details, is_gif=False
+                    'IdlePeopleViolation', self.channel_id, [annotated_frame], details, is_gif=False
                 )
                 
                 if media_path:
@@ -283,10 +300,6 @@ class IdlePeopleViolationProcessor(threading.Thread):
                     self.frame_counter += 1
                     self._update_fps()
 
-                    # Frame skipping for efficiency
-                    if self.frame_counter % FRAME_SKIP_RATE != 0:
-                        continue
-
                     # Make a copy for display
                     display_frame = frame.copy()
                     
@@ -310,13 +323,9 @@ class IdlePeopleViolationProcessor(threading.Thread):
                                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                                 conf = float(box.conf[0])
                                 
-                                # Calculate center point of bounding box
-                                center_x = (x1 + x2) // 2
-                                center_y = (y1 + y2) // 2
-                                
-                                # Check if person is within ROI
-                                if not self._is_in_roi(center_x, center_y):
-                                    continue  # Skip people outside ROI
+                                # Check if bounding box intersects with ROI
+                                if not self._is_in_roi(x1, y1, x2, y2):
+                                    continue  # Skip people whose box doesn't intersect ROI
                                 
                                 # Get track ID if available
                                 track_id = int(box.id[0]) if box.id is not None else None
