@@ -53,6 +53,7 @@ TARGET_HEIGHT = 360
 
 # --- Module Imports ---
 from kitchen_compliance_monitor import KitchenComplianceProcessor
+from idle_people_violation import IdlePeopleViolationProcessor
 from petpooja_integration import (
     create_petpooja_services,
     PetPoojaDatabase
@@ -102,7 +103,7 @@ APP_TASKS_CONFIG = {
     'QueueMonitor': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
     'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Unified model with person detection
     'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
-    'IdleTimeMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15}
+    'IdlePeopleViolation': {'model_path': 'models/yolo11n.pt', 'confidence': 0.3}
 }
 
 # --- YOLO tracking helper (CPU-only mode) ---
@@ -2288,316 +2289,6 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.stop()
 
 
-class IdleTimeMonitorProcessor(threading.Thread):
-    """
-    Idle Time Monitor - Detects humans in counter area using YOLO11n with ROI
-    """
-    
-    def __init__(self, rtsp_url, channel_id, channel_name, model, socketio, SessionLocal, send_notification):
-        super().__init__(name=f"IdleTimeMonitor-{channel_name}")
-        self.rtsp_url = rtsp_url
-        self.channel_id = channel_id
-        self.channel_name = channel_name
-        self.model = model
-        self.socketio = socketio
-        self.SessionLocal = SessionLocal
-        self.send_notification = send_notification
-        
-        # Force CPU mode
-        self.device = 'cpu'
-        self.model.to(self.device)
-        
-        self.is_running = True
-        self.lock = threading.Lock()
-        self.latest_frame = None
-        self.frame_hub = None  # Will be set by start_streams
-        
-        # Continuous presence tracking settings
-        self.person_count = 0
-        self.continuous_presence_start = None  # When continuous presence started
-        self.presence_threshold = 180  # 3 minutes in seconds
-        self.last_screenshot_time = 0
-        self.screenshot_cooldown = 180  # 3 minutes between screenshots
-        self.screenshot_frame = None  # Store the screenshot to display
-        
-        # ROI settings
-        self.roi_points = None
-        self.roi_polygon = None
-        self._load_roi_from_db()
-        
-        logging.info(f"✅ IdleTimeMonitor initialized for {self.channel_name}")
-    
-    def _load_roi_from_db(self):
-        """Load ROI polygon from database"""
-        try:
-            with self.SessionLocal() as db:
-                from sqlalchemy import text
-                result = db.execute(text("""
-                    SELECT roi_points FROM roi_configs 
-                    WHERE channel_id = :channel_id AND app_name = 'IdleTimeMonitor'
-                """), {"channel_id": self.channel_id})
-                
-                row = result.fetchone()
-                if row and row[0]:
-                    import json
-                    roi_data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-                    if 'points' in roi_data:
-                        self.roi_points = roi_data['points']
-                        logging.info(f"✅ Loaded ROI with {len(self.roi_points)} points for {self.channel_name}")
-                    else:
-                        logging.warning(f"⚠️ No 'points' key in ROI data for {self.channel_name}")
-                else:
-                    logging.warning(f"⚠️ No ROI configured for IdleTimeMonitor on {self.channel_name}")
-        except Exception as e:
-            logging.error(f"Error loading ROI for IdleTimeMonitor: {e}")
-    
-    def _convert_roi_to_pixels(self, frame_width, frame_height):
-        """Convert normalized ROI points to pixel coordinates"""
-        if self.roi_points and len(self.roi_points) >= 3:
-            pixel_points = []
-            for point in self.roi_points:
-                x = int(point[0] * frame_width)
-                y = int(point[1] * frame_height)
-                pixel_points.append([x, y])
-            
-            from shapely.geometry import Polygon
-            self.roi_polygon = Polygon(pixel_points)
-            logging.info(f"✅ ROI polygon created for {self.channel_name}")
-            return np.array(pixel_points, dtype=np.int32)
-        return None
-    
-    def _is_in_roi(self, x, y):
-        """Check if point is inside ROI"""
-        if self.roi_polygon:
-            from shapely.geometry import Point
-            return self.roi_polygon.contains(Point(x, y))
-        return True  # If no ROI, consider all points valid
-    
-    def get_frame(self):
-        """Return latest frame as JPEG bytes"""
-        with self.lock:
-            if self.latest_frame is None:
-                placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, 'Connecting...', (180, 240), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
-                _, jpeg = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                return jpeg.tobytes()
-            
-            success, jpeg = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            return jpeg.tobytes() if success else b''
-    
-    def _detect_and_track_people(self, frame):
-        """Detect and track people using YOLO11n with tracking and ROI filtering"""
-        try:
-            # Use YOLO tracking for persistent IDs
-            results = self.model.track(
-                frame,
-                persist=True,
-                conf=0.15,
-                iou=0.40,
-                classes=[0],  # Person class only
-                verbose=False,
-                device=self.device,
-                imgsz=640,
-                tracker="bytetrack.yaml"
-            )
-            
-            person_count = 0
-            annotated_frame = frame.copy()
-            tracked_ids = []
-            roi_pixel_points = None
-            
-            # Convert ROI to pixels if not done yet
-            if self.roi_points and self.roi_polygon is None:
-                h, w = frame.shape[:2]
-                roi_pixel_points = self._convert_roi_to_pixels(w, h)
-            elif self.roi_points:
-                # Get pixel points for drawing
-                h, w = frame.shape[:2]
-                roi_pixel_points = np.array([[int(p[0]*w), int(p[1]*h)] for p in self.roi_points], dtype=np.int32)
-            
-            # Draw ROI polygon
-            if roi_pixel_points is not None:
-                cv2.polylines(annotated_frame, [roi_pixel_points], True, (255, 0, 255), 2)  # Magenta polygon
-                cv2.putText(annotated_frame, "Counter ROI", 
-                           tuple(roi_pixel_points[0]), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
-            
-            if results and len(results[0].boxes) > 0:
-                for box in results[0].boxes:
-                    conf = float(box.conf[0])
-                    if conf > 0.15:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        
-                        # Calculate center point of detection
-                        center_x = int((x1 + x2) / 2)
-                        center_y = int((y1 + y2) / 2)
-                        
-                        # Check if person is in ROI
-                        in_roi = self._is_in_roi(center_x, center_y)
-                        
-                        if not in_roi:
-                            # Draw gray box for person outside ROI
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
-                            continue
-                        
-                        # Person is in ROI - count them
-                        person_count += 1
-                        
-                        # Get tracking ID if available
-                        track_id = None
-                        if box.id is not None:
-                            track_id = int(box.id[0])
-                            tracked_ids.append(track_id)
-                        
-                        # Draw green bounding box for person in ROI
-                        color = (0, 255, 0)
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)
-                        
-                        # Add label with tracking ID
-                        if track_id is not None:
-                            label = f'Person #{track_id} ({conf:.2f})'
-                        else:
-                            label = f'Person ({conf:.2f})'
-                        
-                        # Background for label
-                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                        cv2.rectangle(annotated_frame, (x1, y1-25), (x1+label_size[0]+5, y1), color, -1)
-                        cv2.putText(annotated_frame, label, (x1+2, y1-7),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-            
-            return person_count, annotated_frame, tracked_ids
-        except Exception as e:
-            logging.error(f"Detection error in IdleTimeMonitor: {e}")
-            return 0, frame, []
-    
-    def run(self):
-        """Main processing loop"""
-        logging.info(f"🚀 IdleTimeMonitor thread starting for {self.channel_name}")
-        
-        frame_count = 0
-        target_fps = 15
-        frame_delay = 1.0 / target_fps
-        
-        while self.is_running:
-            frame_start_time = time.time()
-            
-            # Get frame from FrameHub
-            frame = self.frame_hub.get_latest() if self.frame_hub else None
-            
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            
-            frame_count += 1
-            
-            # Detect and track people every frame
-            person_count, annotated_frame, tracked_ids = self._detect_and_track_people(frame)
-            self.person_count = person_count
-            
-            # Track continuous presence
-            current_time = time.time()
-            
-            if person_count > 0:
-                # Person detected in ROI
-                ids_str = ', '.join([f"#{id}" for id in tracked_ids]) if tracked_ids else "no IDs"
-                
-                # Start tracking continuous presence
-                if self.continuous_presence_start is None:
-                    self.continuous_presence_start = current_time
-                    logging.info(f"▶️ IdleTimeMonitor {self.channel_name}: Continuous presence started - {person_count} person(s) [{ids_str}]")
-                else:
-                    # Calculate how long presence has been continuous
-                    presence_duration = current_time - self.continuous_presence_start
-                    
-                    # Log every 30 frames
-                    if frame_count % 30 == 0:
-                        minutes = int(presence_duration / 60)
-                        seconds = int(presence_duration % 60)
-                        logging.info(f"⏱️ IdleTimeMonitor {self.channel_name}: Continuous presence for {minutes}m {seconds}s - {person_count} person(s) [{ids_str}]")
-                    
-                    # Take screenshot after 3 minutes of continuous presence
-                    if presence_duration >= self.presence_threshold:
-                        if current_time - self.last_screenshot_time >= self.screenshot_cooldown:
-                            # Save screenshot
-                            self.screenshot_frame = annotated_frame.copy()
-                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-                            screenshot_path = f"static/detections/idle_time_{self.channel_id}_{timestamp}.jpg"
-                            cv2.imwrite(screenshot_path, annotated_frame)
-                            
-                            minutes = int(presence_duration / 60)
-                            message = f"⚠️ *CONTINUOUS PRESENCE ALERT* - {self.channel_name}\n{person_count} person(s) detected for {minutes} minutes in counter area"
-                            self.send_notification(message)
-                            self.last_screenshot_time = current_time
-                            
-                            logging.warning(f"📸 Screenshot taken: {person_count} person(s) present for {minutes} minutes at {self.channel_name}")
-                            logging.warning(f"📁 Saved to: {screenshot_path}")
-            else:
-                # No person detected - reset continuous presence timer
-                if self.continuous_presence_start is not None:
-                    presence_duration = current_time - self.continuous_presence_start
-                    minutes = int(presence_duration / 60)
-                    seconds = int(presence_duration % 60)
-                    logging.info(f"⏹️ IdleTimeMonitor {self.channel_name}: Continuous presence ended after {minutes}m {seconds}s")
-                    self.continuous_presence_start = None
-            
-            # Add info overlay with continuous presence timer
-            status_text = "ACTIVE" if person_count > 0 else "EMPTY"
-            status_color = (0, 255, 0) if person_count > 0 else (128, 128, 128)
-            
-            # Calculate presence duration for display
-            if self.continuous_presence_start:
-                presence_duration = current_time - self.continuous_presence_start
-                timer_mins = int(presence_duration / 60)
-                timer_secs = int(presence_duration % 60)
-                timer_text = f"{timer_mins:02d}:{timer_secs:02d}"
-                timer_color = (0, 255, 255) if presence_duration < self.presence_threshold else (0, 0, 255)
-            else:
-                timer_text = "00:00"
-                timer_color = (128, 128, 128)
-            
-            # Semi-transparent overlay
-            overlay = annotated_frame.copy()
-            cv2.rectangle(overlay, (5, 5), (220, 95), (0, 0, 0), -1)
-            cv2.addWeighted(overlay, 0.6, annotated_frame, 0.4, 0, annotated_frame)
-            
-            # Status and count
-            cv2.putText(annotated_frame, f"{status_text}", (10, 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
-            cv2.putText(annotated_frame, f"People: {person_count}", (10, 50),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-            
-            # Timer display
-            cv2.putText(annotated_frame, f"Time: {timer_text}", (10, 75),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, timer_color, 2)
-            
-            # Show tracked IDs
-            if tracked_ids and len(tracked_ids) <= 3:
-                ids_text = f"IDs: {', '.join([str(id) for id in tracked_ids[:3]])}"
-                cv2.putText(annotated_frame, ids_text, (125, 25),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
-            
-            # Store frame
-            with self.lock:
-                self.latest_frame = annotated_frame
-            
-            # Maintain FPS
-            elapsed = time.time() - frame_start_time
-            sleep_time = max(0, frame_delay - elapsed)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-        
-        logging.info(f"IdleTimeMonitor stopped for {self.channel_name}")
-    
-    def stop(self):
-        """Stop the processor"""
-        logging.info(f"Stopping IdleTimeMonitor for {self.channel_name}...")
-        self.is_running = False
-    
-    def shutdown(self):
-        """Shutdown method for compatibility"""
-        self.stop()
-
-
 def get_app_configs(restaurant_id=None):
     """Get application configs, optionally filtered by restaurant
     
@@ -2762,6 +2453,39 @@ def debug_conversion():
     """Debug page for conversion analytics"""
     return render_template('debug_conversion.html')
 
+@app.route('/idle-people-violation')
+@login_required
+def idle_people_violation():
+    """Idle People Violation monitoring page"""
+    restaurant_id = request.args.get('restaurant_id', type=int)
+    
+    # Get app configs to find IdlePeopleViolation channels
+    app_configs = get_app_configs()
+    idle_channels = app_configs.get('IdlePeopleViolation', {}).get('channels', [])
+    
+    # Filter by restaurant if specified
+    if restaurant_id:
+        idle_channels = [ch for ch in idle_channels if ch.get('restaurant_id') == restaurant_id]
+    
+    return render_template('idle_people_violation.html', channels=idle_channels, restaurant_id=restaurant_id)
+
+@app.route('/roi_editor_idle_people')
+@login_required
+def roi_editor_idle_people():
+    """ROI Editor for Idle People Violation"""
+    channel_id = request.args.get('channel_id')
+    if not channel_id:
+        # Default to first available channel
+        app_configs = get_app_configs()
+        idle_channels = app_configs.get('IdlePeopleViolation', {}).get('channels', [])
+        if idle_channels:
+            # Extract channel id from the first channel dict
+            channel_id = idle_channels[0]['id'] if isinstance(idle_channels[0], dict) else idle_channels[0]
+        else:
+            return "No channels configured for Idle People Violation", 404
+    
+    return render_template('roi_editor_idle_people.html', channel_id=channel_id)
+
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -2862,7 +2586,7 @@ def video_feed(app_name, channel_id):
     elif app_name == 'QueueMonitor': target_class = QueueMonitorProcessor
     elif app_name == 'KitchenCompliance': target_class = KitchenComplianceProcessor
     elif app_name == 'OccupancyMonitor': target_class = OccupancyMonitorProcessor
-    elif app_name == 'IdleTimeMonitor': target_class = IdleTimeMonitorProcessor
+    elif app_name == 'IdlePeopleViolation': target_class = IdlePeopleViolationProcessor
     elif app_name == 'Generic': target_class = MultiModelProcessor
     elif app_name == 'RawFeed': target_class = RawFeedProcessor
     
@@ -2890,12 +2614,17 @@ def get_history(app_name):
         page, limit = int(request.args.get('page', 1)), int(request.args.get('limit', 10))
         channel_id, start_date_str, end_date_str = request.args.get('channel_id'), request.args.get('start_date'), request.args.get('end_date')
         violation_type = request.args.get('violation_type')  # Add violation type filter
+        restaurant_id = request.args.get('restaurant_id', type=int)  # Add restaurant filter
     except (ValueError, TypeError): return jsonify({"error": "Invalid page or limit parameter"}), 400
     offset = (page - 1) * limit
     with SessionLocal() as db:
         try:
-            query = db.query(Detection).filter(Detection.app_name == app_name)
+            # Join with cameras table to filter by restaurant
+            query = db.query(Detection).join(Camera, Detection.channel_id == Camera.channel_id).filter(Detection.app_name == app_name)
+            
             if channel_id and channel_id != 'null': query = query.filter(Detection.channel_id == channel_id)
+            if restaurant_id: query = query.filter(Camera.restaurant_id == restaurant_id)
+            
             if start_date_str and end_date_str:
                 try:
                     start_date, end_date = datetime.strptime(start_date_str, '%Y-%m-%d').date(), datetime.strptime(end_date_str, '%Y-%m-%d').date()
@@ -4804,21 +4533,6 @@ def start_streams():
                         
                         logging.info(f"  📹 {camera.channel_name} → {', '.join(app_names)}")
                     
-                    # HARDCODED: Add IdleTimeMonitor for cam_f822b0bf4e if not in database
-                    hardcoded_idle_rtsp = "rtsp://admin:TNEURAL123@103.211.216.58:554/Streaming/Channels/501"
-                    if hardcoded_idle_rtsp not in stream_assignments:
-                        logging.info("💡 Adding hardcoded IdleTimeMonitor configuration")
-                        stream_assignments[hardcoded_idle_rtsp]['apps'].add('IdleTimeMonitor')
-                        stream_assignments[hardcoded_idle_rtsp]['name'] = 'Checkout Queue'
-                        stream_assignments[hardcoded_idle_rtsp]['id'] = 'cam_f822b0bf4e'
-                        stream_assignments[hardcoded_idle_rtsp]['restaurant'] = restaurant if cameras_data else None
-                        logging.info(f"  📹 Checkout Queue (HARDCODED) → IdleTimeMonitor")
-                    else:
-                        # Add IdleTimeMonitor to existing stream if not present
-                        if 'IdleTimeMonitor' not in stream_assignments[hardcoded_idle_rtsp]['apps']:
-                            stream_assignments[hardcoded_idle_rtsp]['apps'].add('IdleTimeMonitor')
-                            logging.info(f"  ➕ Added IdleTimeMonitor to existing Checkout Queue stream")
-                    
                     # Start streams from database data
                     _start_streams_from_data(stream_assignments)
                     logging.info("=" * 70)
@@ -4838,13 +4552,6 @@ def start_streams():
         return
     
     stream_assignments = defaultdict(lambda: {'apps': set(), 'name': '', 'id': '', 'restaurant': None})
-    
-    # HARDCODED: Add IdleTimeMonitor for cam_f822b0bf4e
-    hardcoded_idle_rtsp = "rtsp://admin:TNEURAL123@103.211.216.58:554/Streaming/Channels/501"
-    stream_assignments[hardcoded_idle_rtsp]['apps'].add('IdleTimeMonitor')
-    stream_assignments[hardcoded_idle_rtsp]['name'] = 'Checkout Queue'
-    stream_assignments[hardcoded_idle_rtsp]['id'] = 'cam_f822b0bf4e'
-    logging.info("💡 Added hardcoded IdleTimeMonitor → Checkout Queue")
     
     with open(RTSP_LINKS_FILE, 'r') as f:
         for line in f:
@@ -4921,19 +4628,20 @@ def _start_streams_from_data(stream_assignments):
                 logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
                 atexit.register(om_processor.shutdown)
                 active_app_names.remove('OccupancyMonitor')
-        if 'IdleTimeMonitor' in active_app_names:
-            model_obj = load_model(APP_TASKS_CONFIG['IdleTimeMonitor']['model_path'])
-            if model_obj:
-                itm_processor = IdleTimeMonitorProcessor(
-                    link, channel_id, channel_name, model_obj, socketio, 
-                    SessionLocal, send_telegram_notification
-                )
-                itm_processor.frame_hub = hub
-                stream_processors[channel_id].append(itm_processor)
-                itm_processor.start()
-                logging.info(f"Started IdleTimeMonitor for {channel_id} ({channel_name}).")
-                atexit.register(itm_processor.shutdown)
-                active_app_names.remove('IdleTimeMonitor')
+        
+        if 'IdlePeopleViolation' in active_app_names:
+            # IdlePeopleViolationProcessor loads its own model internally
+            ipv_processor = IdlePeopleViolationProcessor(
+                link, channel_id, channel_name, SessionLocal, socketio,
+                send_telegram_notification, handle_detection
+            )
+            if hasattr(ipv_processor, 'frame_hub'):
+                ipv_processor.frame_hub = hub
+            stream_processors[channel_id].append(ipv_processor)
+            ipv_processor.start()
+            logging.info(f"Started IdlePeopleViolation for {channel_id} ({channel_name}).")
+            atexit.register(ipv_processor.shutdown)
+            active_app_names.remove('IdlePeopleViolation')
         
         if active_app_names:
             tasks_for_multi_model = []
@@ -5037,6 +4745,14 @@ def initialize_app():
                 logging.info("Kitchen Compliance tables initialized")
             except Exception as e:
                 logging.error(f"Failed to initialize Kitchen tables: {e}")
+            
+            # Initialize Idle People Violation tables
+            try:
+                from idle_people_violation import IdlePeopleViolationProcessor
+                IdlePeopleViolationProcessor.initialize_tables(engine)
+                logging.info("Idle People Violation tables initialized")
+            except Exception as e:
+                logging.error(f"Failed to initialize Idle People Violation tables: {e}")
         
         # Start the scheduler if database is connected
         if db_connected:

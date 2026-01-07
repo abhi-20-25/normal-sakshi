@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Idle People Violation - Sakshi.ai</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; background: #0f1112; color: #ddd; }
+    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
+    .header h1 { font-size: 32px; color: #f1f3f5; }
+    .header .subtitle { color: #9aa0a6; font-size: 14px; margin-top: 5px; }
+    .back-btn { background: #17181a; padding: 10px 20px; border-radius: 8px; text-decoration: none; color: #ddd; border: 1px solid #2a2d31; font-size: 14px; transition: all 0.2s; }
+    .back-btn:hover { background: #1f2021; }
+    
+    .video-section { background: #17181a; border-radius: 12px; padding: 20px; margin-bottom: 25px; }
+    .video-box { background: #000; border-radius: 8px; overflow: hidden; max-width: 800px; margin: 0 auto; }
+    .video-feed { width: 100%; background: #000; }
+    .video-feed img { width: 100%; height: auto; display: block; max-height: 600px; object-fit: contain; }
+    .video-meta { padding: 16px 0; display: flex; justify-content: space-between; align-items: center; }
+    .video-meta strong { color: #fff; font-size: 16px; }
+    .status-badge { padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+    .status-active { background: rgba(34, 197, 94, 0.2); color: #22c55e; }
+    
+    .info-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 25px; }
+    .info-card { background: #17181a; padding: 18px; border-radius: 8px; }
+    .info-card h4 { color: #9aa0a6; font-size: 12px; margin-bottom: 8px; text-transform: uppercase; }
+    .info-card .value { font-size: 28px; font-weight: 700; color: #fff; }
+    .info-card .description { color: #9aa0a6; font-size: 11px; margin-top: 4px; }
+    
+    .violations-section { background: #17181a; border-radius: 12px; padding: 20px; }
+    .violations-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .violations-header h3 { color: #e6e8ea; font-size: 18px; }
+    .filter-controls { display: flex; gap: 10px; }
+    .filter-controls input { background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+    .filter-controls button { background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    .filter-controls button:hover { opacity: 0.9; }
+    
+    .violations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; margin-top: 20px; }
+    .violation-item { border: 1px solid #2a2d31; border-radius: 8px; overflow: hidden; background: #1f2021; cursor: pointer; transition: all 0.2s; }
+    .violation-item:hover { transform: translateY(-2px); border-color: #ef4444; }
+    .violation-item img { width: 100%; aspect-ratio: 4/3; object-fit: cover; background: #000; }
+    .violation-info { padding: 12px; }
+    .violation-info .timestamp { font-size: 12px; color: #9aa0a6; margin-bottom: 5px; }
+    .violation-info .message { font-size: 13px; color: #fff; font-weight: 500; }
+    .violation-badge { display: inline-block; background: rgba(239, 68, 68, 0.2); color: #ef4444; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-top: 6px; }
+    
+    .pagination { margin-top: 20px; text-align: center; }
+    .pagination button { padding: 8px 16px; margin: 0 5px; background: #1f2021; color: #ddd; border: 1px solid #2a2d31; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .pagination button:hover { background: #2a2d31; }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pagination .current-page { color: #1640ff; font-weight: 600; }
+    
+    .empty-state { text-align: center; padding: 60px 20px; color: #6d7377; }
+    .empty-state svg { width: 64px; height: 64px; margin-bottom: 15px; opacity: 0.5; }
+    .empty-state h4 { font-size: 16px; margin-bottom: 8px; }
+    .empty-state p { font-size: 13px; }
+    
+    .lightbox { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); align-items: center; justify-content: center; }
+    .lightbox.show { display: flex; }
+    .lightbox img { max-width: 90%; max-height: 90%; border-radius: 8px; }
+    .lightbox-close { position: absolute; top: 20px; right: 35px; color: #fff; font-size: 40px; cursor: pointer; font-weight: 300; }
+    .lightbox-close:hover { color: #ef4444; }
+    
+    .legend { background: #1f2021; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
+    .legend h4 { color: #e6e8ea; font-size: 14px; margin-bottom: 10px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 8px; margin-right: 20px; font-size: 13px; }
+    .legend-color { width: 12px; height: 12px; border-radius: 3px; }
+    .legend-green { background: #22c55e; }
+    .legend-red { background: #ef4444; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div>
+        <h1>🚶 Idle People Violation Monitor</h1>
+        <div class="subtitle">Real-time monitoring for idle person detection</div>
+      </div>
+      <div style="display: flex; gap: 10px;">
+        {% if channels %}
+        <a href="/roi_editor_idle_people?channel_id={{ channels[0].id }}" class="back-btn" style="background: linear-gradient(90deg, #1640ff, #2b3bff); border: none;">
+          🎯 Edit ROI
+        </a>
+        {% endif %}
+        <a href="/dashboard" class="back-btn">← Back to Dashboard</a>
+      </div>
+    </div>
+    
+    <div class="legend">
+      <h4>Detection Guide</h4>
+      <div class="legend-item">
+        <div class="legend-color legend-green"></div>
+        <span>Normal tracking (person moving)</span>
+      </div>
+      <div class="legend-item">
+        <div class="legend-color legend-red"></div>
+        <span>VIOLATION: Person idle for 15+ frames</span>
+      </div>
+    </div>
+    
+    <div class="info-grid">
+      <div class="info-card">
+        <h4>Idle Threshold</h4>
+        <div class="value">15</div>
+        <div class="description">Frames to trigger violation</div>
+      </div>
+      <div class="info-card">
+        <h4>Active Cameras</h4>
+        <div class="value">{{ channels|length }}</div>
+        <div class="description">Monitoring front office</div>
+      </div>
+      <div class="info-card">
+        <h4>Status</h4>
+        <div class="value" style="font-size: 20px; color: #22c55e;">● Live</div>
+        <div class="description">Real-time detection</div>
+      </div>
+      <div class="info-card">
+        <h4>Total Violations</h4>
+        <div class="value" id="total-violations">0</div>
+        <div class="description">Today's count</div>
+      </div>
+    </div>
+    
+    {% if channels %}
+      {% for channel in channels %}
+      <div class="video-section">
+        <div class="video-meta">
+          <strong>{{ channel.name }}</strong>
+          <span class="status-badge status-active">● Active</span>
+        </div>
+        <div class="video-box">
+          <div class="video-feed">
+            <img src="/video_feed/IdlePeopleViolation/{{ channel.id }}?t={{ range(1000, 9999) | random }}" 
+                 alt="Live Feed" 
+                 onerror="this.src='/static/placeholder.jpg'">
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty-state">
+        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+        </svg>
+        <h4>No cameras configured</h4>
+        <p>Please configure idle people violation monitoring cameras in the database.</p>
+      </div>
+    {% endif %}
+    
+    <div class="violations-section">
+      <div class="violations-header">
+        <h3>📋 Violation History</h3>
+        <div class="filter-controls">
+          <input type="date" id="start-date" />
+          <input type="date" id="end-date" />
+          <button onclick="loadViolations()">Filter</button>
+        </div>
+      </div>
+      
+      <div class="violations-grid" id="violations-grid">
+        <!-- Violations will be loaded here -->
+      </div>
+      
+      <div class="pagination" id="pagination">
+        <!-- Pagination will be loaded here -->
+      </div>
+    </div>
+  </div>
+  
+  <div class="lightbox" id="lightbox">
+    <span class="lightbox-close" onclick="closeLightbox()">&times;</span>
+    <img id="lightbox-img" src="" alt="Violation Details">
+  </div>
+  
+  <script>
+    let currentPage = 1;
+    const limit = 12;
+    const restaurantId = {{ restaurant_id if restaurant_id else 'null' }};
+    
+    // Set default dates (last 7 days)
+    const today = new Date();
+    const weekAgo = new Date(today);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    document.getElementById('end-date').valueAsDate = today;
+    document.getElementById('start-date').valueAsDate = weekAgo;
+    
+    function loadViolations(page = 1) {
+      currentPage = page;
+      const startDate = document.getElementById('start-date').value;
+      const endDate = document.getElementById('end-date').value;
+      
+      let url = `/history/IdlePeopleViolation?page=${page}&limit=${limit}`;
+      if (startDate) url += `&start_date=${startDate}`;
+      if (endDate) url += `&end_date=${endDate}`;
+      if (restaurantId) url += `&restaurant_id=${restaurantId}`;
+      
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          renderViolations(data.detections);
+          renderPagination(data.page, data.total_pages, data.total);
+          document.getElementById('total-violations').textContent = data.total;
+        })
+        .catch(err => {
+          console.error('Error loading violations:', err);
+          document.getElementById('violations-grid').innerHTML = `
+            <div class="empty-state" style="grid-column: 1/-1;">
+              <h4>Error loading violations</h4>
+              <p>${err.message}</p>
+            </div>
+          `;
+        });
+    }
+    
+    function renderViolations(violations) {
+      const grid = document.getElementById('violations-grid');
+      
+      if (!violations || violations.length === 0) {
+        grid.innerHTML = `
+          <div class="empty-state" style="grid-column: 1/-1;">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+            </svg>
+            <h4>No violations found</h4>
+            <p>No idle person violations recorded for this period.</p>
+          </div>
+        `;
+        return;
+      }
+      
+      grid.innerHTML = violations.map(v => `
+        <div class="violation-item" onclick="showLightbox('${v.media_url}')">
+          <img src="${v.media_url}" alt="Violation" onerror="this.src='/static/placeholder.jpg'">
+          <div class="violation-info">
+            <div class="timestamp">🕒 ${v.timestamp}</div>
+            <div class="message">${v.message}</div>
+            <span class="violation-badge">IDLE PERSON</span>
+          </div>
+        </div>
+      `).join('');
+    }
+    
+    function renderPagination(page, totalPages, total) {
+      const pagination = document.getElementById('pagination');
+      
+      if (totalPages <= 1) {
+        pagination.innerHTML = '';
+        return;
+      }
+      
+      let html = `
+        <button onclick="loadViolations(${page - 1})" ${page === 1 ? 'disabled' : ''}>← Previous</button>
+        <span class="current-page">Page ${page} of ${totalPages} (${total} violations)</span>
+        <button onclick="loadViolations(${page + 1})" ${page === totalPages ? 'disabled' : ''}>Next →</button>
+      `;
+      
+      pagination.innerHTML = html;
+    }
+    
+    function showLightbox(imgUrl) {
+      document.getElementById('lightbox-img').src = imgUrl;
+      document.getElementById('lightbox').classList.add('show');
+    }
+    
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('show');
+    }
+    
+    // Close lightbox on escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeLightbox();
+    });
+    
+    // Load violations on page load
+    loadViolations();
+  </script>
+</body>
+</html>

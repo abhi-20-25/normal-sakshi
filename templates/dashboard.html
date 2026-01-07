@@ -20,6 +20,8 @@
     .nav a { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; color: #d7d8da; text-decoration: none; cursor: pointer; transition: all 0.2s; }
     .nav a:hover { background: rgba(255,255,255,0.05); }
     .nav a.active { background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; }
+    .nav-link-external { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; color: #d7d8da; text-decoration: none; cursor: pointer; transition: all 0.2s; }
+    .nav-link-external:hover { background: rgba(255,255,255,0.05); }
     .nav .icon { width: 34px; height: 34px; border-radius: 8px; background: rgba(255,255,255,0.03); display: flex; align-items: center; justify-content: center; font-size: 18px; }
     .main { overflow: auto; }
     .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; margin-bottom: 20px; }
@@ -345,11 +347,11 @@
         <a href="#" data-view="front-end-violation" class="nav-link">
           <div class="icon">🚨</div><div>Front Office Violation</div>
         </a>
+        <a href="/idle-people-violation{% if selected_restaurant %}?restaurant_id={{ selected_restaurant.id }}{% endif %}" class="nav-link-external">
+          <div class="icon">🚶</div><div>Idle People Violation</div>
+        </a>
         <a href="#" data-view="occupancy" class="nav-link">
           <div class="icon">📊</div><div>Occupancy</div>
-        </a>
-        <a href="#" data-view="idle-time" class="nav-link">
-          <div class="icon">⏰</div><div>Idle Time Monitor</div>
         </a>
       </nav>
     </aside>
@@ -1194,44 +1196,7 @@
         </div>
       </div>
 
-      <!-- Idle Time Monitor Section -->
-      <div id="idle-time-section" class="section">
-        <button class="back-btn" onclick="switchView('overview')">← Back</button>
-        
-        <div class="video-container">
-          <div class="video-box">
-            <div class="video-feed">
-              {% if app_configs.get('IdleTimeMonitor') and app_configs['IdleTimeMonitor'].get('channels') %}
-              <img src="/video_feed/IdleTimeMonitor/{{ app_configs['IdleTimeMonitor']['channels'][0]['id'] }}?t={{ timestamp }}" id="idle-monitor-feed">
-              {% else %}
-              <img src="" alt="No camera configured">
-              {% endif %}
-            </div>
-            <div class="video-meta"><strong>Idle Time Monitor</strong></div>
-          </div>
-        </div>
-        
-        <div class="stats-row">
-          <div class="stat-card">
-            <h4>TOTAL IDLE TIME TODAY</h4>
-            <div class="value" id="idle-total-today">0 min</div>
-          </div>
-          <div class="stat-card">
-            <h4>CURRENT STATUS</h4>
-            <div class="value" id="idle-current-status" style="font-size: 20px;">Active</div>
-          </div>
-          <div class="stat-card">
-            <h4>AVG IDLE DURATION</h4>
-            <div class="value" id="idle-avg-duration">0 min</div>
-          </div>
-        </div>
-        
-        <div class="report-section">
-          <h3>Idle Time History</h3>
-          <div class="history-grid" id="idle-history"></div>
-          <div class="pagination" id="idle-pagination"></div>
-        </div>
-      </div>
+      <!-- Occupancy Section - (formerly Idle Time Monitor section removed) -->
 
       <!-- Conversion Analytics Section -->
       <div id="conversion-analytics-section" class="section">
@@ -2267,8 +2232,7 @@ function switchView(view) {
     'queue-monitor': { id: 'queue-monitor-section', title: 'Queue Monitor', subtitle: 'Queue analytics' },
     'kitchen-compliance': { id: 'kitchen-compliance-section', title: 'Kitchen Compliance', subtitle: 'Safety monitoring' },
     'front-end-violation': { id: 'front-end-violation-section', title: 'Front Office Violation', subtitle: 'Violation detection' },
-    'occupancy': { id: 'occupancy-section', title: 'Kitchen Attendance', subtitle: 'Attendance tracking' },
-    'idle-time': { id: 'idle-time-section', title: 'Idle Time Monitor', subtitle: 'Counter idle tracking' }
+    'occupancy': { id: 'occupancy-section', title: 'Kitchen Attendance', subtitle: 'Attendance tracking' }
   };
   const config = viewMap[view];
   if (config) {

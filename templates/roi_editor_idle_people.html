@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROI Editor - Idle People Violation</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-secondary {
+            background: #e0e7ff;
+            color: #5b21b6;
+        }
+        .btn-secondary:hover {
+            background: #c7d2fe;
+        }
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #059669;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .mode-indicator {
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            background: #fef3c7;
+            color: #92400e;
+            border: 2px solid #f59e0b;
+        }
+        .canvas-container {
+            position: relative;
+            display: inline-block;
+            border: 3px solid #667eea;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            max-width: 100%;
+        }
+        canvas {
+            display: block;
+            cursor: crosshair;
+            background: #000;
+            min-width: 640px;
+            min-height: 480px;
+        }
+        .info-panel {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8fafc;
+            border-radius: 10px;
+            border-left: 4px solid #667eea;
+        }
+        .info-panel h3 {
+            color: #334155;
+            margin-bottom: 12px;
+            font-size: 16px;
+        }
+        .info-panel p {
+            color: #64748b;
+            line-height: 1.6;
+            margin-bottom: 8px;
+            font-size: 14px;
+        }
+        .info-panel ul {
+            margin-left: 20px;
+            color: #64748b;
+        }
+        .info-panel li {
+            margin-bottom: 6px;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.3s;
+        }
+        .back-link:hover {
+            color: #764ba2;
+        }
+        .status-message {
+            padding: 12px 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-weight: 500;
+            display: none;
+        }
+        .status-success {
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #10b981;
+        }
+        .status-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #ef4444;
+        }
+        .point-list {
+            background: #f1f5f9;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        .point-item {
+            padding: 8px;
+            background: white;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .point-coords {
+            font-family: monospace;
+            color: #475569;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/idle-people-violation" class="back-link">← Back to Idle People Violation</a>
+        
+        <h1>🚶 ROI Editor - Idle People Violation</h1>
+        <p class="subtitle">Define the monitoring zone for idle person detection</p>
+        
+        <div id="status-message" class="status-message"></div>
+        
+        <div class="controls">
+            <div class="mode-indicator">
+                🎯 IDLE PEOPLE MONITORING ZONE
+            </div>
+            <button class="btn btn-danger" onclick="clearROI()">Clear ROI</button>
+            <button class="btn btn-secondary" onclick="undoLastPoint()">Undo Last Point</button>
+            <button class="btn btn-success" onclick="saveROI()">💾 Save ROI</button>
+        </div>
+        
+        <div class="canvas-container">
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="info-panel">
+            <h3>📋 Instructions:</h3>
+            <ul>
+                <li><strong>Click</strong> on the video frame to add points and create a monitoring zone polygon</li>
+                <li><strong>Minimum 3 points</strong> required to define a valid zone</li>
+                <li>Only people <strong>inside this zone</strong> will be monitored for idle behavior</li>
+                <li>The polygon will automatically close when you add enough points</li>
+                <li>Click <strong>"Undo Last Point"</strong> to remove the most recent point</li>
+                <li>Click <strong>"Clear ROI"</strong> to start over</li>
+                <li>Click <strong>"Save ROI"</strong> to apply the monitoring zone</li>
+            </ul>
+            
+            <div id="point-list" class="point-list" style="display: none;">
+                <h3 style="margin-bottom: 10px;">Current Points:</h3>
+                <div id="points-container"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const channelId = '{{ channel_id }}';
+        const appName = 'IdlePeopleViolation';
+        
+        let points = [];
+        let videoFrame = new Image();
+        let frameLoaded = false;
+        let userClearedROI = false; // Track if user manually cleared ROI
+        
+        // Load current frame from video feed
+        function loadFrame() {
+            console.log('Loading frame for channel:', channelId, 'app:', appName);
+            videoFrame.src = `/video_feed/${appName}/${channelId}?t=${Date.now()}`;
+            videoFrame.onload = function() {
+                console.log('Frame loaded:', videoFrame.width, 'x', videoFrame.height);
+                // Set canvas to a good size for drawing (scale up if needed)
+                const maxWidth = 1200;
+                const maxHeight = 800;
+                let width = videoFrame.width;
+                let height = videoFrame.height;
+                
+                // Scale up small images
+                if (width < 640) {
+                    const scale = 640 / width;
+                    width = width * scale;
+                    height = height * scale;
+                }
+                
+                // Scale down if too large
+                if (width > maxWidth) {
+                    const scale = maxWidth / width;
+                    width = width * scale;
+                    height = height * scale;
+                }
+                if (height > maxHeight) {
+                    const scale = maxHeight / height;
+                    width = width * scale;
+                    height = height * scale;
+                }
+                
+                canvas.width = width;
+                canvas.height = height;
+                frameLoaded = true;
+                draw();
+                
+                // Only load existing ROI on first load, not after user cleared it
+                if (!userClearedROI) {
+                    loadExistingROI();
+                }
+            };
+            videoFrame.onerror = function() {
+                console.error('Failed to load video frame from:', videoFrame.src);
+                showStatus('Failed to load video frame. Please check if the camera is online.', 'error');
+            };
+        }
+        
+        // Load existing ROI if available
+        function loadExistingROI() {
+            fetch(`/api/get_roi?channel_id=${channelId}&app_name=${appName}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.roi_points && data.roi_points.points && data.roi_points.points.length > 0) {
+                        points = data.roi_points.points.map(p => ({x: p[0], y: p[1]}));
+                        draw();
+                        updatePointList();
+                        showStatus('Loaded existing ROI', 'success');
+                    }
+                })
+                .catch(err => console.log('No existing ROI found'));
+        }
+        
+        // Draw everything
+        function draw() {
+            if (!frameLoaded) return;
+            
+            // Draw video frame
+            ctx.drawImage(videoFrame, 0, 0);
+            
+            // Draw ROI polygon
+            if (points.length > 0) {
+                // Draw lines
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
+                if (points.length > 2) {
+                    ctx.closePath();
+                }
+                ctx.strokeStyle = '#f59e0b';
+                ctx.lineWidth = 3;
+                ctx.stroke();
+                
+                // Fill with semi-transparent color
+                if (points.length > 2) {
+                    ctx.fillStyle = 'rgba(245, 158, 11, 0.2)';
+                    ctx.fill();
+                }
+                
+                // Draw points
+                points.forEach((point, index) => {
+                    ctx.beginPath();
+                    ctx.arc(point.x, point.y, 6, 0, 2 * Math.PI);
+                    ctx.fillStyle = '#ef4444';
+                    ctx.fill();
+                    ctx.strokeStyle = 'white';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    
+                    // Draw point number
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 12px Arial';
+                    ctx.fillText(index + 1, point.x - 4, point.y - 10);
+                });
+            }
+        }
+        
+        // Handle canvas click
+        canvas.addEventListener('click', function(e) {
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.round(e.clientX - rect.left);
+            const y = Math.round(e.clientY - rect.top);
+            
+            points.push({x: x, y: y});
+            draw();
+            updatePointList();
+        });
+        
+        // Update point list display
+        function updatePointList() {
+            const container = document.getElementById('points-container');
+            const listDiv = document.getElementById('point-list');
+            
+            if (points.length > 0) {
+                listDiv.style.display = 'block';
+                container.innerHTML = points.map((p, i) => `
+                    <div class="point-item">
+                        <span>Point ${i + 1}</span>
+                        <span class="point-coords">(${p.x}, ${p.y})</span>
+                    </div>
+                `).join('');
+            } else {
+                listDiv.style.display = 'none';
+            }
+        }
+        
+        // Clear ROI
+        function clearROI() {
+            if (confirm('Are you sure you want to clear the ROI?')) {
+                points = [];
+                userClearedROI = true; // Set flag to prevent auto-reload
+                // Redraw the frame to clear the polygon
+                if (frameLoaded) {
+                    ctx.drawImage(videoFrame, 0, 0);
+                }
+                updatePointList();
+                showStatus('ROI cleared', 'success');
+            }
+        }
+        
+        // Undo last point
+        function undoLastPoint() {
+            if (points.length > 0) {
+                points.pop();
+                draw();
+                updatePointList();
+                showStatus('Last point removed', 'success');
+            }
+        }
+        
+        // Save ROI
+        function saveROI() {
+            if (points.length < 3) {
+                showStatus('Please add at least 3 points to define a monitoring zone', 'error');
+                return;
+            }
+            
+            const roiData = {
+                channel_id: channelId,
+                app_name: appName,
+                roi_points: {
+                    points: points.map(p => [p.x, p.y])
+                }
+            };
+            
+            fetch('/api/set_roi', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(roiData)
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    userClearedROI = false; // Reset flag after successful save
+                    showStatus('✅ ROI saved successfully! The monitoring zone is now active.', 'success');
+                } else {
+                    showStatus('Error saving ROI: ' + data.message, 'error');
+                }
+            })
+            .catch(err => {
+                showStatus('Error saving ROI: ' + err.message, 'error');
+            });
+        }
+        
+        // Show status message
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('status-message');
+            statusDiv.textContent = message;
+            statusDiv.className = 'status-message status-' + type;
+            statusDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+        
+        // Initialize
+        loadFrame();
+        
+        // Refresh frame every 5 seconds to get updated view
+        setInterval(() => {
+            if (!frameLoaded) return;
+            const tempPoints = [...points];
+            loadFrame();
+            points = tempPoints;
+        }, 5000);
+    </script>
+</body>
+</html>

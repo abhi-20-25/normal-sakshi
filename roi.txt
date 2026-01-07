@@ -1,33 +1,7 @@
 {
   "backup_timestamp": "2026-01-02T09:54:56.585792",
-  "total_records": 3,
+  "total_records": 2,
   "roi_configs": [
-    {
-      "id": 3,
-      "channel_id": "cam_f822b0bf4e",
-      "app_name": "IdleTimeMonitor",
-      "roi_points": {
-        "points": [
-          [
-            0.8243749976158142,
-            0.28444442749023435
-          ],
-          [
-            0.7259374976158142,
-            0.5649999830457899
-          ],
-          [
-            0.8399999976158142,
-            0.7344444394111633
-          ],
-          [
-            0.9384374976158142,
-            0.4777777712290287
-          ]
-        ]
-      },
-      "restaurant_id": null
-    },
     {
       "id": 2,
       "channel_id": "cam_3df702bb28",
