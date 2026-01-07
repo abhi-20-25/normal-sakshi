@@ -1002,7 +1002,14 @@
         </div>
         
         <div class="report-section">
-          <h3>History</h3>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h3>History</h3>
+            <div style="display: flex; gap: 10px;">
+              <input type="date" id="qm-start-date" style="background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
+              <input type="date" id="qm-end-date" style="background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
+              <button onclick="loadHistory('queue-monitor', 1)" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Filter</button>
+            </div>
+          </div>
           <div class="history-grid" id="qm-history"></div>
           <div class="pagination" id="qm-pagination"></div>
         </div>
@@ -1022,7 +1029,14 @@
           </div>
         </div>
         <div class="report-section">
-          <h3>Detection History</h3>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h3>Detection History</h3>
+            <div style="display: flex; gap: 10px;">
+              <input type="date" id="kc-start-date" style="background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
+              <input type="date" id="kc-end-date" style="background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
+              <button onclick="loadHistory('kitchen-compliance', 1)" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Filter</button>
+            </div>
+          </div>
           
           <!-- Violation Filter Cards -->
           <div style="margin-bottom: 20px;">
@@ -1097,7 +1111,14 @@
           </div>
         </div>
         <div class="report-section">
-          <h3>Detection History</h3>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h3>Detection History</h3>
+            <div style="display: flex; gap: 10px;">
+              <input type="date" id="fev-start-date" style="background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
+              <input type="date" id="fev-end-date" style="background: #0f1112; border: 1px solid #2a2d31; color: #ddd; padding: 8px 12px; border-radius: 6px; font-size: 13px;" />
+              <button onclick="loadHistory('front-end-violation', 1)" style="background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: 500;">Filter</button>
+            </div>
+          </div>
           
           <!-- Violation Filter Cards -->
           <div style="margin-bottom: 20px;">
@@ -2219,6 +2240,23 @@ function clearFrontOfficeFilter() {
   loadHistory('front-end-violation', 1, null);
 }
 
+// Initialize date filters with default values (last 7 days)
+function initializeDateFilters(prefix) {
+  const today = new Date();
+  const weekAgo = new Date(today);
+  weekAgo.setDate(weekAgo.getDate() - 7);
+  
+  const startDateEl = document.getElementById(prefix + '-start-date');
+  const endDateEl = document.getElementById(prefix + '-end-date');
+  
+  if (startDateEl && !startDateEl.value) {
+    startDateEl.valueAsDate = weekAgo;
+  }
+  if (endDateEl && !endDateEl.value) {
+    endDateEl.valueAsDate = today;
+  }
+}
+
 function switchView(view) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
@@ -2258,9 +2296,18 @@ function switchView(view) {
       if (view === 'kitchen-compliance') {
         // Reset to "All" filter for kitchen
         clearKitchenFilter();
+        // Set default dates (last 7 days)
+        initializeDateFilters('kc');
       } else if (view === 'front-end-violation') {
         // Reset to "All" filter for front office
         clearFrontOfficeFilter();
+        // Set default dates (last 7 days)
+        initializeDateFilters('fev');
+      } else if (view === 'queue-monitor') {
+        // Set default dates (last 7 days)
+        initializeDateFilters('qm');
+        currentViolationFilter = null;
+        currentFrontOfficeFilter = null;
       } else {
         // Clear all filters for other views
         currentViolationFilter = null;
@@ -2315,6 +2362,23 @@ function loadHistory(view, page = 1, violationType = null) {
   } else if (view === 'front-end-violation' && currentFrontOfficeFilter) {
     filterParam = '&violation_type=' + currentFrontOfficeFilter;
   }
+  
+  // Add date filtering
+  let startDate = '';
+  let endDate = '';
+  if (view === 'queue-monitor') {
+    startDate = document.getElementById('qm-start-date')?.value || '';
+    endDate = document.getElementById('qm-end-date')?.value || '';
+  } else if (view === 'kitchen-compliance') {
+    startDate = document.getElementById('kc-start-date')?.value || '';
+    endDate = document.getElementById('kc-end-date')?.value || '';
+  } else if (view === 'front-end-violation') {
+    startDate = document.getElementById('fev-start-date')?.value || '';
+    endDate = document.getElementById('fev-end-date')?.value || '';
+  }
+  
+  if (startDate) filterParam += '&start_date=' + startDate;
+  if (endDate) filterParam += '&end_date=' + endDate;
   
   fetch('/history/' + h.app + '?page=' + page + '&limit=12&channel_id=' + h.ch + filterParam)
     .then(res => res.json())
