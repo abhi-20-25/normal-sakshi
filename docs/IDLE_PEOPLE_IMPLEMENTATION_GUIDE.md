@@ -231,7 +231,56 @@ FROM cameras
 WHERE channel_id = 'cam_bc9c1f31';
 ```
 
-**2. ROI will be stored automatically in `roi_configs` table when user draws polygon**
+**2. ROI Configuration:**
+
+ROI can be configured in two ways:
+
+**Option A: Use ROI Editor (Recommended)**
+- Access `http://localhost:5001/roi_editor_idle_people`
+- Draw polygon by clicking on video frame
+- Click "Save ROI" button
+- ROI automatically saved to database
+
+**Option B: Manual Database Insert**
+
+If you need to add ROI points directly to the database, use this tested configuration:
+
+```sql
+-- Insert ROI points for a camera (Example from Tea Toast - Main store)
+-- These coordinates define a 6-point polygon for Front Office area monitoring
+-- Replace channel_id with your camera's ID and adjust points as needed
+INSERT INTO roi_configs (channel_id, app_name, roi_points)
+VALUES (
+    'cam_bc9c1f31',  -- Replace with your camera's channel_id
+    'IdlePeopleViolation',
+    '{"points": [[51, 155], [154, 77], [196, 38], [120, 0], [23, 85], [20, 168]]}'::jsonb
+)
+ON CONFLICT (channel_id, app_name) 
+DO UPDATE SET roi_points = EXCLUDED.roi_points;
+```
+
+**Verified Working ROI Points (Tea Toast - Front Office):**
+```json
+{
+  "points": [
+    [51, 155],
+    [154, 77],
+    [196, 38],
+    [120, 0],
+    [23, 85],
+    [20, 168]
+  ]
+}
+```
+
+**Verify ROI in database:**
+```sql
+SELECT channel_id, app_name, roi_points 
+FROM roi_configs 
+WHERE app_name = 'IdlePeopleViolation';
+```
+
+**Important:** After adding/updating ROI, restart the application for processor to load new ROI.
 
 ---
 
