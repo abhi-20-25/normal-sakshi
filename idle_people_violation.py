@@ -1,6 +1,6 @@
 import cv2
 import torch
-from ultralytics import YOLO
+from ultralytics import YOLO #type: ignore
 import threading
 import time
 from datetime import datetime
