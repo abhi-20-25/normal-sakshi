@@ -3214,6 +3214,13 @@ document.addEventListener('DOMContentLoaded', () => {
     allCard.style.border = '2px solid #3b82f6';
     allCard.style.background = '#1e293b';
   }
+  
+  // Check if we need to switch to a specific section (from external page navigation)
+  const targetSection = sessionStorage.getItem('dashboardSection');
+  if (targetSection) {
+    sessionStorage.removeItem('dashboardSection'); // Clear it after reading
+    switchView(targetSection);
+  }
 });
 
 async function loadSalesData() {

@@ -9,13 +9,30 @@
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Inter', sans-serif; background: #0f1112; color: #ddd; }
-    .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; }
-    .header h1 { font-size: 32px; color: #f1f3f5; }
-    .header .subtitle { color: #9aa0a6; font-size: 14px; margin-top: 5px; }
-    .back-btn { background: #17181a; padding: 10px 20px; border-radius: 8px; text-decoration: none; color: #ddd; border: 1px solid #2a2d31; font-size: 14px; transition: all 0.2s; }
+    .container { display: grid; grid-template-columns: 260px 1fr; gap: 24px; min-height: 100vh; padding: 18px; }
+    .sidebar { background: #121314; border-radius: 8px; padding: 18px; display: flex; flex-direction: column; gap: 18px; height: fit-content; position: sticky; top: 18px; }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+    .brand .logo { width: 100%; height: 70px; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .brand .logo img { width: 100%; height: 100%; object-fit: contain; }
+    .nav { margin-top: 6px; display: flex; flex-direction: column; gap: 8px; }
+    .nav .section-title { font-size: 12px; color: #8a8f96; margin: 8px 6px; }
+    .nav a { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; color: #d7d8da; text-decoration: none; cursor: pointer; transition: all 0.2s; }
+    .nav a:hover { background: rgba(255,255,255,0.05); }
+    .nav a.active { background: linear-gradient(90deg, #1640ff, #2b3bff); color: white; }
+    .nav .icon { width: 34px; height: 34px; border-radius: 8px; background: rgba(255,255,255,0.03); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .main { overflow: auto; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; margin-bottom: 20px; }
+    .title h2 { font-size: 30px; color: #f1f3f5; }
+    .sub { color: #9aa0a6; font-size: 13px; }
+    .right { display: flex; align-items: center; gap: 8px; }
+    .pill { padding: 6px 12px; border-radius: 8px; font-size: 12px; }
+    .back-btn { background: #17181a; padding: 10px 20px; border-radius: 8px; text-decoration: none; color: #ddd; border: 1px solid #2a2d31; font-size: 14px; transition: all 0.2s; display: inline-block; }
     .back-btn:hover { background: #1f2021; }
+    .restaurant-badge { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(90deg, #1640ff, #2b3bff); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; }
+    .restaurant-badge { display: inline-flex; align-items: center; gap: 6px; background: linear-gradient(90deg, #1640ff, #2b3bff); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500; }
     
+    /* Content Area Styling */
+    .content { padding: 0 6px; }
     .video-section { background: #17181a; border-radius: 12px; padding: 20px; margin-bottom: 25px; }
     .video-box { background: #000; border-radius: 8px; overflow: hidden; max-width: 800px; margin: 0 auto; }
     .video-feed { width: 100%; background: #000; }
@@ -71,104 +88,156 @@
     .legend-color { width: 12px; height: 12px; border-radius: 3px; }
     .legend-green { background: #22c55e; }
     .legend-red { background: #ef4444; }
+    
+    /* Mobile Responsive */
+    @media (max-width: 768px) {
+      .container { grid-template-columns: 1fr; padding: 12px; gap: 12px; }
+      .sidebar { position: static; padding: 12px; }
+      .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
+      .title h2 { font-size: 22px; }
+      .info-grid { grid-template-columns: 1fr; gap: 12px; }
+      .violations-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+      .filter-controls { flex-direction: column; width: 100%; }
+      .filter-controls input, .filter-controls button { width: 100%; }
+    }
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="header">
-      <div>
-        <h1>🚶 Idle People Violation Monitor</h1>
-        <div class="subtitle">Real-time monitoring for idle person detection</div>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo"><img src="/static/Sakshi.png" alt="Sakshi.ai Logo"></div>
       </div>
-      <div style="display: flex; gap: 10px;">
-        {% if channels %}
-        <a href="/roi_editor_idle_people?channel_id={{ channels[0].id }}" class="back-btn" style="background: linear-gradient(90deg, #1640ff, #2b3bff); border: none;">
-          🎯 Edit ROI
+      <nav class="nav">
+        <div class="section-title">NAVIGATION</div>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'overview')">
+          <div class="icon">🏠</div><div>Overview</div>
         </a>
-        {% endif %}
-        <a href="/dashboard" class="back-btn">← Back to Dashboard</a>
-      </div>
-    </div>
-    
-    <div class="legend">
-      <h4>Detection Guide</h4>
-      <div class="legend-item">
-        <div class="legend-color legend-green"></div>
-        <span>Normal tracking (person moving)</span>
-      </div>
-      <div class="legend-item">
-        <div class="legend-color legend-red"></div>
-        <span>VIOLATION: Person idle for 15+ frames</span>
-      </div>
-    </div>
-    
-    <div class="info-grid">
-      <div class="info-card">
-        <h4>Idle Threshold</h4>
-        <div class="value">15</div>
-        <div class="description">Frames to trigger violation</div>
-      </div>
-      <div class="info-card">
-        <h4>Active Cameras</h4>
-        <div class="value">{{ channels|length }}</div>
-        <div class="description">Monitoring front office</div>
-      </div>
-      <div class="info-card">
-        <h4>Status</h4>
-        <div class="value" style="font-size: 20px; color: #22c55e;">● Live</div>
-        <div class="description">Real-time detection</div>
-      </div>
-      <div class="info-card">
-        <h4>Total Violations</h4>
-        <div class="value" id="total-violations">0</div>
-        <div class="description">Today's count</div>
-      </div>
-    </div>
-    
-    {% if channels %}
-      {% for channel in channels %}
-      <div class="video-section">
-        <div class="video-meta">
-          <strong>{{ channel.name }}</strong>
-          <span class="status-badge status-active">● Active</span>
+        <div class="section-title">ANALYTICS</div>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'sales-analytics')">
+          <div class="icon">💰</div><div>Sales Analytics</div>
+        </a>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'conversion-analytics')">
+          <div class="icon">📈</div><div>Conversion Analytics</div>
+        </a>
+        <div class="section-title">APPLICATIONS</div>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'people-counter')">
+          <div class="icon">👥</div><div>People Counter</div>
+        </a>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'queue-monitor')">
+          <div class="icon">⏱️</div><div>Queue Monitor</div>
+        </a>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'kitchen-compliance')">
+          <div class="icon">👨‍🍳</div><div>Kitchen Compliance</div>
+        </a>
+        <a href="/idle-people-violation{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" class="active">
+          <div class="icon">🚶</div><div>Idle People Violation</div>
+        </a>
+        <a href="/dashboard{% if restaurant_id %}?restaurant_id={{ restaurant_id }}{% endif %}" onclick="return navigateToDashboard(event, 'occupancy')">
+          <div class="icon">📊</div><div>Occupancy</div>
+        </a>
+      </nav>
+    </aside>
+    <main class="main">
+      <div class="topbar">
+        <div class="title">
+          <h2>🚶 Idle People Violation Monitor</h2>
+          <div class="sub">Real-time monitoring for idle person detection</div>
         </div>
-        <div class="video-box">
-          <div class="video-feed">
-            <img src="/video_feed/IdlePeopleViolation/{{ channel.id }}?t={{ range(1000, 9999) | random }}" 
-                 alt="Live Feed" 
-                 onerror="this.src='/static/placeholder.jpg'">
+        <div class="right">
+          {% if channels %}
+          <a href="/roi_editor_idle_people?channel_id={{ channels[0].id }}" class="back-btn" style="background: linear-gradient(90deg, #1640ff, #2b3bff); border: none;">
+            🎯 Edit ROI
+          </a>
+          {% endif %}
+          <a href="/logout" class="pill" style="background:#26a44b;color:#fff;text-decoration:none">Logout</a>
+        </div>
+      </div>
+      
+      <div class="content">
+        <div class="legend">
+          <h4>Detection Guide</h4>
+        <div class="legend">
+          <h4>Detection Guide</h4>
+          <div class="legend-item">
+            <div class="legend-color legend-green"></div>
+            <span>Normal tracking (person moving)</span>
+          </div>
+          <div class="legend-item">
+            <div class="legend-color legend-red"></div>
+            <span>VIOLATION: Person idle for 15+ frames</span>
+          </div>
+        </div>
+        
+        <div class="info-grid">
+          <div class="info-card">
+            <h4>Idle Threshold</h4>
+            <div class="value">15</div>
+            <div class="description">Frames to trigger violation</div>
+          </div>
+          <div class="info-card">
+            <h4>Active Cameras</h4>
+            <div class="value">{{ channels|length }}</div>
+            <div class="description">Monitoring front office</div>
+          </div>
+          <div class="info-card">
+            <h4>Status</h4>
+            <div class="value" style="font-size: 20px; color: #22c55e;">● Live</div>
+            <div class="description">Real-time detection</div>
+          </div>
+          <div class="info-card">
+            <h4>Total Violations</h4>
+            <div class="value" id="total-violations">0</div>
+            <div class="description">Today's count</div>
+          </div>
+        </div>
+        
+        {% if channels %}
+          {% for channel in channels %}
+          <div class="video-section">
+            <div class="video-meta">
+              <strong>{{ channel.name }}</strong>
+              <span class="status-badge status-active">● Active</span>
+            </div>
+            <div class="video-box">
+              <div class="video-feed">
+                <img src="/video_feed/IdlePeopleViolation/{{ channel.id }}?t={{ range(1000, 9999) | random }}" 
+                     alt="Live Feed" 
+                     onerror="this.src='/static/placeholder.jpg'">
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <div class="empty-state">
+            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
+            </svg>
+            <h4>No cameras configured</h4>
+            <p>Please configure idle people violation monitoring cameras in the database.</p>
+          </div>
+        {% endif %}
+        
+        <div class="violations-section">
+          <div class="violations-header">
+            <h3>📋 Violation History</h3>
+            <div class="filter-controls">
+              <input type="date" id="start-date" />
+              <input type="date" id="end-date" />
+              <button onclick="loadViolations()">Filter</button>
+            </div>
+          </div>
+          
+          <div class="violations-grid" id="violations-grid">
+            <!-- Violations will be loaded here -->
+          </div>
+          
+          <div class="pagination" id="pagination">
+            <!-- Pagination will be loaded here -->
           </div>
         </div>
       </div>
-      {% endfor %}
-    {% else %}
-      <div class="empty-state">
-        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path>
-        </svg>
-        <h4>No cameras configured</h4>
-        <p>Please configure idle people violation monitoring cameras in the database.</p>
-      </div>
-    {% endif %}
-    
-    <div class="violations-section">
-      <div class="violations-header">
-        <h3>📋 Violation History</h3>
-        <div class="filter-controls">
-          <input type="date" id="start-date" />
-          <input type="date" id="end-date" />
-          <button onclick="loadViolations()">Filter</button>
-        </div>
-      </div>
-      
-      <div class="violations-grid" id="violations-grid">
-        <!-- Violations will be loaded here -->
-      </div>
-      
-      <div class="pagination" id="pagination">
-        <!-- Pagination will be loaded here -->
-      </div>
-    </div>
+    </main>
   </div>
   
   <div class="lightbox" id="lightbox">
@@ -180,6 +249,17 @@
     let currentPage = 1;
     const limit = 12;
     const restaurantId = {{ restaurant_id if restaurant_id else 'null' }};
+    
+    // Navigation function to handle dashboard section switching
+    function navigateToDashboard(event, section) {
+      event.preventDefault();
+      const url = event.currentTarget.href;
+      // Store the section to show in sessionStorage
+      sessionStorage.setItem('dashboardSection', section);
+      // Navigate to dashboard
+      window.location.href = url;
+      return false;
+    }
     
     // Set default dates (last 7 days)
     const today = new Date();
