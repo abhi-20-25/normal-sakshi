@@ -1435,6 +1435,16 @@
     const selected_restaurant = {{ selected_restaurant|tojson|safe if selected_restaurant else 'null' }};
     const all_restaurants = {{ restaurants|tojson|safe if restaurants else '[]' }};
     
+    // Helper function to get PetPooja restaurant ID from selected restaurant
+    function getPetPoojaRestaurantId() {
+        if (!selected_restaurant || !selected_restaurant.id) {
+            return null;
+        }
+        // Find the restaurant in all_restaurants to get petpooja_rest_id
+        const restaurant = all_restaurants.find(r => r.id === selected_restaurant.id);
+        return restaurant ? restaurant.petpooja_rest_id : null;
+    }
+    
     // Build channels object dynamically from app_configs
     const channels = {};
     for (const [app_name, config] of Object.entries(app_configs)) {
@@ -2653,23 +2663,14 @@ function loadConversionData() {
   const days = document.getElementById('conversionDaysFilter').value;
   document.getElementById('conversionErrorContainer').innerHTML = '';
   
-  // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
-  if (selected_restaurant && selected_restaurant.id !== 2) {
-    console.log('Non-main branch selected - showing zero data for conversion analytics');
-    // Show zero data
-    document.getElementById('conversionRate').innerHTML = '0<span style="font-size: 16px; color: #6d7377; margin-left: 4px;">%</span>';
-    document.getElementById('conversionTotalVisitors').textContent = '0';
-    document.getElementById('conversionTotalOrders').textContent = '0';
-    document.getElementById('conversionTotalRevenue').textContent = '₹0';
-    document.getElementById('conversionRevenuePerVisitor').textContent = '₹0';
-    document.getElementById('conversionAvgOrderValue').textContent = '₹0';
-    document.getElementById('peakHoursContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #9aa0a6;">PetPooja API not available for this branch</div>';
-    return;
-  }
-  
-  // Build URL with restaurant filter if applicable
+  // Build URL with restaurant filter
   let url = `/api/analytics/footfall-conversion?days=${days}`;
-  console.log('Fetching conversion data for main branch, last', days, 'days');
+  if (selected_restaurant && selected_restaurant.id) {
+    url += `&restaurant_id=${selected_restaurant.id}`;
+    console.log(`Fetching conversion data for restaurant ${selected_restaurant.id}, last ${days} days`);
+  } else {
+    console.log('Fetching conversion data for all restaurants, last', days, 'days');
+  }
   
   fetch(url, {
     credentials: 'same-origin',
@@ -2712,9 +2713,6 @@ function loadConversionData() {
             <div style="font-size: 14px; color: #9aa0a6; margin-top: 8px;">
               ${Math.round(busiestVisitors.avg_visitors)} visitors
             </div>
-            <div style="font-size: 12px; color: #6d7377; margin-top: 4px;">
-              ${Math.round(busiestOrders.avg_orders)} orders
-            </div>
           </div>
           
           <div style="background: #f59e0b20; border: 2px solid #f59e0b; padding: 20px; border-radius: 8px; text-align: center; flex: 1;">
@@ -2722,9 +2720,6 @@ function loadConversionData() {
             <div style="font-size: 32px; font-weight: 700; margin: 12px 0; color: #fff;">${busiestOrders.hour_label}</div>
             <div style="font-size: 14px; color: #9aa0a6; margin-top: 8px;">
               ${Math.round(busiestOrders.avg_orders)} orders
-            </div>
-            <div style="font-size: 12px; color: #6d7377; margin-top: 4px;">
-              ${Math.round(busiestOrders.avg_visitors)} visitors
             </div>
           </div>
         `;
@@ -2751,19 +2746,17 @@ function loadPromotionEffectiveness() {
   const days = document.getElementById('promotionDaysFilter').value;
   document.getElementById('promotionErrorContainer').innerHTML = '';
   
-  // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
-  if (selected_restaurant && selected_restaurant.id !== 2) {
-    console.log('Non-main branch selected - showing zero data for promotion effectiveness');
-    document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">PetPooja API not available for this branch</td></tr>';
-    return;
-  }
-  
   // Show loading state
   document.getElementById('promotionDataTableBody').innerHTML = '<tr><td colspan="7" style="text-align: center; padding: 40px; color: #9aa0a6;">Loading data...</td></tr>';
   
-  // Build URL for main branch
+  // Build URL with restaurant filter
   let url = `/api/analytics/footfall-conversion?days=${days}`;
-  console.log('Fetching promotion effectiveness data for main branch, last', days, 'days');
+  if (selected_restaurant && selected_restaurant.id) {
+    url += `&restaurant_id=${selected_restaurant.id}`;
+    console.log(`Fetching promotion effectiveness data for restaurant ${selected_restaurant.id}, last ${days} days`);
+  } else {
+    console.log('Fetching promotion effectiveness data for all restaurants, last', days, 'days');
+  }
   
   fetch(url, {
     credentials: 'same-origin',
@@ -2786,9 +2779,8 @@ function loadPromotionEffectiveness() {
         throw new Error('Invalid data format received');
       }
       
-      // REMOVED: Hour >= 9 AM filtering to match Sales Analytics behavior
-      // All hours are now included to show consistent order counts
-      const filteredData = data.hourly_data;
+      // Filter to business hours 6 AM - 11 PM (hours 6-23)
+      const filteredData = data.hourly_data.filter(row => row.hour >= 6 && row.hour <= 23);
       
       const tbody = document.getElementById('promotionDataTableBody');
       
@@ -2834,7 +2826,7 @@ function loadPromotionEffectiveness() {
         tbody.innerHTML = dailyArray.map(row => `
           <tr>
             <td><strong>${row.date}</strong></td>
-            <td>9 AM - 11 PM</td>
+            <td>6 AM - 11 PM</td>
             <td><strong>${row.visitors}</strong></td>
             <td><strong>${row.orders}</strong></td>
             <td><strong>${formatCurrency(row.revenue)}</strong></td>
@@ -3022,14 +3014,14 @@ function loadStaffingRecommendations(days) {
 }
 
 function loadInventoryRecommendations() {
-  // Check if non-main branch is selected
-  if (selected_restaurant && selected_restaurant.id !== 2) {
-    document.getElementById('inventoryRecommendationsContainer').innerHTML = '<div style="padding: 40px; text-align: center; color: #9aa0a6;">PetPooja API not available for this branch</div>';
-    return;
+  // Build URL with restaurant filter if selected
+  let url = '/api/menu-time-popularity?days=30';
+  if (selected_restaurant && selected_restaurant.id) {
+    url += `&restaurant_id=${selected_restaurant.id}`;
   }
   
   // Fetch time-based menu data to get popular items by time of day
-  fetch('/api/menu-time-popularity?days=30', {
+  fetch(url, {
     credentials: 'same-origin',
     headers: { 'Accept': 'application/json' }
   })
@@ -3227,10 +3219,15 @@ async function loadSalesData() {
     console.log("Fetching sales data...");
     updateMonthHeaders();
 
-    // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
-    if (selected_restaurant && selected_restaurant.id !== 2) {
-        console.log('Non-main branch selected - showing zero data for sales analytics');
-        // Show zero data
+    // Build restaurant filter parameter for FastAPI (needs PetPooja restID, not database ID)
+    let restaurantParam = '';
+    const petpoojaRestId = getPetPoojaRestaurantId();
+    if (petpoojaRestId) {
+        restaurantParam = `&restaurant_id=${petpoojaRestId}`;
+        console.log(`Fetching sales data for PetPooja restaurant ${petpoojaRestId}`);
+    } else if (selected_restaurant && selected_restaurant.id) {
+        console.log(`Restaurant ${selected_restaurant.id} has no PetPooja integration - showing empty data`);
+        // Show empty state
         document.getElementById('sa-total-sales').textContent = '₹0';
         document.getElementById('sa-order-count').textContent = '0';
         document.getElementById('sa-avg-value').textContent = '₹0';
@@ -3238,13 +3235,15 @@ async function loadSalesData() {
         renderPaymentModes([]);
         renderOrderTypes([]);
         const tbody = document.querySelector('#sa-top-items-table tbody');
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #9aa0a6;">PetPooja API not available for this branch</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #9aa0a6;">No PetPooja data for this restaurant</td></tr>';
         return;
+    } else {
+        console.log('Fetching sales data for all restaurants');
     }
 
     try {
         // 1. Fetch Daily Sales (Last 7 days)
-        const salesRes = await fetch(`${FASTAPI_URL}/analytics/sales-daily?days=7&token=${API_TOKEN}`);
+        const salesRes = await fetch(`${FASTAPI_URL}/analytics/sales-daily?days=7&token=${API_TOKEN}${restaurantParam}`);
         if (!salesRes.ok) throw new Error(`HTTP ${salesRes.status}`);
         const salesData = await salesRes.json();
         renderSalesTrend(salesData);
@@ -3262,19 +3261,19 @@ async function loadSalesData() {
         }
 
         // 2. Fetch Payment Modes
-        const payRes = await fetch(`${FASTAPI_URL}/analytics/payment-modes?token=${API_TOKEN}`);
+        const payRes = await fetch(`${FASTAPI_URL}/analytics/payment-modes?token=${API_TOKEN}${restaurantParam}`);
         if (!payRes.ok) throw new Error(`HTTP ${payRes.status}`);
         const payData = await payRes.json();
         renderPaymentModes(payData);
 
         // 3. Fetch Order Types (Online/Offline)
-        const typeRes = await fetch(`${FASTAPI_URL}/analytics/order-types?token=${API_TOKEN}`);
+        const typeRes = await fetch(`${FASTAPI_URL}/analytics/order-types?token=${API_TOKEN}${restaurantParam}`);
         if (!typeRes.ok) throw new Error(`HTTP ${typeRes.status}`);
         const typeData = await typeRes.json();
         renderOrderTypes(typeData);
 
         // 4. Fetch Top Items
-        const itemRes = await fetch(`${FASTAPI_URL}/analytics/top-items?limit=5&token=${API_TOKEN}`);
+        const itemRes = await fetch(`${FASTAPI_URL}/analytics/top-items?limit=5&token=${API_TOKEN}${restaurantParam}`);
         if (!itemRes.ok) throw new Error(`HTTP ${itemRes.status}`);
         const itemData = await itemRes.json();
         renderTopItems(itemData);
@@ -3423,32 +3422,20 @@ function updateMonthHeaders() {
 // ============ MENU TIME POPULARITY FUNCTIONS ============
 
 async function loadMenuTimePopularity() {
-    // Check if non-main branch is selected (only main branch id=2 has PetPooja API)
-    if (selected_restaurant && selected_restaurant.id !== 2) {
-        console.log('Non-main branch selected - showing zero data for menu time popularity');
-        showMenuTimeError('PetPooja API not available for this branch');
-        // Clear all period data
-        ['morning', 'afternoon', 'evening'].forEach(period => {
-            const revenueEl = document.getElementById(`mtp-${period}-revenue`);
-            const qtyEl = document.getElementById(`mtp-${period}-qty`);
-            const footfallEl = document.getElementById(`mtp-${period}-footfall`);
-            const tableBody = document.getElementById(`mtp-${period}-table`);
-            const chartContainer = document.getElementById(`mtp-${period}-chart`);
-            if (revenueEl) revenueEl.textContent = '₹0';
-            if (qtyEl) qtyEl.textContent = '0';
-            if (footfallEl) footfallEl.textContent = '0';
-            if (tableBody) tableBody.innerHTML = '<tr><td colspan="3" style="padding: 20px; text-align: center; color: #6d7377;">No data available for this branch</td></tr>';
-            if (chartContainer) chartContainer.innerHTML = '<div style="width: 100%; text-align: center; color: #6d7377; padding-top: 40px;">No data</div>';
-        });
-        document.getElementById('mtp-suggestions').innerHTML = '<div style="padding: 20px; text-align: center; color: #6d7377;">No suggestions available</div>';
-        return;
+    // Build restaurant filter parameter - menu API is local backend, uses database ID
+    let restaurantParam = '';
+    if (selected_restaurant && selected_restaurant.id) {
+        restaurantParam = `&restaurant_id=${selected_restaurant.id}`;
+        console.log(`Fetching menu time popularity for restaurant ${selected_restaurant.id}`);
+    } else {
+        console.log('Fetching menu time popularity for all restaurants');
     }
 
     try {
         const daysFilter = document.getElementById('menuPopularityDaysFilter');
         const days = daysFilter ? daysFilter.value : 30;
         
-        const response = await fetch(`/api/menu-time-popularity?days=${days}`);
+        const response = await fetch(`/api/menu-time-popularity?days=${days}${restaurantParam}`);
         const data = await response.json();
         
         if (!data.success) {

@@ -56,7 +56,8 @@ from kitchen_compliance_monitor import KitchenComplianceProcessor
 from idle_people_violation import IdlePeopleViolationProcessor
 from petpooja_integration import (
     create_petpooja_services,
-    PetPoojaDatabase
+    PetPoojaDatabase,
+    get_petpooja_restaurant_id
 )
 
 # --- Basic Logging Setup ---
@@ -78,7 +79,8 @@ logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
 # --- Master Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
+DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi" 
+
 RTSP_LINKS_FILE = 'data/rtsp_links.txt'
 
 # Initialize PetPooja services (will be used in Flask routes)
@@ -369,6 +371,7 @@ class Restaurant(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=lambda: datetime.now(IST))
     updated_at = Column(DateTime, default=lambda: datetime.now(IST), onupdate=lambda: datetime.now(IST))
+    petpooja_rest_id = Column(String(50))  # PetPooja restaurant ID for API filtering
 
 class Camera(Base):
     __tablename__ = "cameras"
@@ -2445,13 +2448,94 @@ def logout():
 @login_required
 def conversion_analytics():
     """Footfall-to-Sales Conversion Analytics Page"""
-    return render_template('conversion_analytics.html')
+    restaurant_id = request.args.get('restaurant_id', type=int)
+    
+    # Get restaurants list for selector
+    with SessionLocal() as db:
+        restaurants_data = db.execute(text("""
+            SELECT id, restaurant_code, restaurant_name, location
+            FROM restaurants
+            WHERE is_active = true
+            ORDER BY id
+        """)).fetchall()
+        
+        restaurants = [
+            {
+                'id': r[0],
+                'code': r[1],
+                'name': r[2],
+                'location': r[3],
+                'display_name': f"{r[2]} - {r[3]}"
+            }
+            for r in restaurants_data
+        ]
+        
+        # Add "All Restaurants" option at the beginning
+        all_option = {
+            'id': None,
+            'code': 'all',
+            'name': 'All Restaurants',
+            'location': 'Combined',
+            'display_name': '🏢 All Restaurants'
+        }
+        restaurants.insert(0, all_option)
+        
+        # Get selected restaurant details
+        selected_restaurant = None
+        if restaurant_id:
+            selected = [r for r in restaurants if r['id'] == restaurant_id]
+            selected_restaurant = selected[0] if selected else None
+    
+    return render_template('conversion_analytics.html',
+                         restaurants=restaurants,
+                         selected_restaurant=selected_restaurant,
+                         restaurant_id=restaurant_id)
 
 @app.route('/debug-conversion')
 @login_required
 def debug_conversion():
     """Debug page for conversion analytics"""
-    return render_template('debug_conversion.html')
+    restaurant_id = request.args.get('restaurant_id', type=int)
+    
+    # Get restaurants list for selector
+    with SessionLocal() as db:
+        restaurants_data = db.execute(text("""
+            SELECT id, restaurant_code, restaurant_name, location
+            FROM restaurants
+            WHERE is_active = true
+            ORDER BY id
+        """)).fetchall()
+        
+        restaurants = [
+            {
+                'id': r[0],
+                'code': r[1],
+                'name': r[2],
+                'location': r[3],
+                'display_name': f"{r[2]} - {r[3]}"
+            }
+            for r in restaurants_data
+        ]
+        
+        # Add "All Restaurants" option
+        all_option = {
+            'id': None,
+            'code': 'all',
+            'name': 'All Restaurants',
+            'location': 'Combined',
+            'display_name': '🏢 All Restaurants'
+        }
+        restaurants.insert(0, all_option)
+        
+        selected_restaurant = None
+        if restaurant_id:
+            selected = [r for r in restaurants if r['id'] == restaurant_id]
+            selected_restaurant = selected[0] if selected else None
+    
+    return render_template('debug_conversion.html',
+                         restaurants=restaurants,
+                         selected_restaurant=selected_restaurant,
+                         restaurant_id=restaurant_id)
 
 @app.route('/idle-people-violation')
 @login_required
@@ -2505,7 +2589,8 @@ def dashboard():
                         'id': r.id,
                         'restaurant_name': r.restaurant_name,
                         'location': r.location,
-                        'display_name': f"{r.restaurant_name} - {r.location}" if r.location else r.restaurant_name
+                        'display_name': f"{r.restaurant_name} - {r.location}" if r.location else r.restaurant_name,
+                        'petpooja_rest_id': r.petpooja_rest_id
                     }
                     for r in restaurant_query
                 ]
@@ -2527,7 +2612,8 @@ def dashboard():
                         selected_restaurant = {
                             'id': selected.id,
                             'restaurant_name': selected.restaurant_name,
-                            'location': selected.location
+                            'location': selected.location,
+                            'petpooja_rest_id': selected.petpooja_rest_id
                         }
         except Exception as e:
             logging.warning(f"Could not load restaurants for dashboard: {e}")
@@ -2925,33 +3011,39 @@ def get_footfall_conversion():
         
         with SessionLocal() as db:
             # STEP 1: Get footfall data from local database (hourly_footfall)
-            footfall_query = db.query(
-                HourlyFootfall.report_date,
-                HourlyFootfall.hour,
-                func.sum(HourlyFootfall.in_count).label('visitors')
-            )
-            
-            # Only join with cameras if filtering by restaurant AND cameras table has data
-            if restaurant_id:
-                camera_count = db.query(Camera).count()
-                if camera_count > 0:
-                    footfall_query = footfall_query.join(
-                        Camera, HourlyFootfall.channel_id == Camera.channel_id
-                    ).filter(Camera.restaurant_id == restaurant_id)
-                    logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
-                else:
-                    logging.warning(f"⚠️ restaurant_id={restaurant_id} provided but cameras table is empty - showing all footfall data")
-            
-            footfall_query = footfall_query.filter(
-                HourlyFootfall.report_date >= start_date,
-                HourlyFootfall.report_date <= end_date
-            ).group_by(
-                HourlyFootfall.report_date,
-                HourlyFootfall.hour
-            ).order_by(
-                HourlyFootfall.report_date,
-                HourlyFootfall.hour
-            ).all()
+            try:
+                footfall_query = db.query(
+                    HourlyFootfall.report_date,
+                    HourlyFootfall.hour,
+                    func.sum(HourlyFootfall.in_count).label('visitors')
+                )
+                
+                # Only join with cameras if filtering by restaurant AND cameras table has data
+                if restaurant_id:
+                    camera_count = db.query(Camera).count()
+                    if camera_count > 0:
+                        footfall_query = footfall_query.join(
+                            Camera, HourlyFootfall.channel_id == Camera.channel_id
+                        ).filter(Camera.restaurant_id == restaurant_id)
+                        logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
+                    else:
+                        logging.warning(f"⚠️ restaurant_id={restaurant_id} provided but cameras table is empty - showing all footfall data")
+                
+                footfall_query = footfall_query.filter(
+                    HourlyFootfall.report_date >= start_date,
+                    HourlyFootfall.report_date <= end_date
+                ).group_by(
+                    HourlyFootfall.report_date,
+                    HourlyFootfall.hour
+                ).order_by(
+                    HourlyFootfall.report_date,
+                    HourlyFootfall.hour
+                ).all()
+            except Exception as footfall_error:
+                logging.error(f"❌ Error querying footfall data: {footfall_error}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({"error": f"Failed to query footfall data: {str(footfall_error)}"}), 500
             
             logging.info(f"📊 Footfall Query Results: {len(footfall_query)} records from {start_date} to {end_date}")
             if footfall_query:
@@ -2959,9 +3051,15 @@ def get_footfall_conversion():
                 logging.info(f"   Last record: {footfall_query[-1].report_date} hour {footfall_query[-1].hour} - {footfall_query[-1].visitors} visitors")
             
             # STEP 2: Get sales data using PetPooja integration module
-            sales_query, remote_api_used = pp_sales_analytics.get_sales_data(
-                db, start_date, end_date, use_remote=True
-            )
+            try:
+                sales_query, remote_api_used = pp_sales_analytics.get_sales_data(
+                    db, start_date, end_date, use_remote=True, restaurant_id=restaurant_id
+                )
+            except Exception as sales_error:
+                logging.error(f"❌ Error getting sales data: {sales_error}")
+                import traceback
+                traceback.print_exc()
+                return jsonify({"error": f"Failed to get sales data: {str(sales_error)}"}), 500
             
             logging.info(f"📊 Sales Query Results: {len(sales_query) if sales_query else 0} records (source: {'REMOTE' if remote_api_used else 'LOCAL'})")
             if sales_query:
@@ -2970,7 +3068,9 @@ def get_footfall_conversion():
             
             # If remote API failed, try daily distribution
             if not sales_query and not remote_api_used:
-                daily_sales = pp_sales_analytics.client.get_daily_sales(start_date, end_date)
+                # Convert database restaurant_id to PetPooja restID using database lookup
+                petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
+                daily_sales = pp_sales_analytics.client.get_daily_sales(start_date, end_date, petpooja_restaurant_id)
                 if daily_sales:
                     # Build footfall distribution for smart allocation
                     footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
@@ -3033,24 +3133,31 @@ def get_footfall_conversion():
                 hourly_aggregates[hour]['orders'].append(row['orders'])
                 hourly_aggregates[hour]['revenue'].append(row['revenue'])
             
-            # Calculate averages and identify peaks
+            # Calculate averages and identify peaks - show all business hours 6am-11pm
             hourly_stats = []
-            for hour in range(24):
+            for hour in range(6, 24):  # Only business hours 6am-11pm
+                # Always include hour, even with no data (show 0, 0)
                 if hour in hourly_aggregates:
                     agg = hourly_aggregates[hour]
                     avg_visitors = sum(agg['visitors']) / len(agg['visitors']) if agg['visitors'] else 0
                     avg_orders = sum(agg['orders']) / len(agg['orders']) if agg['orders'] else 0
                     avg_revenue = sum(agg['revenue']) / len(agg['revenue']) if agg['revenue'] else 0
                     total_volume = sum(agg['visitors']) + sum(agg['orders'])
+                else:
+                    # No data for this hour - show zeros
+                    avg_visitors = 0
+                    avg_orders = 0
+                    avg_revenue = 0
+                    total_volume = 0
                     
-                    hourly_stats.append({
-                        'hour': hour,
-                        'hour_label': datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0'),
-                        'avg_visitors': round(avg_visitors, 1),
-                        'avg_orders': round(avg_orders, 1),
-                        'avg_revenue': round(avg_revenue, 2),
-                        'total_volume': total_volume
-                    })
+                hourly_stats.append({
+                    'hour': hour,
+                    'hour_label': datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0'),
+                    'avg_visitors': round(avg_visitors, 1),
+                    'avg_orders': round(avg_orders, 1),
+                    'avg_revenue': round(avg_revenue, 2),
+                    'total_volume': total_volume
+                })
             
             # Find busiest hour by visitors and hour with most orders
             busiest_by_visitors = max(hourly_stats, key=lambda x: x['avg_visitors']) if hourly_stats else None
@@ -3265,15 +3372,16 @@ def get_staffing_recommendations():
                 'end_date': end_date
             }).fetchall()
             
-            # Build hourly recommendations
+            # Build hourly recommendations for business hours 6am-11pm (6-23)
             recommendations = []
-            for hour in range(24):
+            for hour in range(6, 24):  # Only 6am to 11pm
                 # Get footfall data for this hour
                 footfall_data = next((f for f in footfall_query if f.hour == hour), None)
                 sales_data = next((s for s in sales_query if s.sale_hour == hour), None)
                 
-                if not footfall_data and not sales_data:
-                    continue  # Skip hours with no data
+                # Always include the hour, even if no data (show 0, 0)
+                # if not footfall_data and not sales_data:
+                #     continue  # OLD: Skip hours with no data
                 
                 avg_visitors = float(footfall_data.avg_visitors) if footfall_data else 0
                 max_visitors = int(footfall_data.max_visitors) if footfall_data else 0
@@ -3923,11 +4031,13 @@ def menu_time_popularity():
     try:
         # Get date range (default: last 30 days)
         days = request.args.get('days', 30, type=int)
+        restaurant_id = request.args.get('restaurant_id', type=int)
         end_date_ist = datetime.now(IST).date()
         start_date_ist = end_date_ist - timedelta(days=days - 1)
         
         logging.info(f"📅 IST Date Range: {start_date_ist} to {end_date_ist}")
         logging.info(f"📅 Days requested: {days}")
+        logging.info(f"🏪 Restaurant ID filter: {restaurant_id}")
         
         # Get current time for filtering TODAY's future orders
         current_time_ist = datetime.now(IST)
@@ -3952,13 +4062,24 @@ def menu_time_popularity():
             
             logging.info(f"🌐 Querying remote API with buffer: {api_start_date} to {api_end_date}")
             
+            # Build params - NOTE: Remote API doesn't support restaurant_id, we filter client-side
+            params = {
+                'start_date': api_start_date.isoformat(),
+                'end_date': api_end_date.isoformat(),
+                'token': API_TOKEN
+            }
+            
+            # Get PetPooja restaurant ID for client-side filtering
+            petpooja_rest_id = None
+            if restaurant_id:
+                with SessionLocal() as db:
+                    petpooja_rest_id = get_petpooja_restaurant_id(restaurant_id, db)
+                    if petpooja_rest_id:
+                        logging.info(f"🏪 Will filter by PetPooja restaurant_id: {petpooja_rest_id} (client-side)")
+            
             response = requests.get(
                 f'{FASTAPI_URL}/webhook/events/search/date-range',
-                params={
-                    'start_date': api_start_date.isoformat(),
-                    'end_date': api_end_date.isoformat(),
-                    'token': API_TOKEN
-                },
+                params=params,
                 timeout=30
             )
             response.raise_for_status()
@@ -3967,9 +4088,17 @@ def menu_time_popularity():
             
             # First pass: Filter and extract order data
             filtered_orders = {}
+            restaurant_filtered_count = 0  # Track how many were filtered by restaurant
             
             for event in all_events:
                 if event.get('content', {}).get('event') == 'orderdetails':
+                    # Client-side restaurant filtering (since remote API doesn't support it)
+                    if petpooja_rest_id:
+                        event_rest_id = event.get('content', {}).get('properties', {}).get('Restaurant', {}).get('restID')
+                        if event_rest_id != petpooja_rest_id:
+                            restaurant_filtered_count += 1
+                            continue  # Skip orders from other restaurants
+                    
                     order = event.get('content', {}).get('properties', {}).get('Order', {})
                     order_id = order.get('orderID')
                     
@@ -4015,6 +4144,8 @@ def menu_time_popularity():
             
             # Use filtered and deduplicated orders
             seen_order_ids = filtered_orders
+            if petpooja_rest_id:
+                logging.info(f"🏪 Restaurant filter applied: Excluded {restaurant_filtered_count} orders from other restaurants")
             logging.info(f"✅ Processed {len(seen_order_ids)} unique orders after IST filtering and deduplication")
             
         except Exception as e:
@@ -4161,10 +4292,33 @@ def menu_time_popularity():
                     footfall_data[row.time_period]['visitors'] = int(row.total_visitors) if row.total_visitors else 0
                     footfall_data[row.time_period]['days_count'] = int(row.days_count) if row.days_count else 0
         
-        # Calculate metrics
-        morning_avg_footfall = (footfall_data['morning']['visitors'] / footfall_data['morning']['days_count']) if footfall_data['morning']['days_count'] > 0 else 0
-        afternoon_avg_footfall = (footfall_data['afternoon']['visitors'] / footfall_data['afternoon']['days_count']) if footfall_data['afternoon']['days_count'] > 0 else 0
-        evening_avg_footfall = (footfall_data['evening']['visitors'] / footfall_data['evening']['days_count']) if footfall_data['evening']['days_count'] > 0 else 0
+        # Calculate metrics - IMPORTANT: Adjust for current time when viewing today
+        # If viewing only today and current hour hasn't reached that time period yet, don't count today in the average
+        is_viewing_today = is_viewing_today and (end_date_ist == current_date)
+        
+        morning_days = footfall_data['morning']['days_count']
+        afternoon_days = footfall_data['afternoon']['days_count']
+        evening_days = footfall_data['evening']['days_count']
+        
+        if is_viewing_today and days == 1:
+            # If current time is before 6 AM, morning hasn't started today
+            if current_hour < 6:
+                morning_days = max(0, morning_days - 1)
+                logging.info(f"⏰ Current time {current_hour}:xx is before morning (6 AM) - excluding today from morning average")
+            
+            # If current time is before 12 PM, afternoon hasn't started today
+            if current_hour < 12:
+                afternoon_days = max(0, afternoon_days - 1)
+                logging.info(f"⏰ Current time {current_hour}:xx is before afternoon (12 PM) - excluding today from afternoon average")
+            
+            # If current time is before 5 PM (17:00), evening hasn't started today
+            if current_hour < 17:
+                evening_days = max(0, evening_days - 1)
+                logging.info(f"⏰ Current time {current_hour}:xx is before evening (5 PM) - excluding today from evening average")
+        
+        morning_avg_footfall = (footfall_data['morning']['visitors'] / morning_days) if morning_days > 0 else 0
+        afternoon_avg_footfall = (footfall_data['afternoon']['visitors'] / afternoon_days) if afternoon_days > 0 else 0
+        evening_avg_footfall = (footfall_data['evening']['visitors'] / evening_days) if evening_days > 0 else 0
         
         morning_total_sales = sum(item['revenue'] for item in morning_list)
         afternoon_total_sales = sum(item['revenue'] for item in afternoon_list)

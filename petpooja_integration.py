@@ -28,6 +28,53 @@ API_TOKEN = 'Z4N8T2W9L3H6Q1P'
 REQUEST_TIMEOUT = 10
 
 
+def get_petpooja_restaurant_id(db_restaurant_id: Optional[int], db: Optional[Session] = None) -> Optional[str]:
+    """
+    Convert database restaurant ID to PetPooja restID by querying the database
+    
+    Args:
+        db_restaurant_id: Internal database restaurant ID (e.g., 1, 2)
+        db: Optional database session for querying (if not provided, will create one)
+        
+    Returns:
+        PetPooja restID (e.g., '38vpyhwq19', 'mc96bfd0') or None if not found
+        
+    Example:
+        Restaurant ID 1 (Sangli) -> '38vpyhwq19'
+        Restaurant ID 2 (Ravneet/Main) -> 'mc96bfd0'
+    """
+    if db_restaurant_id is None:
+        return None
+    
+    # Try to get from database
+    try:
+        if db:
+            result = db.execute(
+                text("SELECT petpooja_rest_id FROM restaurants WHERE id = :id"),
+                {'id': db_restaurant_id}
+            ).fetchone()
+            if result and result[0]:
+                return result[0]
+        else:
+            # If no session provided, create a temporary one
+            from sqlalchemy import create_engine
+            from sqlalchemy.orm import sessionmaker
+            DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi_06_01_26"
+            engine = create_engine(DATABASE_URL)
+            SessionLocal = sessionmaker(bind=engine)
+            with SessionLocal() as temp_db:
+                result = temp_db.execute(
+                    text("SELECT petpooja_rest_id FROM restaurants WHERE id = :id"),
+                    {'id': db_restaurant_id}
+                ).fetchone()
+                if result and result[0]:
+                    return result[0]
+    except Exception as e:
+        logging.warning(f"Could not fetch petpooja_rest_id from database for restaurant_id={db_restaurant_id}: {e}")
+    
+    return None
+
+
 class PetPoojaClient:
     """Client for interacting with PetPooja remote API"""
     
@@ -120,7 +167,7 @@ class PetPoojaClient:
     
     def get_menu_items(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
         """
-        Fetch menu item details from remote FastAPI
+        Fetch menu item details from remote FastAPI or process from raw events
         
         Args:
             start_date: Start date for data fetch
@@ -131,18 +178,20 @@ class PetPoojaClient:
             List of menu item records or None if API fails
         """
         try:
-            logging.info(f"Fetching menu items from remote API: {self.base_url}/analytics/menu-items"
+            # Calculate days difference for the API
+            days = (end_date - start_date).days + 1
+            
+            logging.info(f"Fetching menu items from remote API: {self.base_url}/analytics/items-by-hour"
                         f"{' for restaurant: ' + restaurant_id if restaurant_id else ''}")
             params = {
-                'start_date': start_date.strftime('%Y-%m-%d'),
-                'end_date': end_date.strftime('%Y-%m-%d'),
+                'days': days,
                 'token': self.api_token
             }
             if restaurant_id:
                 params['restaurant_id'] = restaurant_id
             
             response = requests.get(
-                f"{self.base_url}/analytics/menu-items",
+                f"{self.base_url}/analytics/items-by-hour",
                 params=params,
                 timeout=self.timeout
             )
@@ -152,11 +201,141 @@ class PetPoojaClient:
                 logging.info(f"✅ Remote API returned {len(menu_items) if menu_items else 0} menu item records")
                 return menu_items
             else:
-                logging.warning(f"Menu items endpoint returned {response.status_code}")
-                return None
+                logging.warning(f"Menu items endpoint returned {response.status_code}, processing from raw events")
+                return self._process_raw_events_to_menu_items(start_date, end_date, restaurant_id)
                 
         except Exception as e:
-            logging.warning(f"⚠️ Menu items endpoint not available: {e}")
+            logging.warning(f"⚠️ Menu items endpoint not available: {e}, processing from raw events")
+            return self._process_raw_events_to_menu_items(start_date, end_date, restaurant_id)
+    
+    def _process_raw_events_to_menu_items(self, start_date: date, end_date: date, restaurant_id: Optional[str] = None) -> Optional[List[Dict]]:
+        """
+        Process raw webhook events into menu items by hour
+        Fallback when the dedicated menu endpoint is not available
+        
+        Args:
+            start_date: Start date for data fetch
+            end_date: End date for data fetch
+            restaurant_id: Optional restaurant ID to filter data
+        """
+        try:
+            # Add buffer for timezone differences
+            api_start_date = start_date - timedelta(days=1)
+            api_end_date = end_date + timedelta(days=1)
+            
+            logging.info(f"Processing menu items from raw events")
+            response = requests.get(
+                f"{self.base_url}/webhook/events/search/date-range",
+                params={
+                    'start_date': api_start_date.isoformat(),
+                    'end_date': api_end_date.isoformat(),
+                    'token': self.api_token
+                },
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                logging.warning(f"Raw events endpoint returned {response.status_code}")
+                return None
+            
+            all_events = response.json()
+            logging.info(f"✅ Fetched {len(all_events)} raw events for menu processing")
+            
+            # Process events into menu items by hour
+            menu_data = defaultdict(lambda: {'quantity': 0, 'revenue': 0.0})
+            seen_orders = set()
+            
+            for event in all_events:
+                if event.get('content', {}).get('event') == 'orderdetails':
+                    properties = event.get('content', {}).get('properties', {})
+                    
+                    # Filter by restaurant if specified
+                    if restaurant_id:
+                        event_rest_id = properties.get('Restaurant', {}).get('restID')
+                        if event_rest_id != restaurant_id:
+                            continue
+                    
+                    order = properties.get('Order', {})
+                    order_id = order.get('orderID')
+                    
+                    if not order_id or order_id in seen_orders:
+                        continue
+                    
+                    seen_orders.add(order_id)
+                    
+                    # Parse timestamp and convert to IST
+                    try:
+                        if order.get('created_on'):
+                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
+                        else:
+                            created_at = event.get('created_at', '')
+                            if not created_at:
+                                continue
+                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        
+                        order_time_ist = order_time_utc.astimezone(IST)
+                        order_date_ist = order_time_ist.date()
+                        order_hour_ist = order_time_ist.hour
+                        
+                        # Filter by date range
+                        if order_date_ist < start_date or order_date_ist > end_date:
+                            continue
+                        
+                        # Process order items
+                        order_items = properties.get('OrderItem', [])
+                        if not isinstance(order_items, list):
+                            continue
+                        
+                        # Calculate order total for proportional allocation
+                        order_total = float(order.get('total', 0))
+                        items_subtotal = sum(float(item.get('total', 0)) for item in order_items if isinstance(item, dict))
+                        
+                        for item in order_items:
+                            if not isinstance(item, dict):
+                                continue
+                            
+                            item_name = item.get('name', '').strip()
+                            if not item_name:
+                                continue
+                            
+                            quantity = float(item.get('quantity', 0))
+                            item_subtotal = float(item.get('total', 0))
+                            
+                            # Allocate order total proportionally
+                            if items_subtotal > 0:
+                                allocation_ratio = item_subtotal / items_subtotal
+                                revenue = order_total * allocation_ratio
+                            else:
+                                revenue = item_subtotal
+                            
+                            # Aggregate by item name and hour
+                            key = (item_name, order_hour_ist)
+                            menu_data[key]['quantity'] += quantity
+                            menu_data[key]['revenue'] += revenue
+                    
+                    except Exception as parse_error:
+                        logging.warning(f"Error parsing order {order_id}: {parse_error}")
+                        continue
+            
+            # Convert to list format
+            menu_items = [
+                {
+                    'item_name': item_name,
+                    'hour': hour,
+                    'quantity': data['quantity'],
+                    'revenue': round(data['revenue'], 2)
+                }
+                for (item_name, hour), data in menu_data.items()
+            ]
+            
+            # Sort by item name and hour
+            menu_items.sort(key=lambda x: (x['item_name'], x['hour']))
+            
+            logging.info(f"✅ Processed raw events into {len(menu_items)} menu item records")
+            return menu_items
+            
+        except Exception as e:
+            logging.error(f"❌ Error processing raw events to menu items: {e}")
             return None
     
     def get_restaurants(self) -> Optional[List[Dict]]:
@@ -390,7 +569,7 @@ class SalesAnalytics:
         self.db_helper = db_helper
     
     def get_sales_data(self, db: Session, start_date: date, end_date: date, 
-                      use_remote: bool = True, restaurant_id: Optional[str] = None) -> Tuple[List, bool]:
+                      use_remote: bool = True, restaurant_id: Optional[int] = None) -> Tuple[List, bool]:
         """
         Get sales data from remote API or fallback to local DB
         
@@ -399,7 +578,7 @@ class SalesAnalytics:
             start_date: Start date for data
             end_date: End date for data
             use_remote: Whether to try remote API first
-            restaurant_id: Optional restaurant ID to filter data (e.g., 'mc96bfd0' or '38vpyhwq19')
+            restaurant_id: Optional database restaurant ID (will be converted to PetPooja restID from DB)
             
         Returns:
             Tuple of (sales_data, remote_api_used)
@@ -408,9 +587,14 @@ class SalesAnalytics:
         sales_results = []
         remote_used = False
         
+        # Convert database restaurant_id to PetPooja restID using database lookup
+        petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
+        if restaurant_id and petpooja_restaurant_id:
+            logging.info(f"🏪 Restaurant filter: DB ID {restaurant_id} -> PetPooja restID '{petpooja_restaurant_id}'")
+        
         if use_remote:
             # Try remote API first
-            hourly_sales = self.client.get_hourly_sales(start_date, end_date, restaurant_id)
+            hourly_sales = self.client.get_hourly_sales(start_date, end_date, petpooja_restaurant_id)
             
             if hourly_sales:
                 # Process remote hourly data
