@@ -132,19 +132,65 @@ class IdlePeopleViolationProcessor(threading.Thread):
             logging.error(f"Error loading ROI for {self.channel_name}: {e}")
             self.roi_polygon = None
 
-    def _is_in_roi(self, x1, y1, x2, y2):
-        """Check if bounding box intersects/overlaps with the ROI polygon"""
+    def _is_in_roi(self, x1, y1, x2, y2, overlap_threshold=0.5):
+        """
+        Check if at least 50% (or specified threshold) of bounding box is inside ROI.
+        
+        Args:
+            x1, y1, x2, y2: Bounding box coordinates
+            overlap_threshold: Minimum percentage of bbox that must be in ROI (default: 0.5 = 50%)
+        
+        Returns:
+            True if bbox overlap with ROI >= threshold, False otherwise
+        """
         if self.roi_polygon is None:
             return True  # No ROI means monitor entire frame
         
         try:
             # Create a polygon from the bounding box coordinates
             bbox_polygon = Polygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
-            # Check if bounding box intersects or overlaps with ROI
-            return self.roi_polygon.intersects(bbox_polygon)
+            
+            # Calculate intersection area
+            intersection = self.roi_polygon.intersection(bbox_polygon)
+            intersection_area = intersection.area
+            
+            # Calculate bounding box area
+            bbox_area = bbox_polygon.area
+            
+            if bbox_area == 0:
+                return False  # Invalid bounding box
+            
+            # Calculate overlap percentage
+            overlap_percentage = intersection_area / bbox_area
+            
+            # Return True only if overlap >= threshold (default 50%)
+            return overlap_percentage >= overlap_threshold
+            
         except Exception as e:
             logging.error(f"Error checking ROI: {e}")
             return True  # Default to allowing detection on error
+
+    def _get_roi_overlap_percentage(self, x1, y1, x2, y2):
+        """
+        Calculate the percentage of bounding box that overlaps with ROI.
+        Returns overlap percentage (0.0 to 1.0) or None if no ROI configured.
+        """
+        if self.roi_polygon is None:
+            return None
+        
+        try:
+            bbox_polygon = Polygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])
+            intersection = self.roi_polygon.intersection(bbox_polygon)
+            intersection_area = intersection.area
+            bbox_area = bbox_polygon.area
+            
+            if bbox_area == 0:
+                return 0.0
+            
+            return intersection_area / bbox_area
+        except Exception as e:
+            logging.error(f"Error calculating ROI overlap: {e}")
+            return None
 
     def _draw_roi(self, frame):
         """Draw ROI polygon on frame"""
@@ -323,9 +369,12 @@ class IdlePeopleViolationProcessor(threading.Thread):
                                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                                 conf = float(box.conf[0])
                                 
-                                # Check if bounding box intersects with ROI
+                                # Check if at least 50% of bounding box is inside ROI
                                 if not self._is_in_roi(x1, y1, x2, y2):
-                                    continue  # Skip people whose box doesn't intersect ROI
+                                    continue  # Skip people whose box overlap < 50%
+                                
+                                # Get ROI overlap percentage for display
+                                overlap_pct = self._get_roi_overlap_percentage(x1, y1, x2, y2)
                                 
                                 # Get track ID if available
                                 track_id = int(box.id[0]) if box.id is not None else None
@@ -355,15 +404,19 @@ class IdlePeopleViolationProcessor(threading.Thread):
                                         color = (0, 255, 0)  # Green
                                         label = f"ID:{track_id} Frames:{frame_count}/{IDLE_FRAME_THRESHOLD}"
                                     
+                                    # Add ROI overlap info to label if available
+                                    if overlap_pct is not None:
+                                        label += f" ROI:{overlap_pct*100:.0f}%"
+                                    
                                     # Draw bounding box
                                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
                                     
                                     # Draw label with background
-                                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
                                     cv2.rectangle(display_frame, (x1, y1 - label_h - 10), 
                                                 (x1 + label_w, y1), color, -1)
                                     cv2.putText(display_frame, label, (x1, y1 - 5), 
-                                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
                     
                     # Clean up tracking for people who left the frame
                     disappeared_ids = set(self.person_tracker.keys()) - current_tracked_ids
@@ -375,10 +428,12 @@ class IdlePeopleViolationProcessor(threading.Thread):
                     # Add FPS and info overlay
                     cv2.putText(display_frame, f"FPS: {self.current_fps:.1f}", (10, 30), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    cv2.putText(display_frame, f"People Tracked: {len(current_tracked_ids)}", (10, 60), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    cv2.putText(display_frame, f"Idle Threshold: {IDLE_FRAME_THRESHOLD} frames", (10, 90), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    # cv2.putText(display_frame, f"People Tracked: {len(current_tracked_ids)}", (10, 60), 
+                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(display_frame, f"Idle Threshold: {IDLE_FRAME_THRESHOLD} frames", (10, 60), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                    # cv2.putText(display_frame, f"ROI Overlap Required: 50%+", (10, 90), 
+                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
 
                     # Update latest frame for streaming
                     with self.lock:
