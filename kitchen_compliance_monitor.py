@@ -9,9 +9,11 @@ import os
 import logging
 import pytz
 import numpy as np
+import json
 from sqlalchemy import Column, Integer, String, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 from concurrent.futures import ThreadPoolExecutor
+from shapely.geometry import Polygon, box as shapely_box
 
 # --- Basic Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
@@ -92,6 +94,10 @@ class KitchenComplianceProcessor(threading.Thread):
         self.fps_start_time = time.time()
         self.fps_frame_count = 0
         self.current_fps = 0.0
+        
+        # ROI filtering
+        self.roi_polygon = None
+        self._load_roi()
 
     def apply_smart_validation(self, detections):
         """
@@ -162,6 +168,72 @@ class KitchenComplianceProcessor(threading.Thread):
             logging.info("Table 'kitchen_violations' checked/created.")
         except Exception as e:
             logging.error(f"Could not create 'kitchen_violations' table: {e}")
+
+    def _load_roi(self):
+        """Load ROI configuration from database"""
+        try:
+            from sqlalchemy import text
+            with self.SessionLocal() as db:
+                query = text("""
+                    SELECT roi_points FROM roi_configs 
+                    WHERE channel_id = :channel_id AND app_name = 'KitchenCompliance'
+                """)
+                result = db.execute(query, {"channel_id": self.channel_id}).fetchone()
+                
+                if result and result[0]:
+                    roi_data = result[0] if isinstance(result[0], dict) else json.loads(result[0])
+                    points = roi_data.get('points', [])
+                    
+                    if points and len(points) >= 3:
+                        self.roi_polygon = Polygon(points)
+                        logging.info(f"✅ Kitchen ROI loaded for {self.channel_name}: {len(points)} points")
+                    else:
+                        logging.info(f"No valid ROI configured for Kitchen {self.channel_name} - monitoring entire frame")
+                else:
+                    logging.info(f"No ROI configured for Kitchen {self.channel_name} - monitoring entire frame")
+        except Exception as e:
+            logging.error(f"Error loading Kitchen ROI for {self.channel_name}: {e}")
+            self.roi_polygon = None
+
+    def _is_in_roi(self, x1, y1, x2, y2, frame_width, frame_height, overlap_threshold=0.5):
+        """
+        Check if at least 50% (or specified threshold) of bounding box is inside ROI.
+        
+        Args:
+            x1, y1, x2, y2: Bounding box pixel coordinates
+            frame_width, frame_height: Frame dimensions for normalization
+            overlap_threshold: Minimum percentage of bbox that must be in ROI (default: 0.5 = 50%)
+        
+        Returns:
+            True if bbox overlap with ROI >= threshold, False otherwise
+        """
+        if self.roi_polygon is None:
+            return True  # No ROI means monitor entire frame
+        
+        try:
+            # Normalize bbox coordinates to 0-1 range (ROI is stored normalized)
+            norm_x1 = x1 / frame_width
+            norm_y1 = y1 / frame_height
+            norm_x2 = x2 / frame_width
+            norm_y2 = y2 / frame_height
+            
+            # Create a polygon from the normalized bounding box coordinates
+            bbox_polygon = shapely_box(norm_x1, norm_y1, norm_x2, norm_y2)
+            
+            # Calculate intersection area
+            intersection = self.roi_polygon.intersection(bbox_polygon)
+            bbox_area = bbox_polygon.area
+            
+            if bbox_area == 0:
+                return False
+            
+            # Calculate overlap percentage
+            overlap_percentage = intersection.area / bbox_area
+            
+            return overlap_percentage >= overlap_threshold
+        except Exception as e:
+            logging.error(f"Error checking ROI for Kitchen {self.channel_name}: {e}")
+            return True  # On error, allow detection
 
     def stop(self):
         self.is_running = False
@@ -394,6 +466,14 @@ class KitchenComplianceProcessor(threading.Thread):
                 # Get box coordinates
                 x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
                 
+                # Check if detection is inside ROI (only for violations)
+                is_in_roi = True
+                if cls_id in VIOLATION_CLASSES:
+                    is_in_roi = self._is_in_roi(x1, y1, x2, y2, w, h)
+                    if not is_in_roi:
+                        # Skip this violation - it's outside ROI
+                        continue
+                
                 # Get class name
                 class_name = self.unified_model.names[cls_id]
                 
@@ -432,6 +512,19 @@ class KitchenComplianceProcessor(threading.Thread):
                         logging.info(f"🚨 Kitchen {self.channel_name}: {class_name} violation detected! Screenshot: {screenshot_path}")
                 
             # Draw violation summary on frame
+            # Draw ROI polygon if configured
+            if self.roi_polygon is not None:
+                try:
+                    # Get ROI coordinates and convert from normalized to pixel coordinates
+                    roi_coords = list(self.roi_polygon.exterior.coords)
+                    pixel_coords = np.array([[int(x * w), int(y * h)] for x, y in roi_coords], dtype=np.int32)
+                    
+                    # Draw ROI polygon
+                    cv2.polylines(annotated_frame, [pixel_coords], isClosed=True, color=(255, 255, 0), thickness=2)
+                    cv2.putText(annotated_frame, "Kitchen ROI", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                except Exception as e:
+                    logging.debug(f"Error drawing ROI: {e}")
+            
             # Add frame info overlay (like reference code)
             info_text = f"Frame: {frame_count} | Violations: {violation_count} | FPS: {self.current_fps:.1f}"
             cv2.putText(annotated_frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)

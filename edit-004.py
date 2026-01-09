@@ -518,11 +518,96 @@ class MultiModelProcessor(threading.Thread):
         self.max_consecutive_errors = 10
         self.latest_frame = None  # For video streaming
         self.lock = threading.Lock()  # Thread-safe frame access
+        
+        # ROI filtering for Generic app
+        self.roi_polygon = None
+        self._load_roi()
 
     def stop(self): self.is_running = False
     def shutdown(self):
         logging.info(f"Shutting down MultiModel for {self.channel_name} ({self.channel_id})")
         self.is_running = False
+    
+    def _load_roi(self):
+        """Load ROI configuration from database for Generic app"""
+        try:
+            from sqlalchemy import text, create_engine
+            from sqlalchemy.orm import sessionmaker
+            from shapely.geometry import Polygon
+            import json
+            
+            # Get database connection from environment
+            database_url = os.environ.get('DATABASE_URL')
+            if not database_url:
+                logging.info(f"No DATABASE_URL found for Generic {self.channel_name} - skipping ROI load")
+                return
+            
+            engine = create_engine(database_url, pool_pre_ping=True)
+            SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            
+            with SessionLocal() as db:
+                query = text("""
+                    SELECT roi_points FROM roi_configs 
+                    WHERE channel_id = :channel_id AND app_name = 'Generic'
+                """)
+                result = db.execute(query, {"channel_id": self.channel_id}).fetchone()
+                
+                if result and result[0]:
+                    roi_data = result[0] if isinstance(result[0], dict) else json.loads(result[0])
+                    points = roi_data.get('points', [])
+                    
+                    if points and len(points) >= 3:
+                        self.roi_polygon = Polygon(points)
+                        logging.info(f"✅ Generic ROI loaded for {self.channel_name}: {len(points)} points")
+                    else:
+                        logging.info(f"No valid ROI configured for Generic {self.channel_name} - monitoring entire frame")
+                else:
+                    logging.info(f"No ROI configured for Generic {self.channel_name} - monitoring entire frame")
+        except Exception as e:
+            logging.error(f"Error loading Generic ROI for {self.channel_name}: {e}")
+            self.roi_polygon = None
+
+    def _is_in_roi(self, x1, y1, x2, y2, frame_width, frame_height, overlap_threshold=0.5):
+        """
+        Check if at least 50% (or specified threshold) of bounding box is inside ROI.
+        
+        Args:
+            x1, y1, x2, y2: Bounding box pixel coordinates
+            frame_width, frame_height: Frame dimensions for normalization
+            overlap_threshold: Minimum percentage of bbox that must be in ROI (default: 0.5 = 50%)
+        
+        Returns:
+            True if bbox overlap with ROI >= threshold, False otherwise
+        """
+        if self.roi_polygon is None:
+            return True  # No ROI means monitor entire frame
+        
+        try:
+            from shapely.geometry import box as shapely_box
+            
+            # Normalize bbox coordinates to 0-1 range (ROI is stored normalized)
+            norm_x1 = x1 / frame_width
+            norm_y1 = y1 / frame_height
+            norm_x2 = x2 / frame_width
+            norm_y2 = y2 / frame_height
+            
+            # Create a polygon from the normalized bounding box coordinates
+            bbox_polygon = shapely_box(norm_x1, norm_y1, norm_x2, norm_y2)
+            
+            # Calculate intersection area
+            intersection = self.roi_polygon.intersection(bbox_polygon)
+            bbox_area = bbox_polygon.area
+            
+            if bbox_area == 0:
+                return False
+            
+            # Calculate overlap percentage
+            overlap_percentage = intersection.area / bbox_area
+            
+            return overlap_percentage >= overlap_threshold
+        except Exception as e:
+            logging.error(f"Error checking ROI for Generic {self.channel_name}: {e}")
+            return True  # On error, allow detection
     
     def apply_smart_validation(self, detections, model):
         """
@@ -763,6 +848,7 @@ class MultiModelProcessor(threading.Thread):
                     
                     # Create annotated frame - START with frame copy (ALWAYS process every frame)
                     annotated_frame = frame.copy()
+                    h, w = annotated_frame.shape[:2]
                     violation_detected_classes = []
                     
                     # Draw ALL detections (violations in red, compliance in green) - use final_detections
@@ -771,6 +857,17 @@ class MultiModelProcessor(threading.Thread):
                         class_id = det['class_id']
                         class_name = task['model'].names[class_id]
                         conf = det['confidence']
+                        
+                        # Get box coordinates
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                        
+                        # Check if detection is inside ROI (only for violations)
+                        is_in_roi = True
+                        if class_id in violation_classes:
+                            is_in_roi = self._is_in_roi(x1, y1, x2, y2, w, h)
+                            if not is_in_roi:
+                                # Skip this violation - it's outside ROI
+                                continue
                         
                         # Determine color based on class type
                         if class_id in violation_classes:
@@ -782,7 +879,6 @@ class MultiModelProcessor(threading.Thread):
                             color = (128, 128, 128)  # Gray for unknown
                         
                         # Draw bounding box
-                        x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 3)  # Thicker boxes
                         
                         # Draw label with background
@@ -790,6 +886,19 @@ class MultiModelProcessor(threading.Thread):
                         label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
                         cv2.rectangle(annotated_frame, (x1, y1 - 25), (x1 + label_size[0] + 5, y1), color, -1)
                         cv2.putText(annotated_frame, label, (x1 + 2, y1 - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    
+                    # Draw ROI polygon if configured
+                    if self.roi_polygon is not None:
+                        try:
+                            # Get ROI coordinates and convert from normalized to pixel coordinates
+                            roi_coords = list(self.roi_polygon.exterior.coords)
+                            pixel_coords = np.array([[int(x * w), int(y * h)] for x, y in roi_coords], dtype=np.int32)
+                            
+                            # Draw ROI polygon
+                            cv2.polylines(annotated_frame, [pixel_coords], isClosed=True, color=(255, 255, 0), thickness=2)
+                            cv2.putText(annotated_frame, "ROI Zone", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        except Exception as e:
+                            logging.debug(f"Error drawing ROI: {e}")
                     
                     # ALWAYS add frame info overlay - this proves continuous processing
                     violation_count = len(violation_detected_classes)
