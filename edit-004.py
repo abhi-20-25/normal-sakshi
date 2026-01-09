@@ -2688,6 +2688,7 @@ def dashboard():
     # Get list of all restaurants for dropdown (if database connected)
     restaurants = []
     selected_restaurant = None
+    default_restaurant_id = None
     
     if db_connected:
         try:
@@ -2709,10 +2710,15 @@ def dashboard():
                     # Find main_store (id=2) and set as default
                     main_store = next((r for r in restaurants if r['id'] == 2), None)
                     if main_store:
-                        restaurant_id = 2
+                        default_restaurant_id = 2
                     elif restaurants:
                         # Fallback to first restaurant if main_store not found
-                        restaurant_id = restaurants[0]['id']
+                        default_restaurant_id = restaurants[0]['id']
+                    
+                    # Redirect to dashboard with default restaurant_id parameter
+                    if default_restaurant_id:
+                        logging.info(f"No restaurant selected - redirecting to default restaurant {default_restaurant_id}")
+                        return redirect(url_for('dashboard', restaurant_id=default_restaurant_id))
                 
                 # Get selected restaurant details
                 if restaurant_id:
@@ -2724,6 +2730,7 @@ def dashboard():
                             'location': selected.location,
                             'petpooja_rest_id': selected.petpooja_rest_id
                         }
+                        logging.info(f"Dashboard loaded for restaurant: {selected_restaurant['restaurant_name']} (PetPooja ID: {selected_restaurant['petpooja_rest_id']})")
         except Exception as e:
             logging.warning(f"Could not load restaurants for dashboard: {e}")
     
@@ -3085,6 +3092,414 @@ def get_peak_analytics(channel_id):
     except Exception as e:
         logging.error(f"Error in peak analytics: {e}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/sales-analytics/daily')
+@login_required
+def get_sales_analytics_daily():
+    """
+    Get daily sales analytics with proper restaurant filtering
+    Uses the same backend approach as conversion analytics for consistency
+    Supports restaurant filtering via restaurant_id query parameter
+    """
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        # Get query parameters
+        days = request.args.get('days', default=7, type=int)
+        restaurant_id = request.args.get('restaurant_id', type=int)
+        
+        # Calculate date range
+        end_date = datetime.now(IST).date()
+        start_date = end_date - timedelta(days=days - 1)
+        
+        logging.info(f"📊 Sales Analytics Daily - days={days}, start={start_date}, end={end_date}, restaurant_id={restaurant_id}")
+        
+        with SessionLocal() as db:
+            # Convert database restaurant_id to PetPooja restID
+            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
+            
+            # Use the same approach as conversion analytics
+            sales_data, remote_used = pp_sales_analytics.get_sales_data(
+                db, start_date, end_date, use_remote=True, restaurant_id=restaurant_id
+            )
+            
+            if not sales_data:
+                return jsonify([])
+            
+            # Aggregate by date
+            daily_aggregates = defaultdict(lambda: {'orders': 0, 'revenue': 0.0})
+            for row in sales_data:
+                daily_aggregates[row.sale_date]['orders'] += row.orders
+                daily_aggregates[row.sale_date]['revenue'] += float(row.revenue) if row.revenue else 0
+            
+            # Convert to list format
+            results = [
+                {
+                    'date': date.strftime('%Y-%m-%d'),
+                    'total_sales': round(data['revenue'], 2),
+                    'order_count': data['orders']
+                }
+                for date, data in sorted(daily_aggregates.items())
+            ]
+            
+            logging.info(f"✅ Returning {len(results)} daily sales records (source: {'REMOTE' if remote_used else 'LOCAL'})")
+            return jsonify(results)
+            
+    except Exception as e:
+        logging.error(f"❌ Error in sales analytics daily: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/sales-analytics/payment-modes')
+@login_required
+def get_sales_analytics_payment_modes():
+    """
+    Get payment modes breakdown with proper restaurant filtering
+    Uses backend processing with restaurant_id filter
+    """
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        restaurant_id = request.args.get('restaurant_id', type=int)
+        
+        logging.info(f"📊 Payment Modes - restaurant_id={restaurant_id}")
+        
+        with SessionLocal() as db:
+            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
+            
+            # Get current month start
+            today = datetime.now(IST).date()
+            start_date = datetime(today.year, today.month, 1).date()
+            end_date = today
+            
+            # Get sales data
+            sales_data, remote_used = pp_sales_analytics.get_sales_data(
+                db, start_date, end_date, use_remote=True, restaurant_id=restaurant_id
+            )
+            
+            if not sales_data:
+                return jsonify([])
+            
+            # We need to get the raw events to extract payment modes
+            # Use the client to fetch raw events and process them
+            response = requests.get(
+                f"{pp_sales_analytics.client.base_url}/webhook/events/search/date-range",
+                params={
+                    'start_date': (start_date - timedelta(days=1)).isoformat(),
+                    'end_date': (end_date + timedelta(days=1)).isoformat(),
+                    'token': pp_sales_analytics.client.api_token
+                },
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                return jsonify([])
+            
+            all_events = response.json()
+            payment_aggregates = defaultdict(lambda: {'amount': 0.0, 'count': 0})
+            seen_orders = set()
+            
+            for event in all_events:
+                if event.get('content', {}).get('event') == 'orderdetails':
+                    properties = event.get('content', {}).get('properties', {})
+                    
+                    # Filter by restaurant if specified
+                    if petpooja_restaurant_id:
+                        event_rest_id = properties.get('Restaurant', {}).get('restID')
+                        if event_rest_id != petpooja_restaurant_id:
+                            continue
+                    
+                    order = properties.get('Order', {})
+                    order_id = order.get('orderID')
+                    
+                    if not order_id or order_id in seen_orders:
+                        continue
+                    
+                    seen_orders.add(order_id)
+                    
+                    # Parse date and filter
+                    try:
+                        if order.get('created_on'):
+                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
+                        else:
+                            created_at = event.get('created_at', '')
+                            if not created_at:
+                                continue
+                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        
+                        order_time_ist = order_time_utc.astimezone(IST)
+                        order_date_ist = order_time_ist.date()
+                        
+                        if order_date_ist < start_date or order_date_ist > end_date:
+                            continue
+                        
+                        payment_type = order.get('payment_type', 'Unknown')
+                        total = float(order.get('total', 0))
+                        
+                        payment_aggregates[payment_type]['amount'] += total
+                        payment_aggregates[payment_type]['count'] += 1
+                    
+                    except Exception as parse_error:
+                        continue
+            
+            results = [
+                {
+                    'method': method,
+                    'amount': round(data['amount'], 2),
+                    'count': data['count']
+                }
+                for method, data in payment_aggregates.items()
+            ]
+            
+            logging.info(f"✅ Returning {len(results)} payment mode records")
+            return jsonify(results)
+            
+    except Exception as e:
+        logging.error(f"❌ Error in payment modes: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/sales-analytics/order-types')
+@login_required
+def get_sales_analytics_order_types():
+    """
+    Get order types breakdown with proper restaurant filtering
+    """
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        restaurant_id = request.args.get('restaurant_id', type=int)
+        
+        logging.info(f"📊 Order Types - restaurant_id={restaurant_id}")
+        
+        with SessionLocal() as db:
+            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
+            
+            # Get current month start
+            today = datetime.now(IST).date()
+            start_date = datetime(today.year, today.month, 1).date()
+            end_date = today
+            
+            # Get raw events
+            response = requests.get(
+                f"{pp_sales_analytics.client.base_url}/webhook/events/search/date-range",
+                params={
+                    'start_date': (start_date - timedelta(days=1)).isoformat(),
+                    'end_date': (end_date + timedelta(days=1)).isoformat(),
+                    'token': pp_sales_analytics.client.api_token
+                },
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                return jsonify([])
+            
+            all_events = response.json()
+            order_type_aggregates = defaultdict(lambda: {'count': 0, 'total_sales': 0.0})
+            seen_orders = set()
+            
+            for event in all_events:
+                if event.get('content', {}).get('event') == 'orderdetails':
+                    properties = event.get('content', {}).get('properties', {})
+                    
+                    # Filter by restaurant
+                    if petpooja_restaurant_id:
+                        event_rest_id = properties.get('Restaurant', {}).get('restID')
+                        if event_rest_id != petpooja_restaurant_id:
+                            continue
+                    
+                    order = properties.get('Order', {})
+                    order_id = order.get('orderID')
+                    
+                    if not order_id or order_id in seen_orders:
+                        continue
+                    
+                    seen_orders.add(order_id)
+                    
+                    try:
+                        if order.get('created_on'):
+                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
+                        else:
+                            created_at = event.get('created_at', '')
+                            if not created_at:
+                                continue
+                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        
+                        order_time_ist = order_time_utc.astimezone(IST)
+                        order_date_ist = order_time_ist.date()
+                        
+                        if order_date_ist < start_date or order_date_ist > end_date:
+                            continue
+                        
+                        order_source = order.get('order_from', 'Unknown')
+                        order_type = order.get('order_type', 'Unknown')
+                        total = float(order.get('total', 0))
+                        
+                        key = (order_source, order_type)
+                        order_type_aggregates[key]['count'] += 1
+                        order_type_aggregates[key]['total_sales'] += total
+                    
+                    except Exception:
+                        continue
+            
+            results = [
+                {
+                    'order_source': source,
+                    'order_type': otype,
+                    'count': data['count'],
+                    'total_sales': round(data['total_sales'], 2)
+                }
+                for (source, otype), data in order_type_aggregates.items()
+            ]
+            
+            logging.info(f"✅ Returning {len(results)} order type records")
+            return jsonify(results)
+            
+    except Exception as e:
+        logging.error(f"❌ Error in order types: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/sales-analytics/top-items')
+@login_required
+def get_sales_analytics_top_items():
+    """
+    Get top selling items with proper restaurant filtering
+    """
+    if not db_connected:
+        return jsonify({"error": "Database not connected"}), 500
+    
+    try:
+        restaurant_id = request.args.get('restaurant_id', type=int)
+        limit = request.args.get('limit', default=5, type=int)
+        
+        logging.info(f"📊 Top Items - restaurant_id={restaurant_id}, limit={limit}")
+        
+        with SessionLocal() as db:
+            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
+            
+            # Get current month start
+            today = datetime.now(IST).date()
+            start_date = datetime(today.year, today.month, 1).date()
+            end_date = today
+            
+            # Get raw events
+            response = requests.get(
+                f"{pp_sales_analytics.client.base_url}/webhook/events/search/date-range",
+                params={
+                    'start_date': (start_date - timedelta(days=1)).isoformat(),
+                    'end_date': (end_date + timedelta(days=1)).isoformat(),
+                    'token': pp_sales_analytics.client.api_token
+                },
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                return jsonify([])
+            
+            all_events = response.json()
+            item_aggregates = defaultdict(lambda: {'quantity': 0, 'revenue': 0.0})
+            seen_orders = set()
+            
+            for event in all_events:
+                if event.get('content', {}).get('event') == 'orderdetails':
+                    properties = event.get('content', {}).get('properties', {})
+                    
+                    # Filter by restaurant
+                    if petpooja_restaurant_id:
+                        event_rest_id = properties.get('Restaurant', {}).get('restID')
+                        if event_rest_id != petpooja_restaurant_id:
+                            continue
+                    
+                    order = properties.get('Order', {})
+                    order_id = order.get('orderID')
+                    
+                    if not order_id or order_id in seen_orders:
+                        continue
+                    
+                    seen_orders.add(order_id)
+                    
+                    try:
+                        if order.get('created_on'):
+                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
+                        else:
+                            created_at = event.get('created_at', '')
+                            if not created_at:
+                                continue
+                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        
+                        order_time_ist = order_time_utc.astimezone(IST)
+                        order_date_ist = order_time_ist.date()
+                        
+                        if order_date_ist < start_date or order_date_ist > end_date:
+                            continue
+                        
+                        # Process order items
+                        order_items = properties.get('OrderItem', [])
+                        if not isinstance(order_items, list):
+                            continue
+                        
+                        order_total = float(order.get('total', 0))
+                        items_subtotal = sum(float(item.get('total', 0)) for item in order_items if isinstance(item, dict))
+                        
+                        for item in order_items:
+                            if not isinstance(item, dict):
+                                continue
+                            
+                            item_name = item.get('name', '').strip()
+                            if not item_name:
+                                continue
+                            
+                            quantity = float(item.get('quantity', 0))
+                            item_subtotal = float(item.get('total', 0))
+                            
+                            # Allocate order total proportionally
+                            if items_subtotal > 0:
+                                allocation_ratio = item_subtotal / items_subtotal
+                                revenue = order_total * allocation_ratio
+                            else:
+                                revenue = item_subtotal
+                            
+                            item_aggregates[item_name]['quantity'] += quantity
+                            item_aggregates[item_name]['revenue'] += revenue
+                    
+                    except Exception:
+                        continue
+            
+            # Sort by quantity and get top items
+            sorted_items = sorted(
+                item_aggregates.items(),
+                key=lambda x: x[1]['quantity'],
+                reverse=True
+            )[:limit]
+            
+            results = [
+                {
+                    'name': item_name,
+                    'quantity_sold': int(data['quantity']),
+                    'total_revenue': round(data['revenue'], 2)
+                }
+                for item_name, data in sorted_items
+            ]
+            
+            logging.info(f"✅ Returning {len(results)} top items")
+            return jsonify(results)
+            
+    except Exception as e:
+        logging.error(f"❌ Error in top items: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/analytics/footfall-conversion')
 @login_required

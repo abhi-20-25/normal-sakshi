@@ -604,7 +604,8 @@ def get_daily_sales(
     
     subquery = db.query(func.max(PetpoojaWebhookEvent.id))\
         .filter(*subquery_filters)\
-        .group_by(order_id_path)
+        .group_by(order_id_path)\
+        .subquery()
     
     date_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'created_on'), DateTime).cast(Date)
     total_col = cast(func.jsonb_extract_path_text(PetpoojaWebhookEvent.content, 'properties', 'Order', 'total'), Float)

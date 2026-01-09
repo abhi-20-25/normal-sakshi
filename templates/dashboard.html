@@ -1424,6 +1424,7 @@
   </div>
   <script>
 
+    // Remote FastAPI URL - used for payment modes, order types, top items
     const FASTAPI_URL = 'http://13.202.92.108:8000';
 
     const API_TOKEN = 'Z4N8T2W9L3H6Q1P';
@@ -1435,14 +1436,20 @@
     const selected_restaurant = {{ selected_restaurant|tojson|safe if selected_restaurant else 'null' }};
     const all_restaurants = {{ restaurants|tojson|safe if restaurants else '[]' }};
     
+    // Debug logging for restaurant selection
+    console.log('Dashboard loaded with selected_restaurant:', selected_restaurant);
+    console.log('All restaurants:', all_restaurants);
+    
     // Helper function to get PetPooja restaurant ID from selected restaurant
     function getPetPoojaRestaurantId() {
         if (!selected_restaurant || !selected_restaurant.id) {
+            console.warn('No restaurant selected - will fetch data for ALL restaurants');
             return null;
         }
-        // Find the restaurant in all_restaurants to get petpooja_rest_id
-        const restaurant = all_restaurants.find(r => r.id === selected_restaurant.id);
-        return restaurant ? restaurant.petpooja_rest_id : null;
+        // Return petpooja_rest_id directly from selected_restaurant (already contains it)
+        const petpoojaId = selected_restaurant.petpooja_rest_id || null;
+        console.log(`Restaurant ${selected_restaurant.restaurant_name} (ID: ${selected_restaurant.id}) -> PetPooja ID: ${petpoojaId}`);
+        return petpoojaId;
     }
     
     // Build channels object dynamically from app_configs
@@ -3216,64 +3223,60 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function loadSalesData() {
-    console.log("Fetching sales data...");
+    console.log("=== SALES ANALYTICS DEBUG ===");
+    console.log("Selected restaurant:", selected_restaurant);
     updateMonthHeaders();
 
-    // Build restaurant filter parameter for FastAPI (needs PetPooja restID, not database ID)
+    // Build restaurant filter parameter using DATABASE restaurant_id (not PetPooja ID)
     let restaurantParam = '';
-    const petpoojaRestId = getPetPoojaRestaurantId();
-    if (petpoojaRestId) {
-        restaurantParam = `&restaurant_id=${petpoojaRestId}`;
-        console.log(`Fetching sales data for PetPooja restaurant ${petpoojaRestId}`);
-    } else if (selected_restaurant && selected_restaurant.id) {
-        console.log(`Restaurant ${selected_restaurant.id} has no PetPooja integration - showing empty data`);
-        // Show empty state
-        document.getElementById('sa-total-sales').textContent = '₹0';
-        document.getElementById('sa-order-count').textContent = '0';
-        document.getElementById('sa-avg-value').textContent = '₹0';
-        renderSalesTrend([]);
-        renderPaymentModes([]);
-        renderOrderTypes([]);
-        const tbody = document.querySelector('#sa-top-items-table tbody');
-        tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 20px; color: #9aa0a6;">No PetPooja data for this restaurant</td></tr>';
-        return;
+    if (selected_restaurant && selected_restaurant.id) {
+        restaurantParam = `?restaurant_id=${selected_restaurant.id}`;
+        console.log(`✅ Fetching sales data for restaurant ${selected_restaurant.restaurant_name} (DB ID: ${selected_restaurant.id})`);
     } else {
-        console.log('Fetching sales data for all restaurants');
+        console.log('⚠️ WARNING: No restaurant selected - Fetching sales data for ALL restaurants');
     }
 
     try {
-        // 1. Fetch Daily Sales (Last 7 days)
-        const salesRes = await fetch(`${FASTAPI_URL}/analytics/sales-daily?days=7&token=${API_TOKEN}${restaurantParam}`);
+        // 1. Fetch Daily Sales (Last 7 days) - Using NEW backend endpoint that properly filters
+        const salesUrl = `/api/sales-analytics/daily${restaurantParam}${restaurantParam ? '&' : '?'}days=7`;
+        console.log("📡 Calling BACKEND endpoint:", salesUrl);
+        const salesRes = await fetch(salesUrl);
         if (!salesRes.ok) throw new Error(`HTTP ${salesRes.status}`);
         const salesData = await salesRes.json();
+        console.log("📊 Sales data received:", salesData);
         renderSalesTrend(salesData);
         
-        // Update Top Cards (Today's data is index 0 usually)
+        // Update Top Cards (Today's data)
         if(salesData.length > 0) {
-            // Determine if the first record is today
+            // Find today's record
             const todayStr = new Date().toISOString().split('T')[0];
             const todayRecord = salesData.find(d => d.date === todayStr) || { total_sales: 0, order_count: 0 };
             
+            console.log(`Today (${todayStr}): ${todayRecord.order_count} orders, ₹${todayRecord.total_sales}`);
             document.getElementById('sa-total-sales').textContent = '₹' + todayRecord.total_sales.toFixed(0);
             document.getElementById('sa-order-count').textContent = todayRecord.order_count;
             const avg = todayRecord.order_count > 0 ? (todayRecord.total_sales / todayRecord.order_count) : 0;
             document.getElementById('sa-avg-value').textContent = '₹' + avg.toFixed(0);
         }
 
-        // 2. Fetch Payment Modes
-        const payRes = await fetch(`${FASTAPI_URL}/analytics/payment-modes?token=${API_TOKEN}${restaurantParam}`);
+        // Now using BACKEND endpoints for payment modes, order types, and top items
+        // This ensures proper restaurant filtering
+        const restaurantIdParam = selected_restaurant && selected_restaurant.id ? `?restaurant_id=${selected_restaurant.id}` : '';
+
+        // 2. Fetch Payment Modes - Using BACKEND endpoint
+        const payRes = await fetch(`/api/sales-analytics/payment-modes${restaurantIdParam}`);
         if (!payRes.ok) throw new Error(`HTTP ${payRes.status}`);
         const payData = await payRes.json();
         renderPaymentModes(payData);
 
-        // 3. Fetch Order Types (Online/Offline)
-        const typeRes = await fetch(`${FASTAPI_URL}/analytics/order-types?token=${API_TOKEN}${restaurantParam}`);
+        // 3. Fetch Order Types (Online/Offline) - Using BACKEND endpoint
+        const typeRes = await fetch(`/api/sales-analytics/order-types${restaurantIdParam}`);
         if (!typeRes.ok) throw new Error(`HTTP ${typeRes.status}`);
         const typeData = await typeRes.json();
         renderOrderTypes(typeData);
 
-        // 4. Fetch Top Items
-        const itemRes = await fetch(`${FASTAPI_URL}/analytics/top-items?limit=5&token=${API_TOKEN}${restaurantParam}`);
+        // 4. Fetch Top Items - Using BACKEND endpoint
+        const itemRes = await fetch(`/api/sales-analytics/top-items${restaurantIdParam}${restaurantIdParam ? '&' : '?'}limit=5`);
         if (!itemRes.ok) throw new Error(`HTTP ${itemRes.status}`);
         const itemData = await itemRes.json();
         renderTopItems(itemData);
