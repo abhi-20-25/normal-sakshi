@@ -2244,7 +2244,7 @@ class OccupancyMonitorProcessor(threading.Thread):
         avg_today = self.live_count  # Default to current
         
         try:
-            with SessionLocal() as db:
+            with self.SessionLocal() as db:
                 today = datetime.now(IST).date()
                 today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
                 today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=IST)

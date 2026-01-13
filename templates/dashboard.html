@@ -987,7 +987,7 @@
         </div>
         
         <!-- Live Queue & Counter Stats Cards -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0;">
+        <!-- <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 15px; margin: 20px 0;">
           <div class="card" style="text-align: center; padding: 20px;">
             <div style="font-size: 14px; color: #9aa0a6; margin-bottom: 10px;">Current Queue</div>
             <div id="qm-queue-count" style="font-size: 48px; font-weight: 700; color: #3b82f6;">0</div>
@@ -999,7 +999,7 @@
             <div id="qm-counter-count" style="font-size: 48px; font-weight: 700; color: #26a44b;">0</div>
             <div style="font-size: 12px; color: #9aa0a6; margin-top: 5px;">Being served</div>
           </div>
-        </div>
+        </div> -->
         
         <div class="report-section">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
@@ -1453,14 +1453,18 @@
     }
     
     // Build channels object dynamically from app_configs
+    // Store arrays of channel IDs to support multiple channels per app
     const channels = {};
+    const channelArrays = {};
     for (const [app_name, config] of Object.entries(app_configs)) {
       if (config.channels && config.channels.length > 0) {
-        channels[app_name] = config.channels[0].id;
+        channels[app_name] = config.channels[0].id; // First channel for backward compatibility
+        channelArrays[app_name] = config.channels.map(ch => ch.id); // All channel IDs
       }
     }
     
     console.log('Loaded channels from backend:', channels);
+    console.log('Loaded channel arrays:', channelArrays);
     
 let socket = io();
 socket.on('connect', () => console.log('Connected'));
@@ -1885,11 +1889,16 @@ function renderPCHourChart(hourlyData) {
 
 // Queue Monitor updates
 socket.on('queue_update', (data) => {
-  if (data.channel_id === channels.QueueMonitor) {
+  // Check if this channel_id belongs to ANY QueueMonitor channel
+  const isQueueMonitorChannel = channelArrays.QueueMonitor && channelArrays.QueueMonitor.includes(data.channel_id);
+  
+  if (isQueueMonitorChannel) {
     const queueCount = data.queue || 0;
     const counterCount = data.counter || 0;
     const servedToday = data.served_today || 0;
     const peakCount = data.peak_count || 0;
+    
+    console.log(`📊 Queue update received for channel ${data.channel_id}: queue=${queueCount}, counter=${counterCount}`);
     
     // Update overview queue count
     const queueCountEl = document.getElementById('ov-queue-count');
