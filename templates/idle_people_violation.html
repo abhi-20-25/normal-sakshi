@@ -189,7 +189,7 @@
           <div class="info-card">
             <h4>Total Violations</h4>
             <div class="value" id="total-violations">0</div>
-            <div class="description">Today's count</div>
+            <div class="description">Filtered results</div>
           </div>
         </div>
         
@@ -262,12 +262,10 @@
       return false;
     }
     
-    // Set default dates (last 7 days)
+    // Set default dates (today only)
     const today = new Date();
-    const weekAgo = new Date(today);
-    weekAgo.setDate(weekAgo.getDate() - 7);
     document.getElementById('end-date').valueAsDate = today;
-    document.getElementById('start-date').valueAsDate = weekAgo;
+    document.getElementById('start-date').valueAsDate = today;
     
     function loadViolations(page = 1) {
       currentPage = page;
