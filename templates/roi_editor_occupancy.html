@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROI Editor - Occupancy Monitor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+        .btn-success {
+            background: #10b981;
+            color: white;
+        }
+        .btn-success:hover {
+            background: #059669;
+        }
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .mode-indicator {
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 14px;
+            background: #fef3c7;
+            color: #92400e;
+            border: 2px solid #f59e0b;
+        }
+        .canvas-container {
+            position: relative;
+            display: inline-block;
+            border: 3px solid #e5e7eb;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
+        }
+        canvas {
+            display: block;
+            cursor: crosshair;
+            max-width: 100%;
+            height: auto;
+        }
+        .instructions {
+            background: #f3f4f6;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .instructions h3 {
+            color: #374151;
+            margin-bottom: 12px;
+            font-size: 18px;
+        }
+        .instructions ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        .instructions li {
+            padding: 8px 0;
+            color: #6b7280;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+        }
+        .instructions li::before {
+            content: "→";
+            color: #667eea;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .status-message {
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-weight: 500;
+            display: none;
+        }
+        .status-success {
+            background: #d1fae5;
+            color: #065f46;
+            border-left: 4px solid #10b981;
+        }
+        .status-error {
+            background: #fee2e2;
+            color: #991b1b;
+            border-left: 4px solid #ef4444;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+        .back-link:hover {
+            color: #764ba2;
+            transform: translateX(-5px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/dashboard" class="back-link">← Back to Dashboard</a>
+        
+        <h1>🎯 ROI Editor - Occupancy Monitor</h1>
+        <p class="subtitle">Draw the monitoring area where people should be counted</p>
+        
+        <div class="controls">
+            <div class="mode-indicator">
+                Drawing: <strong>OCCUPANCY AREA</strong>
+                <span id="pointCounter" style="margin-left: 10px; font-size: 12px;">(0 points)</span>
+            </div>
+            <button class="btn btn-danger" onclick="undoLastPoint()">Undo Last Point</button>
+            <button class="btn btn-danger" onclick="resetAll()">🗑️ Clear All</button>
+            <button class="btn btn-success" onclick="saveROI()">💾 Save ROI</button>
+        </div>
+        
+        <div class="canvas-container">
+            <canvas id="canvas"></canvas>
+        </div>
+        
+        <div class="status-message" id="statusMessage"></div>
+        
+        <div class="instructions">
+            <h3>📝 Instructions</h3>
+            <ul>
+                <li><strong>Left Click:</strong> Add point to ROI (minimum 3 points required)</li>
+                <li><strong>Right Click:</strong> Remove nearest point from ROI</li>
+                <li><strong>Undo:</strong> Remove the last point added</li>
+                <li><strong>Clear All:</strong> Remove all points and start over</li>
+                <li><strong>Save:</strong> Save ROI to database (at least 3 points required)</li>
+                <li>💡 The ROI polygon will be automatically closed when you have 3+ points</li>
+                <li>👥 Only people detected inside this area will be counted for occupancy</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let channelId = new URLSearchParams(window.location.search).get('channel_id');
+        
+        // If no channel_id, check if we have channels to select from
+        {% if show_selector %}
+        const channels = {{ channels | tojson }};
+        if (channels && channels.length > 0) {
+            const selection = prompt(`Select channel:\n${channels.map((c, i) => `${i+1}. ${c.name} (${c.id})`).join('\n')}\n\nEnter number (1-${channels.length}):`);
+            if (selection) {
+                const idx = parseInt(selection) - 1;
+                if (idx >= 0 && idx < channels.length) {
+                    channelId = channels[idx].id;
+                    window.location.href = `/roi_editor_occupancy?channel_id=${channelId}`;
+                } else {
+                    alert('Invalid selection!');
+                    window.location.href = '/dashboard';
+                }
+            } else {
+                window.location.href = '/dashboard';
+            }
+        } else {
+            alert('No OccupancyMonitor cameras found!');
+            window.location.href = '/dashboard';
+        }
+        {% else %}
+        channelId = '{{ channel_id }}';
+        if (!channelId || channelId === 'None') {
+            alert('No channel_id provided!');
+            window.location.href = '/dashboard';
+        }
+        {% endif %}
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        
+        let points = [];
+        
+        // Use live video feed as background
+        const videoFeed = new Image();
+        let videoUpdateInterval;
+        
+        function startVideoFeed() {
+            canvas.width = 640;
+            canvas.height = 480;
+            
+            videoUpdateInterval = setInterval(() => {
+                videoFeed.src = `/video_feed/OccupancyMonitor/${channelId}?t=${Date.now()}`;
+            }, 100); // Update every 100ms for smooth video
+            
+            videoFeed.onload = function() {
+                if (canvas.width !== videoFeed.width || canvas.height !== videoFeed.height) {
+                    canvas.width = videoFeed.width;
+                    canvas.height = videoFeed.height;
+                }
+                img.src = videoFeed.src;
+                redraw();
+            };
+            
+            videoFeed.onerror = function() {
+                // Fallback: show blank canvas
+                if (!img.complete) {
+                    canvas.width = 640;
+                    canvas.height = 480;
+                    ctx.fillStyle = '#2a2a2a';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.fillStyle = '#fff';
+                    ctx.font = '20px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('Loading video feed...', canvas.width/2, canvas.height/2);
+                }
+            };
+            
+            loadExistingROI();
+        }
+        
+        startVideoFeed();
+        
+        function loadExistingROI() {
+            fetch(`/api/get_roi?channel_id=${channelId}&app_name=OccupancyMonitor`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success && data.roi_points && data.roi_points.points) {
+                        // Convert normalized coords to pixels
+                        points = data.roi_points.points.map(p => ({
+                            x: p[0] * canvas.width,
+                            y: p[1] * canvas.height
+                        }));
+                        showStatus('✅ Existing ROI loaded successfully!', 'success');
+                    }
+                    redraw();
+                })
+                .catch(err => {
+                    console.error('Error loading ROI:', err);
+                    redraw();
+                });
+        }
+        
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0);
+            
+            // Draw ROI
+            drawROI(points, '#f59e0b', 'OCCUPANCY AREA');
+            
+            // Update counter
+            updateCounter();
+        }
+        
+        function updateCounter() {
+            document.getElementById('pointCounter').textContent = `(${points.length} points)`;
+        }
+        
+        function drawROI(pts, color, label) {
+            if (pts.length === 0) return;
+            
+            ctx.strokeStyle = color;
+            ctx.fillStyle = color;
+            ctx.lineWidth = 3;
+            
+            // Draw lines
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) {
+                ctx.lineTo(pts[i].x, pts[i].y);
+            }
+            if (pts.length >= 3) {
+                ctx.closePath();
+            }
+            ctx.stroke();
+            
+            // Draw semi-transparent fill if closed
+            if (pts.length >= 3) {
+                ctx.globalAlpha = 0.25;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+            }
+            
+            // Draw points
+            pts.forEach((p, i) => {
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // Draw point number
+                ctx.fillStyle = '#fff';
+                ctx.font = 'bold 14px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(i + 1, p.x, p.y + 5);
+                ctx.fillStyle = color;
+            });
+            
+            // Draw label
+            if (pts.length > 0) {
+                ctx.fillStyle = color;
+                ctx.font = 'bold 18px Arial';
+                ctx.textAlign = 'left';
+                ctx.fillText(label, pts[0].x + 15, pts[0].y - 10);
+            }
+        }
+        
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            points.push({ x, y });
+            redraw();
+        });
+        
+        canvas.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            
+            if (points.length === 0) return;
+            
+            // Find nearest point
+            let minDist = Infinity;
+            let minIdx = -1;
+            points.forEach((p, i) => {
+                const dist = Math.sqrt((p.x - x) ** 2 + (p.y - y) ** 2);
+                if (dist < minDist) {
+                    minDist = dist;
+                    minIdx = i;
+                }
+            });
+            
+            if (minIdx !== -1) {
+                points.splice(minIdx, 1);
+                redraw();
+            }
+        });
+        
+        function undoLastPoint() {
+            if (points.length > 0) {
+                points.pop();
+                redraw();
+            }
+        }
+        
+        function resetAll() {
+            if (points.length > 0 && confirm('⚠️ This will clear all ROI points.\nAre you sure?')) {
+                points = [];
+                redraw();
+                showStatus('🗑️ All ROI points cleared. Draw new region and save.', 'success');
+            }
+        }
+        
+        function saveROI() {
+            if (points.length < 3) {
+                showStatus(`❌ Occupancy area needs at least 3 points! Currently: ${points.length} points`, 'error');
+                return;
+            }
+            
+            // Normalize coordinates (0-1 range)
+            const normalized = {
+                points: points.map(p => [p.x / canvas.width, p.y / canvas.height])
+            };
+            
+            fetch('/api/set_roi', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    channel_id: channelId,
+                    app_name: 'OccupancyMonitor',
+                    roi_points: normalized
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.success) {
+                    showStatus('✅ ROI saved successfully! The monitoring area is now active.', 'success');
+                } else {
+                    showStatus('❌ Failed to save ROI: ' + (data.message || 'Unknown error'), 'error');
+                }
+            })
+            .catch(err => {
+                console.error('Save error:', err);
+                showStatus('❌ Network error while saving ROI', 'error');
+            });
+        }
+        
+        function showStatus(message, type) {
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.className = `status-message status-${type}`;
+            statusDiv.style.display = 'block';
+            
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusDiv.style.display = 'none';
+                }, 5000);
+            }
+        }
+    </script>
+</body>
+</html>

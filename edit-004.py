@@ -2040,6 +2040,10 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.requirement_met_time = 0
         self.pause_after_met_duration = 300  # Pause for 5 minutes after requirement met
         
+        # ROI Configuration
+        self.roi_polygon = None
+        self._load_roi_from_db()
+        
         # Load schedule from database
         self._load_schedule_from_db()
         
@@ -2053,6 +2057,82 @@ class OccupancyMonitorProcessor(threading.Thread):
             logging.info("Tables 'occupancy_logs' and 'occupancy_schedules' checked/created.")
         except Exception as e:
             logging.error(f"Could not create OccupancyMonitor tables: {e}")
+    
+    def _load_roi_from_db(self):
+        """Load ROI configuration from database for this channel"""
+        try:
+            database_url = os.environ.get('DATABASE_URL') or DATABASE_URL
+            if not database_url:
+                logging.info(f"No DATABASE_URL found for OccupancyMonitor {self.channel_name} - skipping ROI load")
+                return
+            
+            engine = create_engine(database_url, pool_pre_ping=True)
+            SessionLocal_roi = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+            
+            with SessionLocal_roi() as db:
+                query = text("""
+                    SELECT roi_points FROM roi_configs 
+                    WHERE channel_id = :channel_id AND app_name = 'OccupancyMonitor'
+                """)
+                result = db.execute(query, {"channel_id": self.channel_id}).fetchone()
+                
+                if result and result[0]:
+                    roi_data = result[0] if isinstance(result[0], dict) else json.loads(result[0])
+                    points = roi_data.get('points', [])
+                    
+                    if points and len(points) >= 3:
+                        self.roi_polygon = Polygon(points)
+                        logging.info(f"✅ OccupancyMonitor ROI loaded for {self.channel_name}: {len(points)} points")
+                    else:
+                        logging.info(f"No valid ROI configured for OccupancyMonitor {self.channel_name} - monitoring entire frame")
+                else:
+                    logging.info(f"No ROI configured for OccupancyMonitor {self.channel_name} - monitoring entire frame")
+        except Exception as e:
+            logging.error(f"Error loading OccupancyMonitor ROI for {self.channel_name}: {e}")
+            self.roi_polygon = None
+    
+    def _is_in_roi(self, x1, y1, x2, y2, frame_width, frame_height, overlap_threshold=0.5):
+        """
+        Check if at least 50% (or specified threshold) of bounding box is inside ROI.
+        
+        Args:
+            x1, y1, x2, y2: Bounding box pixel coordinates
+            frame_width, frame_height: Frame dimensions for normalization
+            overlap_threshold: Minimum percentage of bbox that must be in ROI (default: 0.5 = 50%)
+        
+        Returns:
+            True if bbox overlap with ROI >= threshold, False otherwise
+        """
+        if self.roi_polygon is None:
+            return True  # No ROI means monitor entire frame
+        
+        try:
+            from shapely.geometry import box as shapely_box
+            
+            # Normalize bbox coordinates to 0-1 range (ROI is stored normalized)
+            norm_x1 = x1 / frame_width
+            norm_y1 = y1 / frame_height
+            norm_x2 = x2 / frame_width
+            norm_y2 = y2 / frame_height
+            
+            # Create a polygon from the normalized bounding box coordinates
+            bbox_polygon = shapely_box(norm_x1, norm_y1, norm_x2, norm_y2)
+            
+            # Calculate intersection area
+            intersection = self.roi_polygon.intersection(bbox_polygon)
+            bbox_area = bbox_polygon.area
+            
+            # Avoid division by zero
+            if bbox_area == 0:
+                return False
+            
+            # Calculate overlap percentage
+            overlap_ratio = intersection.area / bbox_area
+            
+            return overlap_ratio >= overlap_threshold
+        except Exception as e:
+            logging.error(f"Error checking ROI overlap: {e}")
+            return True  # Default to include on error
     
     def _load_schedule_from_db(self):
         """Load schedule from database for this channel"""
@@ -2091,6 +2171,21 @@ class OccupancyMonitorProcessor(threading.Thread):
             logging.error(f"Error updating schedule: {e}")
             return False
     
+    def update_roi(self, roi_data):
+        """Update ROI configuration in real-time"""
+        try:
+            points = roi_data.get('points', [])
+            if points and len(points) >= 3:
+                self.roi_polygon = Polygon(points)
+                logging.info(f"✅ ROI updated in real-time for {self.channel_name}: {len(points)} points")
+                return True
+            else:
+                logging.warning(f"Invalid ROI data for {self.channel_name}")
+                return False
+        except Exception as e:
+            logging.error(f"Error updating ROI for {self.channel_name}: {e}")
+            return False
+    
     def get_frame(self):
         """Return latest frame as JPEG bytes - zero-lag optimized"""
         with self.lock:
@@ -2117,9 +2212,35 @@ class OccupancyMonitorProcessor(threading.Thread):
             return True, current_hour, current_day, self.schedule[current_hour][current_day]
         return False, current_hour, current_day, 0
     
+    def _draw_roi_overlay(self, frame):
+        """Draw ROI polygon overlay on frame"""
+        if self.roi_polygon is None:
+            return frame
+        
+        try:
+            frame_height, frame_width = frame.shape[:2]
+            roi_points = np.array([
+                [int(x * frame_width), int(y * frame_height)] 
+                for x, y in self.roi_polygon.exterior.coords
+            ], dtype=np.int32)
+            
+            # Draw ROI polygon
+            cv2.polylines(frame, [roi_points], True, (255, 255, 0), 2)
+            
+            # Add ROI label
+            if len(roi_points) > 0:
+                cv2.putText(frame, "ROI", (roi_points[0][0], roi_points[0][1] - 10),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        except Exception as e:
+            logging.error(f"Error drawing ROI overlay: {e}")
+        
+        return frame
+    
     def _detect_people(self, frame):
         """Enhanced YOLO detection with CUDA support and maximum accuracy"""
         try:
+            frame_height, frame_width = frame.shape[:2]
+            
             # Enhanced detection with very low confidence for maximum recall
             with torch.inference_mode():
                 results = self.model(
@@ -2139,6 +2260,19 @@ class OccupancyMonitorProcessor(threading.Thread):
             
             annotated_frame = frame.copy()
             
+            # Draw ROI polygon if configured
+            if self.roi_polygon is not None:
+                try:
+                    roi_points = np.array([
+                        [int(x * frame_width), int(y * frame_height)] 
+                        for x, y in self.roi_polygon.exterior.coords
+                    ], dtype=np.int32)
+                    cv2.polylines(annotated_frame, [roi_points], True, (255, 255, 0), 2)
+                    cv2.putText(annotated_frame, "ROI", (roi_points[0][0], roi_points[0][1] - 10),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                except Exception as e:
+                    logging.error(f"Error drawing ROI: {e}")
+            
             for result in results:
                 boxes = result.boxes
                 for box in boxes:
@@ -2146,8 +2280,17 @@ class OccupancyMonitorProcessor(threading.Thread):
                     
                     # Very low threshold - catch everyone!
                     if conf > 0.15:
-                        person_count += 1
                         x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        
+                        # ROI filtering - only count people inside ROI
+                        if not self._is_in_roi(x1, y1, x2, y2, frame_width, frame_height):
+                            # Draw filtered-out detections in gray
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
+                            cv2.putText(annotated_frame, 'Outside ROI', (x1, y1-5),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+                            continue
+                        
+                        person_count += 1
                         detections.append({'conf': conf, 'bbox': (x1, y1, x2, y2)})
                         
                         # Enhanced color coding based on confidence
@@ -2368,18 +2511,22 @@ class OccupancyMonitorProcessor(threading.Thread):
                 self._check_occupancy_requirement()
                 
             elif should_detect:
-                # Between YOLO detections - smooth video without overlays
+                # Between YOLO detections - smooth video with ROI overlay
                 display_frame = frame.copy()
                 
-                # Clean video feed - no overlays
+                # Draw ROI overlay
+                display_frame = self._draw_roi_overlay(display_frame)
+                
                 with self.lock:
                     self.latest_frame = display_frame
                     
             else:
-                # PAUSED/NO SCHEDULE - Clean video feed
+                # PAUSED/NO SCHEDULE - Show video with ROI overlay
                 display_frame = frame.copy()
                 
-                # No overlays - clean video
+                # Draw ROI overlay
+                display_frame = self._draw_roi_overlay(display_frame)
+                
                 with self.lock:
                     self.latest_frame = display_frame
             
@@ -2875,6 +3022,22 @@ def roi_editor_people():
     
     return render_template('roi_editor_people.html', channel_id=channel_id, show_selector=False)
 
+@app.route('/roi_editor_occupancy')
+@login_required
+def roi_editor_occupancy():
+    """ROI Editor page for OccupancyMonitor area"""
+    channel_id = request.args.get('channel_id')
+    if not channel_id:
+        # Show available channels
+        app_configs = get_app_configs()
+        occupancy_channels = app_configs.get('OccupancyMonitor', {}).get('channels', [])
+        if len(occupancy_channels) == 1:
+            # Auto-redirect to the only available channel
+            return redirect(f'/roi_editor_occupancy?channel_id={occupancy_channels[0]["id"]}')
+        return render_template('roi_editor_occupancy.html', channels=occupancy_channels, show_selector=True)
+    
+    return render_template('roi_editor_occupancy.html', channel_id=channel_id, show_selector=False)
+
 @app.route('/api/set_roi', methods=['POST'])
 @login_required
 def set_roi():
@@ -2898,6 +3061,8 @@ def set_roi():
                 target_class = QueueMonitorProcessor
             elif app_name == 'PeopleCounter':
                 target_class = PeopleCounterProcessor
+            elif app_name == 'OccupancyMonitor':
+                target_class = OccupancyMonitorProcessor
             
             if target_class:
                 for p in processors:
@@ -2909,6 +3074,9 @@ def set_roi():
                             line_pos = roi_points.get('line_position', 0.38)
                             p.update_line_position(line_pos)
                             logging.info(f"Sent live line position update to {app_name} for {channel_id}")
+                        elif app_name == 'OccupancyMonitor' and hasattr(p, 'update_roi'):
+                            p.update_roi(roi_points)
+                            logging.info(f"Sent live ROI update to {app_name} for {channel_id}")
                         break
 
             return jsonify({"success": True, "message": "ROI updated successfully."})
