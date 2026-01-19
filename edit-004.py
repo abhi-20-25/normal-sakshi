@@ -33,21 +33,21 @@ import pandas as pd
 from queue import Queue, Empty
 
 # --- CUDA/Backend Tuning ---
-# FORCE CPU MODE - Disable CUDA to avoid GPU errors on server
-DEVICE = 'cpu'
-logging.info("🚫 CUDA DISABLED - Running in CPU-only mode for stability")
-
-# Keep CUDA code commented out for future use
-# DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-# if DEVICE == 'cuda':
-#     torch.backends.cudnn.benchmark = True
-#     try:
-#         torch.set_float32_matmul_precision('high')
-#     except Exception:
-#         pass
+# Enable CUDA auto-detection
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+if DEVICE == 'cuda':
+    torch.backends.cudnn.benchmark = True
+    try:
+        torch.set_float32_matmul_precision('high')
+    except Exception:
+        pass
+    logging.info("✅ CUDA ENABLED - Using GPU for processing")
+else:
+    logging.info("⚠️  CUDA not available - Running in CPU mode")
 
 # --- Frame Downscale Settings ---
 # Reduce resolution early in the pipeline to speed up processing/streaming
+# Set to None to preserve original camera resolution
 TARGET_WIDTH = 640
 TARGET_HEIGHT = 360
 
@@ -59,6 +59,8 @@ from petpooja_integration import (
     PetPoojaDatabase,
     get_petpooja_restaurant_id
 )
+from queue_monitor import QueueMonitorProcessor
+from occupancy_monitor_processor import run_occupancy_monitor, get_occupancy_tables, OccupancyMonitorProcessor
 
 # --- Basic Logging Setup ---
 import sys
@@ -84,7 +86,7 @@ DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi"
 RTSP_LINKS_FILE = 'data/rtsp_links.txt'
 
 # Initialize PetPooja services (will be used in Flask routes)
-pp_sales_analytics, pp_conversion_analytics, pp_time_based_menu, pp_promotion_effectiveness = create_petpooja_services()
+pp_sales_analytics, pp_conversion_analytics, pp_time_based_menu, pp_promotion_effectiveness, pp_staffing_recommendations = create_petpooja_services()
 STATIC_FOLDER = 'static'
 DETECTIONS_SUBFOLDER = 'detections'
 TELEGRAM_BOT_TOKEN = "7843300957:AAGVv866cPiDPVD0Wrk_wwEEHDSD64Pgaqs"
@@ -178,20 +180,7 @@ def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
 
 
 # --- QUEUE MONITOR CONFIGURATION ---
-# THIS IS NOW A FALLBACK if no ROI is in the database.
-QUEUE_MONITOR_ROI_CONFIG = {
-    "Checkout Queue": {
-        "roi_points": [[0.5549999952316285, 0.5744444105360244], [0.4456249952316284, 0.5272221883138021], [0.3081249952316284, 0.3105555216471354], [0.08624999523162842, 0.4272221883138021], [0.19249999523162842, 0.7938888549804688]],
-        "secondary_roi_points": [[0.5924999952316284, 0.5355555216471354], [0.49874999523162844, 0.502222188313802], [0.3487499952316284, 0.31333329942491317], [0.38156249523162844, 0.3105555216471354], [0.3940624952316284, 0.2883332994249132], [0.5003124952316285, 0.26888885498046877], [0.6721874952316285, 0.4633332994249132]],
-    }
-}
-QUEUE_DWELL_TIME_SEC = 0.05        # How long a person must stay in queue to be counted (reduced to 0.05 seconds)
-QUEUE_SCREENSHOT_DWELL_TIME_SEC = 5.0  # How long a person must stay in queue to trigger screenshot (5 seconds)
-QUEUE_ALERT_THRESHOLD = 3          # Regular alert: 2+ people with NO cashier
-QUEUE_OVERQUEUE_THRESHOLD = 4      # Overqueue alert: 4+ people WITH cashier
-QUEUE_HIGH_COUNT_THRESHOLD = 3     # Screenshot threshold: queue count > 3
-QUEUE_COUNTER_PERSISTENCE_SEC = 8.0  # How long to keep counter as "occupied" after last detection (8 seconds)
-QUEUE_ALERT_COOLDOWN_SEC = 6      # 60-second cooldown between alerts
+# Queue monitor configuration moved to queue_monitor.py module
 
 # --- Flask and SocketIO Setup ---
 app = Flask(__name__)
@@ -447,19 +436,32 @@ def login_required(f):
     return decorated_function
 
 def initialize_database():
-    global db_connected, engine, SessionLocal
+    global db_connected, engine, SessionLocal, OccupancyLog, OccupancySchedule
     try:
+        logging.info("Initializing database connection...")
         engine = create_engine(DATABASE_URL)
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+        
+        logging.info("Creating occupancy table classes...")
+        # Initialize occupancy tables BEFORE creating all tables
+        OccupancyLog, OccupancySchedule = get_occupancy_tables(Base)
+        
+        logging.info("Creating all database tables...")
+        # Now create all tables including occupancy tables
         Base.metadata.create_all(bind=engine)
+        
         db_connected = True
-        logging.info("Database connection successful.")
+        logging.info("✅ Database connection successful.")
         return True
     except OperationalError as e:
-        logging.error(f"Database connection failed: {e}")
+        logging.error(f"❌ Database connection failed: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return False
     except Exception as e:
-        logging.error(f"Unexpected error during DB init: {e}")
+        logging.error(f"❌ Unexpected error during DB init: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return False
 
 def send_telegram_notification(message):
@@ -763,12 +765,14 @@ class MultiModelProcessor(threading.Thread):
                 if task.get('target_class_id') is not None:
                     model_args['classes'] = task['target_class_id']
 
-                # CPU-only mode
+                # CPU-only mode for non-Generic apps, CUDA for Generic
                 try:
+                    # Use CUDA for Generic app if available, CPU for others
+                    device_to_use = DEVICE if app_name == 'Generic' else 'cpu'
                     with torch.inference_mode():
                         results = task['model'](
                             frame,
-                            device='cpu',
+                            device=device_to_use,
                             half=False,
                             **model_args
                         )
@@ -1400,1152 +1404,9 @@ class PeopleCounterProcessor(threading.Thread):
                     time.sleep(1)
         # No cap to release when using FrameHub
 
-class QueueMonitorProcessor(threading.Thread):
-    def __init__(self, rtsp_url, channel_id, channel_name, model, restaurant_id=None):
-        super().__init__(name=channel_name)
-        self.rtsp_url = rtsp_url
-        self.channel_id = channel_id
-        self.channel_name = channel_name
-        self.model = model
-        self.restaurant_id = restaurant_id  # Store restaurant ID
-        self.is_running = True
-        self.lock = threading.Lock()
-        self.latest_frame = None
-        self.queue_tracker = defaultdict(lambda: {'entry_time': 0})
-        self.current_queue_count = 0
-        self.secondary_queue_tracker = defaultdict(lambda: {'entry_time': 0})
-        self.current_secondary_count = 0
-        self.last_counter_detection_time = 0  # Track last time someone was detected in counter area
-        self.last_alert_time = 0
-        self.last_overqueue_time = 0  # Track overqueue alerts separately
-        self.last_screenshot_time = 0  # Track screenshot alerts to avoid spam
-        self.screenshot_cooldown = 10  # 10 seconds cooldown between screenshots
-        self.roi_poly = Polygon([])
-        self.secondary_roi_poly = Polygon([])
-        self._load_roi_from_db()
-        
-        # Cache for queue stats to avoid frequent DB queries
-        self.cached_served_today = 0
-        self.cached_peak_count = 0
-        self.last_stats_update = 0
-        self.stats_update_interval = 30  # Update stats every 30 seconds
+# QueueMonitorProcessor class moved to queue_monitor.py module
 
-    # def _load_roi_from_db(self):
-    #     with SessionLocal() as db:
-    #         roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
-    #         if roi_record and roi_record.roi_points:
-    #             try:
-    #                 points = json.loads(roi_record.roi_points)
-    #                 self.roi_poly = Polygon(points.get("main", []))
-    #                 self.secondary_roi_poly = Polygon(points.get("secondary", []))
-    #                 logging.info(f"Loaded custom ROI for QueueMonitor {self.channel_name} from DB.")
-    #             except (json.JSONDecodeError, TypeError):
-    #                 logging.error("Failed to parse ROI JSON from DB. Using fallback.")
-    #                 self._use_fallback_roi()
-    #         else:
-    #             logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using fallback.")
-    #             self._use_fallback_roi()
-    def _load_roi_from_db(self):
-        """Load ROI from database first, fallback to hardcoded values if not found
-        
-        Priority: Database ROI > Hardcoded ROI
-        This ensures server and local use the same ROI from database.
-        """
-        # Always try to load from database first
-        logging.info(f"🏪 Restaurant ID {self.restaurant_id} - attempting to load ROI from database for {self.channel_name}")
-        with SessionLocal() as db:
-            roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='QueueMonitor').first()
-            if roi_record and roi_record.roi_points:
-                try:
-                    points = json.loads(roi_record.roi_points) if isinstance(roi_record.roi_points, str) else roi_record.roi_points
-                    self.normalized_main_roi = points.get("main", [])
-                    self.normalized_secondary_roi = points.get("secondary", [])
-                    
-                    # Initialize with empty polygons - will be converted to pixels in run() method
-                    self.roi_poly = Polygon([])
-                    self.secondary_roi_poly = Polygon([])
-                    
-                    logging.info(f"✅ Loaded custom ROI for QueueMonitor {self.channel_name} from database.")
-                    logging.info(f"   Main ROI: {len(self.normalized_main_roi)} points")
-                    logging.info(f"   Secondary ROI: {len(self.normalized_secondary_roi)} points")
-                    return
-                except (json.JSONDecodeError, TypeError) as e:
-                    logging.error(f"Failed to parse ROI JSON from DB: {e}. Using fallback.")
-                    self._use_fallback_roi()
-            else:
-                logging.warning(f"No custom ROI in DB for QueueMonitor {self.channel_name}. Using hardcoded fallback.")
-                self._use_fallback_roi()
-
-    def _use_fallback_roi(self):
-        fallback_config = QUEUE_MONITOR_ROI_CONFIG.get(self.channel_name, {})
-        # If channel name doesn't match, try to use the first available config
-        if not fallback_config and QUEUE_MONITOR_ROI_CONFIG:
-            first_key = list(QUEUE_MONITOR_ROI_CONFIG.keys())[0]
-            fallback_config = QUEUE_MONITOR_ROI_CONFIG[first_key]
-            logging.info(f"No ROI config found for '{self.channel_name}', using first available config: '{first_key}'")
-        
-        # Store normalized coordinates for later conversion to pixels
-        self.normalized_main_roi = fallback_config.get("roi_points", [])
-        self.normalized_secondary_roi = fallback_config.get("secondary_roi_points", [])
-        
-        # Log what we got
-        if self.normalized_main_roi:
-            logging.info(f"Loaded main ROI with {len(self.normalized_main_roi)} points for {self.channel_name}")
-        else:
-            logging.warning(f"No main ROI points found for {self.channel_name}")
-        if self.normalized_secondary_roi:
-            logging.info(f"Loaded secondary ROI with {len(self.normalized_secondary_roi)} points for {self.channel_name}")
-        else:
-            logging.warning(f"No secondary ROI points found for {self.channel_name}")
-        
-        # Initialize with empty polygons - will be converted to pixels in run() method
-        self.roi_poly = Polygon([])
-        self.secondary_roi_poly = Polygon([])
-
-    def update_roi(self, new_roi_points):
-        with self.lock:
-            try:
-                self.normalized_main_roi = new_roi_points.get("main", [])
-                self.normalized_secondary_roi = new_roi_points.get("secondary", [])
-                
-                # Force immediate polygon update
-                if self.latest_frame is not None:
-                    h, w = self.latest_frame.shape[:2]
-                    
-                    # Update main ROI polygon
-                    if self.normalized_main_roi and len(self.normalized_main_roi) >= 3:
-                        pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi]
-                        self.roi_poly = Polygon(pixel_coords)
-                        if not self.roi_poly.is_valid:
-                            self.roi_poly = self.roi_poly.buffer(0)
-                        logging.info(f"✅ Updated main ROI: {len(pixel_coords)} points")
-                    
-                    # Update secondary ROI polygon
-                    if self.normalized_secondary_roi and len(self.normalized_secondary_roi) >= 3:
-                        pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi]
-                        self.secondary_roi_poly = Polygon(pixel_coords)
-                        if not self.secondary_roi_poly.is_valid:
-                            self.secondary_roi_poly = self.secondary_roi_poly.buffer(0)
-                        logging.info(f"✅ Updated secondary ROI: {len(pixel_coords)} points")
-                
-                logging.info(f"🎯 QueueMonitor {self.channel_name} ROI updated successfully!")
-                
-                # Reset the flag so ROI polygons will be logged again
-                if hasattr(self, '_roi_logged_once'):
-                    delattr(self, '_roi_logged_once')
-                if hasattr(self, '_roi_warning_logged'):
-                    delattr(self, '_roi_warning_logged')
-                if hasattr(self, '_secondary_roi_warning_logged'):
-                    delattr(self, '_secondary_roi_warning_logged')
-            except Exception as e:
-                logging.error(f"Error updating ROI for {self.channel_name}: {e}")
-
-    def shutdown(self):
-        logging.info(f"Shutting down QueueMonitor for {self.channel_name}.")
-        self.is_running = False
-
-    def _get_queue_stats(self):
-        """Get served count and peak count for today with caching"""
-        current_time = time.time()
-        
-        # Return cached values if updated recently
-        if current_time - self.last_stats_update < self.stats_update_interval:
-            return self.cached_served_today, self.cached_peak_count
-        
-        served_today = 0
-        peak_count = 0
-        
-        if not db_connected:
-            return served_today, peak_count
-        
-        try:
-            with SessionLocal() as db:
-                today_ist = datetime.now(IST).date()
-                start_of_day = datetime.combine(today_ist, datetime.min.time()).replace(tzinfo=IST)
-                end_of_day = datetime.combine(today_ist, datetime.max.time()).replace(tzinfo=IST)
-                
-                # Get all queue logs for today, ordered by time
-                records = db.query(QueueLog).filter(
-                    QueueLog.channel_id == self.channel_id,
-                    QueueLog.timestamp >= start_of_day,
-                    QueueLog.timestamp <= end_of_day
-                ).order_by(QueueLog.timestamp).all()
-                
-                if records:
-                    # Calculate peak count
-                    peak_count = max(record.queue_count for record in records)
-                    
-                    # Calculate served count (count people who entered counter area)
-                    # Count transitions where queue decreases
-                    prev_count = 0
-                    for record in records:
-                        if prev_count > 0 and record.queue_count < prev_count:
-                            # People moved from queue (likely to counter)
-                            served_today += (prev_count - record.queue_count)
-                        prev_count = record.queue_count
-                    
-                    logging.debug(f"Queue stats for {self.channel_name}: Served={served_today}, Peak={peak_count}, Records={len(records)}")
-                
-                # Update cache
-                self.cached_served_today = served_today
-                self.cached_peak_count = peak_count
-                self.last_stats_update = current_time
-                
-        except Exception as e:
-            logging.error(f"Failed to get queue stats for {self.channel_name}: {e}")
-        
-        return served_today, peak_count
-
-    def get_frame(self):
-        with self.lock:
-            if self.latest_frame is None:
-                placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
-                _, jpeg = cv2.imencode('.jpg', placeholder); return jpeg.tobytes()
-            _, jpeg = cv2.imencode('.jpg', self.latest_frame); return jpeg.tobytes()
-
-    # Non-blocking DB persistence to avoid adding latency in the frame loop
-    def _persist_queue_count(self, count: int) -> None:
-        if not db_connected:
-            return
-        try:
-            with SessionLocal() as db:
-                db.add(QueueLog(channel_id=self.channel_id, queue_count=count))
-                db.commit()
-        except Exception as e:
-            logging.error(f"Failed to save queue count to DB for {self.channel_name}: {e}")
-
-    def _update_roi_polygons(self, frame):
-        """Update ROI polygons from normalized coordinates based on current frame dimensions"""
-        h, w = frame.shape[:2]
-        if hasattr(self, 'normalized_main_roi') and self.normalized_main_roi and len(self.normalized_main_roi) >= 3:
-            try:
-                pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_main_roi]
-                self.roi_poly = Polygon(pixel_coords)
-                if not self.roi_poly.is_valid:
-                    logging.warning(f"Main ROI polygon is invalid for {self.channel_name}. Coords: {pixel_coords}")
-                    self.roi_poly = self.roi_poly.buffer(0)  # Try to fix invalid polygon
-                logging.info(f"Updated main ROI for {self.channel_name}: {len(pixel_coords)} points, valid: {self.roi_poly.is_valid}, empty: {self.roi_poly.is_empty}")
-            except Exception as e:
-                logging.error(f"Error creating main ROI polygon for {self.channel_name}: {e}")
-        else:
-            logging.warning(f"No valid normalized_main_roi for {self.channel_name}")
-            
-        if hasattr(self, 'normalized_secondary_roi') and self.normalized_secondary_roi and len(self.normalized_secondary_roi) >= 3:
-            try:
-                pixel_coords = [(int(p[0]*w), int(p[1]*h)) for p in self.normalized_secondary_roi]
-                self.secondary_roi_poly = Polygon(pixel_coords)
-                if not self.secondary_roi_poly.is_valid:
-                    logging.warning(f"Secondary ROI polygon is invalid for {self.channel_name}. Coords: {pixel_coords}")
-                    self.secondary_roi_poly = self.secondary_roi_poly.buffer(0)  # Try to fix invalid polygon
-                logging.info(f"Updated secondary ROI for {self.channel_name}: {len(pixel_coords)} points, valid: {self.secondary_roi_poly.is_valid}, empty: {self.secondary_roi_poly.is_empty}")
-            except Exception as e:
-                logging.error(f"Error creating secondary ROI polygon for {self.channel_name}: {e}")
-        else:
-            logging.warning(f"No valid normalized_secondary_roi for {self.channel_name}")
-
-    def run(self):
-        first_frame = True
-        consecutive_errors = 0
-        max_consecutive_errors = 10
-        last_error_time = 0
-        
-        while self.is_running:
-            try:
-                frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
-                if frame is None:
-                    time.sleep(0.01)
-                    continue
-                
-                if first_frame or not self.roi_poly.is_valid or self.roi_poly.is_empty:
-                    self._update_roi_polygons(frame)
-                    first_frame = False
-
-                self.process_frame(frame.copy())
-                consecutive_errors = 0  # Reset on successful frame
-                
-            except RuntimeError as e:
-                error_msg = str(e)
-                if 'CUDA' in error_msg or 'cuda' in error_msg:
-                    consecutive_errors += 1
-                    last_error_time = time.time()
-                    logging.error(f"CUDA error in QueueMonitor {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
-                    
-                logging.error(f"Runtime error in QueueMonitor {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
-                
-                consecutive_errors += 1
-                if consecutive_errors >= max_consecutive_errors:
-                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing for recovery...")
-                    time.sleep(15)  # Longer pause for recovery
-                    consecutive_errors = 0
-                else:
-                    time.sleep(3)  # Short pause before retry
-            except Exception as e:
-                logging.error(f"Unexpected error in QueueMonitor {self.channel_name}: {e}")
-                consecutive_errors += 1
-                if consecutive_errors >= max_consecutive_errors:
-                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing...")
-                    time.sleep(15)
-                    consecutive_errors = 0
-                else:
-                    time.sleep(1)
-
-        # No cap to release when using FrameHub
-
-    def process_frame(self, frame):
-        current_time = time.time()
-        # Use lower confidence for better detection of partially occluded people (especially in counter area)
-        results = safe_track_persons(self.model, frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-QueueMonitor")
-        current_tracks_in_main_roi, current_tracks_in_secondary_roi = set(), set()
-
-        r0 = results[0] if (results and len(results) > 0) else None
-        
-        # Debug: Log ROI status
-        if not hasattr(self, '_roi_logged_once'):
-            logging.info(f"ROI Status for {self.channel_name}: Main ROI valid={self.roi_poly.is_valid}, empty={self.roi_poly.is_empty}, "
-                        f"Secondary ROI valid={self.secondary_roi_poly.is_valid}, empty={self.secondary_roi_poly.is_empty}")
-            if hasattr(self, 'normalized_main_roi'):
-                logging.info(f"Normalized main ROI: {self.normalized_main_roi}")
-            if hasattr(self, 'normalized_secondary_roi'):
-                logging.info(f"Normalized secondary ROI: {self.normalized_secondary_roi}")
-            self._roi_logged_once = True
-        
-        # FALLBACK: If tracking IDs are not available, use detection indices as pseudo-IDs
-        if r0 is not None and getattr(r0, 'boxes', None) is not None:
-            boxes = r0.boxes.xyxy.cpu()
-            
-            # Try to get tracking IDs, fallback to using detection indices
-            if getattr(r0.boxes, 'id', None) is not None:
-                track_ids = r0.boxes.id.int().cpu().tolist()
-            else:
-                # Tracking failed - use hash of box coordinates as pseudo-ID for this frame
-                track_ids = []
-                for i, box in enumerate(boxes):
-                    # Create a stable ID based on box position (will be consistent across frames for stationary objects)
-                    pseudo_id = hash((int(box[0]/10)*10, int(box[1]/10)*10, int(box[2]/10)*10, int(box[3]/10)*10)) % 100000
-                    track_ids.append(pseudo_id)
-                if len(boxes) > 0 and not hasattr(self, '_tracking_fallback_logged'):
-                    logging.warning(f"{self.channel_name}: Tracking IDs not available, using position-based pseudo-IDs")
-                    self._tracking_fallback_logged = True
-            
-            # Debug: Log number of detections
-            if len(boxes) > 0:
-                logging.debug(f"Detected {len(boxes)} persons in frame for {self.channel_name}")
-            
-            for box, track_id in zip(boxes, track_ids):
-                # Calculate the true center point of the bounding box (center X and center Y)
-                # box format: [x1, y1, x2, y2] where (x1,y1) is top-left and (x2,y2) is bottom-right
-                center_x = int((box[0] + box[2]) / 2)  # Center X coordinate
-                center_y = int((box[1] + box[3]) / 2)  # Center Y coordinate (true center, not bottom)
-                person_point = Point(center_x, center_y)
-                
-                # Check main ROI (queue area) - count if center point is inside ROI
-                if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-                    contains_main = self.roi_poly.contains(person_point)
-                    if contains_main:
-                        current_tracks_in_main_roi.add(track_id)
-                        tracker = self.queue_tracker[track_id]
-                        if tracker['entry_time'] == 0: 
-                            tracker['entry_time'] = current_time
-                            logging.info(f"Person {track_id} entered queue ROI at {current_time} - Center Point: ({center_x}, {center_y})")
-                    else:
-                        # Log when person is detected but not in ROI (for debugging)
-                        if track_id not in current_tracks_in_main_roi and len(current_tracks_in_main_roi) == 0:
-                            logging.debug(f"Person {track_id} center point ({center_x}, {center_y}) NOT in queue ROI")
-                else:
-                    if not hasattr(self, '_roi_warning_logged'):
-                        logging.warning(f"Main ROI is invalid or empty for {self.channel_name} - cannot count persons. Valid: {self.roi_poly.is_valid}, Empty: {self.roi_poly.is_empty}")
-                        self._roi_warning_logged = True
-                
-                # Check secondary ROI (counter area) - count if center point is inside ROI
-                if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-                    contains_secondary = self.secondary_roi_poly.contains(person_point)
-                    if contains_secondary:
-                        current_tracks_in_secondary_roi.add(track_id)
-                        sec_tracker = self.secondary_queue_tracker[track_id]
-                        if sec_tracker['entry_time'] == 0: 
-                            sec_tracker['entry_time'] = current_time
-                            logging.info(f"Person {track_id} entered counter ROI at {current_time} - Center Point: ({center_x}, {center_y})")
-                        # Update last detection time whenever someone is detected in counter
-                        self.last_counter_detection_time = current_time
-                    else:
-                        # Log when person is detected but not in ROI (for debugging)
-                        if track_id not in current_tracks_in_secondary_roi and len(current_tracks_in_secondary_roi) == 0:
-                            logging.debug(f"Person {track_id} center point ({center_x}, {center_y}) NOT in counter ROI")
-                else:
-                    if not hasattr(self, '_secondary_roi_warning_logged'):
-                        logging.warning(f"Secondary ROI is invalid or empty for {self.channel_name} - cannot count persons. Valid: {self.secondary_roi_poly.is_valid}, Empty: {self.secondary_roi_poly.is_empty}")
-                        self._secondary_roi_warning_logged = True
-
-        # Clean up trackers for persons who left the ROI
-        track_ids_to_remove = [tid for tid in list(self.queue_tracker.keys()) if tid not in current_tracks_in_main_roi]
-        for tid in track_ids_to_remove:
-            self.queue_tracker.pop(tid, None)
-        
-        track_ids_to_remove_sec = [tid for tid in list(self.secondary_queue_tracker.keys()) if tid not in current_tracks_in_secondary_roi]
-        for tid in track_ids_to_remove_sec:
-            self.secondary_queue_tracker.pop(tid, None)
-
-        # Count persons in queue ROI who have been there long enough
-        valid_queue_count = 0
-        for track_id in current_tracks_in_main_roi:
-            if track_id in self.queue_tracker:
-                entry_time = self.queue_tracker[track_id]['entry_time']
-                if entry_time > 0 and (current_time - entry_time) >= QUEUE_DWELL_TIME_SEC:
-                    valid_queue_count += 1
-        updated = False
-        if self.current_queue_count != valid_queue_count:
-            self.current_queue_count = valid_queue_count
-            updated = True
-            # Persist queue count to database for statistics
-            self._persist_queue_count(valid_queue_count)
-
-        # Validate secondary (counter area) count with dwell
-        valid_secondary_count = 0
-        for track_id in current_tracks_in_secondary_roi:
-            if track_id in self.secondary_queue_tracker:
-                entry_time = self.secondary_queue_tracker[track_id]['entry_time']
-                if entry_time > 0 and (current_time - entry_time) >= QUEUE_DWELL_TIME_SEC:
-                    valid_secondary_count += 1
-        
-        # Persistence mechanism: If no one is currently detected in counter but someone was detected
-        # within the persistence window, still consider counter as occupied to prevent false alerts
-        if valid_secondary_count == 0 and self.last_counter_detection_time > 0:
-            time_since_last_detection = current_time - self.last_counter_detection_time
-            if time_since_last_detection <= QUEUE_COUNTER_PERSISTENCE_SEC:
-                valid_secondary_count = 1  # Assume counter is still occupied
-                logging.debug(f"Counter area persistence active: last detection was {time_since_last_detection:.1f}s ago (within {QUEUE_COUNTER_PERSISTENCE_SEC}s window)")
-            else:
-                # Reset if persistence window expired
-                self.last_counter_detection_time = 0
-
-        if self.current_secondary_count != valid_secondary_count:
-            self.current_secondary_count = valid_secondary_count
-            updated = True
-            # Persist queue count whenever it changes
-            self._persist_queue_count(self.current_queue_count)
-            # No screenshot when counter area becomes occupied - only when queue present and counter empty
-
-        # Emit live counts (no DB persistence) if either changed
-        if updated:
-            served_today, peak_count = self._get_queue_stats()
-            socketio.emit('queue_update', {
-                'channel_id': self.channel_id,
-                'queue': self.current_queue_count,
-                'counter': self.current_secondary_count,
-                'count': self.current_queue_count,  # backward compat
-                'served_today': served_today,
-                'peak_count': peak_count
-            })
-
-        # Check for persons who have been in queue for more than 5 seconds with no one in counter area
-        persons_in_queue_5sec = []
-        for track_id in current_tracks_in_main_roi:
-            if track_id in self.queue_tracker:
-                dwell_time = current_time - self.queue_tracker[track_id]['entry_time']
-                if dwell_time >= QUEUE_SCREENSHOT_DWELL_TIME_SEC:
-                    persons_in_queue_5sec.append(track_id)
-        
-        # Screenshot trigger 1: person waiting > 5 seconds AND counter is empty (HIGHEST PRIORITY)
-        should_screenshot_5sec = (
-            len(persons_in_queue_5sec) > 0 and  # Someone waited > 5 seconds
-            valid_secondary_count == 0 and  # Counter is empty
-            (current_time - self.last_screenshot_time) > self.screenshot_cooldown
-        )
-        
-        # Screenshot trigger 2: queue count > 3 (MEDIUM PRIORITY)
-        should_screenshot_high_count = (
-            valid_queue_count > QUEUE_HIGH_COUNT_THRESHOLD and  # Queue count > 3
-            (current_time - self.last_screenshot_time) > self.screenshot_cooldown
-        )
-        
-        # Screenshot trigger 3: counter is empty AND queue has people (FALLBACK)
-        # Take screenshot every 10 seconds if counter empty and queue has people
-        should_screenshot_counter_empty = (
-            valid_queue_count > 0 and  # Queue has people
-            valid_secondary_count == 0 and  # Counter is empty
-            (current_time - self.last_screenshot_time) > 10.0  # 10-second cooldown
-        )
-
-        # Alert when cashier area is empty and queue has 2+ people (with cooldown)
-        should_alert = (
-            valid_queue_count >= QUEUE_ALERT_THRESHOLD and
-            self.current_secondary_count == 0 and
-            (current_time - self.last_alert_time) > QUEUE_ALERT_COOLDOWN_SEC
-        )
-        
-        # Overqueue detection: when cashier is present and queue has 4+ people
-        should_overqueue_alert = (
-            valid_queue_count >= QUEUE_OVERQUEUE_THRESHOLD and
-            self.current_secondary_count > 0 and
-            (current_time - self.last_overqueue_time) > QUEUE_ALERT_COOLDOWN_SEC
-        )
-
-        # Create annotated frame with person bounding boxes
-        annotated_frame = frame.copy()
-        
-        # Draw ROI polygons on the frame for monitoring
-        # Main ROI (Queue area) - Blue polygon
-        if self.roi_poly.is_valid and not self.roi_poly.is_empty:
-            try:
-                roi_points = np.array(list(self.roi_poly.exterior.coords), dtype=np.int32)
-                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(255, 0, 0), thickness=2)
-                # Add label for main ROI
-                if len(roi_points) > 0:
-                    label_pos = tuple(roi_points[0])
-                    cv2.putText(annotated_frame, 'Queue ROI', label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            except Exception as e:
-                logging.warning(f"Could not draw main ROI: {e}")
-        
-        # Secondary ROI (Counter area) - Green polygon
-        if self.secondary_roi_poly.is_valid and not self.secondary_roi_poly.is_empty:
-            try:
-                roi_points = np.array(list(self.secondary_roi_poly.exterior.coords), dtype=np.int32)
-                cv2.polylines(annotated_frame, [roi_points], isClosed=True, color=(0, 255, 0), thickness=2)
-                # Add label for secondary ROI
-                if len(roi_points) > 0:
-                    label_pos = tuple(roi_points[0])
-                    cv2.putText(annotated_frame, 'Counter ROI', label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            except Exception as e:
-                logging.warning(f"Could not draw secondary ROI: {e}")
-        
-        # Draw person bounding boxes
-        if r0 is not None and getattr(r0, 'boxes', None) is not None and getattr(r0.boxes, 'id', None) is not None:
-            boxes_xyxy = r0.boxes.xyxy.cpu()
-            track_ids = r0.boxes.id.int().cpu().tolist()
-            
-            for i, track_id in enumerate(track_ids):
-                if track_id is not None:
-                    box = boxes_xyxy[i]
-                    x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                    
-                    # Color based on location: Blue for queue, Green for counter
-                    if track_id in current_tracks_in_main_roi:
-                        color = (255, 0, 0)  # Blue for queue
-                        label = f"Queue #{track_id}"
-                    elif track_id in current_tracks_in_secondary_roi:
-                        color = (0, 255, 0)  # Green for counter
-                        label = f"Counter #{track_id}"
-                    else:
-                        color = (128, 128, 128)  # Gray for others
-                        label = f"Person #{track_id}"
-                    
-                    cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(annotated_frame, label, (x1, y1 - 10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-        
-        # Take screenshot if person in queue > 5 seconds
-        if should_screenshot_5sec:
-            self.last_screenshot_time = current_time
-            screenshot_message = f"Person waiting in queue for more than {QUEUE_SCREENSHOT_DWELL_TIME_SEC} seconds. Queue count: {valid_queue_count}, Counter: {valid_secondary_count}"
-            logging.warning(f"5-SEC WAIT SCREENSHOT on {self.channel_name}: {screenshot_message}")
-            try:
-                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], screenshot_message, is_gif=False)
-                if media_path:
-                    logging.info(f"Screenshot saved successfully: {media_path}")
-                else:
-                    logging.error(f"Failed to save screenshot for {self.channel_name}")
-            except Exception as e:
-                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
-        
-        # Take screenshot if queue count > 3
-        elif should_screenshot_high_count:
-            self.last_screenshot_time = current_time
-            high_count_message = f"High queue count: {valid_queue_count} people in queue. Counter: {valid_secondary_count}"
-            logging.warning(f"HIGH QUEUE COUNT SCREENSHOT on {self.channel_name}: {high_count_message}")
-            try:
-                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], high_count_message, is_gif=False)
-                if media_path:
-                    logging.info(f"Screenshot saved successfully: {media_path}")
-                else:
-                    logging.error(f"Failed to save screenshot for {self.channel_name}")
-            except Exception as e:
-                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
-        
-        # Take screenshot if counter empty and queue has people
-        elif should_screenshot_counter_empty:
-            self.last_screenshot_time = current_time
-            counter_empty_message = f"Counter is empty but queue has {valid_queue_count} people waiting"
-            logging.info(f"COUNTER EMPTY SCREENSHOT on {self.channel_name}: {counter_empty_message}")
-            try:
-                media_path = handle_detection('QueueMonitor', self.channel_id, [annotated_frame], counter_empty_message, is_gif=False)
-                if media_path:
-                    logging.info(f"Screenshot saved successfully: {media_path}")
-                else:
-                    logging.error(f"Failed to save screenshot for {self.channel_name}")
-            except Exception as e:
-                logging.error(f"Error saving screenshot for {self.channel_name}: {e}")
-        
-        if should_alert:
-            self.last_alert_time = current_time
-            alert_message = f"Queue is full ({valid_queue_count} people), but the counter is free."
-            logging.warning(f"QUEUE ALERT on {self.channel_name}: {alert_message}")
-            send_telegram_notification(f"🚨 **Queue Alert: {self.channel_name}** 🚨\n{alert_message}")
-            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], alert_message, is_gif=False)
-        
-        if should_overqueue_alert:
-            self.last_overqueue_time = current_time
-            overqueue_message = f"OVERQUEUE: {valid_queue_count} people in queue with cashier present!"
-            logging.warning(f"OVERQUEUE ALERT on {self.channel_name}: {overqueue_message}")
-            send_telegram_notification(f"⚠️ **Overqueue Alert: {self.channel_name}** ⚠️\n{overqueue_message}")
-            handle_detection('QueueMonitor', self.channel_id, [annotated_frame], overqueue_message, is_gif=False)
-
-        # Count display text removed for clean transparent view
-        # Log count changes for debugging
-        queue_display_count = valid_queue_count
-        counter_display_count = valid_secondary_count
-        if queue_display_count > 0 or counter_display_count > 0:
-            logging.info(f"QueueMonitor {self.channel_name}: Queue={queue_display_count}, Counter={counter_display_count}, "
-                       f"Tracks in main ROI: {len(current_tracks_in_main_roi)}, "
-                       f"Tracks in secondary ROI: {len(current_tracks_in_secondary_roi)}")
-        
-        with self.lock: self.latest_frame = annotated_frame.copy()
-
-
-class OccupancyMonitorProcessor(threading.Thread):
-    """
-    Enhanced Occupancy Monitor - CUDA enabled, accurate detection, scheduled operation
-    """
-    
-    def __init__(self, rtsp_url, channel_id, channel_name, model, socketio, SessionLocal, send_notification):
-        super().__init__(name=f"OccupancyMonitor-{channel_name}")
-        self.rtsp_url = rtsp_url
-        self.channel_id = channel_id
-        self.channel_name = channel_name
-        self.model = model
-        self.socketio = socketio
-        self.SessionLocal = SessionLocal
-        self.send_notification = send_notification
-        
-        # FORCE CPU MODE - Disable all CUDA usage
-        self.device = 'cpu'
-        self.model.to(self.device)
-        logging.info(f"🎯 Using device: {self.device.upper()} (FORCED CPU-ONLY)")
-        
-        self.is_running = True
-        self.lock = threading.Lock()
-        self.latest_frame = None
-        
-        self.schedule = {}  # {time_slot: {day: required_count}}
-        self.live_count = 0
-        self.required_count = 0
-        self.current_time_slot = ""
-        self.last_alert_time = 0
-        self.alert_cooldown = 300  # 5 minutes between alerts
-        
-        # Track if requirement is met
-        self.requirement_met = False
-        self.requirement_met_time = 0
-        self.pause_after_met_duration = 300  # Pause for 5 minutes after requirement met
-        
-        # ROI Configuration
-        self.roi_polygon = None
-        self._load_roi_from_db()
-        
-        # Load schedule from database
-        self._load_schedule_from_db()
-        
-        logging.info(f"✅ Occupancy Monitor initialized for {self.channel_name}")
-    
-    @staticmethod
-    def initialize_tables(engine):
-        """Initialize database tables"""
-        try:
-            Base.metadata.create_all(bind=engine)
-            logging.info("Tables 'occupancy_logs' and 'occupancy_schedules' checked/created.")
-        except Exception as e:
-            logging.error(f"Could not create OccupancyMonitor tables: {e}")
-    
-    def _load_roi_from_db(self):
-        """Load ROI configuration from database for this channel"""
-        try:
-            database_url = os.environ.get('DATABASE_URL') or DATABASE_URL
-            if not database_url:
-                logging.info(f"No DATABASE_URL found for OccupancyMonitor {self.channel_name} - skipping ROI load")
-                return
-            
-            engine = create_engine(database_url, pool_pre_ping=True)
-            SessionLocal_roi = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-            
-            with SessionLocal_roi() as db:
-                query = text("""
-                    SELECT roi_points FROM roi_configs 
-                    WHERE channel_id = :channel_id AND app_name = 'OccupancyMonitor'
-                """)
-                result = db.execute(query, {"channel_id": self.channel_id}).fetchone()
-                
-                if result and result[0]:
-                    roi_data = result[0] if isinstance(result[0], dict) else json.loads(result[0])
-                    points = roi_data.get('points', [])
-                    
-                    if points and len(points) >= 3:
-                        self.roi_polygon = Polygon(points)
-                        logging.info(f"✅ OccupancyMonitor ROI loaded for {self.channel_name}: {len(points)} points")
-                    else:
-                        logging.info(f"No valid ROI configured for OccupancyMonitor {self.channel_name} - monitoring entire frame")
-                else:
-                    logging.info(f"No ROI configured for OccupancyMonitor {self.channel_name} - monitoring entire frame")
-        except Exception as e:
-            logging.error(f"Error loading OccupancyMonitor ROI for {self.channel_name}: {e}")
-            self.roi_polygon = None
-    
-    def _is_in_roi(self, x1, y1, x2, y2, frame_width, frame_height, overlap_threshold=0.5):
-        """
-        Check if at least 50% (or specified threshold) of bounding box is inside ROI.
-        
-        Args:
-            x1, y1, x2, y2: Bounding box pixel coordinates
-            frame_width, frame_height: Frame dimensions for normalization
-            overlap_threshold: Minimum percentage of bbox that must be in ROI (default: 0.5 = 50%)
-        
-        Returns:
-            True if bbox overlap with ROI >= threshold, False otherwise
-        """
-        if self.roi_polygon is None:
-            return True  # No ROI means monitor entire frame
-        
-        try:
-            from shapely.geometry import box as shapely_box
-            
-            # Normalize bbox coordinates to 0-1 range (ROI is stored normalized)
-            norm_x1 = x1 / frame_width
-            norm_y1 = y1 / frame_height
-            norm_x2 = x2 / frame_width
-            norm_y2 = y2 / frame_height
-            
-            # Create a polygon from the normalized bounding box coordinates
-            bbox_polygon = shapely_box(norm_x1, norm_y1, norm_x2, norm_y2)
-            
-            # Calculate intersection area
-            intersection = self.roi_polygon.intersection(bbox_polygon)
-            bbox_area = bbox_polygon.area
-            
-            # Avoid division by zero
-            if bbox_area == 0:
-                return False
-            
-            # Calculate overlap percentage
-            overlap_ratio = intersection.area / bbox_area
-            
-            return overlap_ratio >= overlap_threshold
-        except Exception as e:
-            logging.error(f"Error checking ROI overlap: {e}")
-            return True  # Default to include on error
-    
-    def _load_schedule_from_db(self):
-        """Load schedule from database for this channel"""
-        try:
-            with self.SessionLocal() as db:
-                records = db.query(OccupancySchedule).filter_by(channel_id=self.channel_id).all()
-                self.schedule = {}
-                for record in records:
-                    if record.time_slot not in self.schedule:
-                        self.schedule[record.time_slot] = {}
-                    self.schedule[record.time_slot][record.day_of_week] = record.required_count
-                logging.info(f"Loaded {len(records)} schedule entries for {self.channel_name}")
-        except Exception as e:
-            logging.error(f"Error loading schedule: {e}")
-    
-    def update_schedule(self, schedule_data):
-        """Update schedule for this channel"""
-        try:
-            with self.SessionLocal() as db:
-                db.query(OccupancySchedule).filter_by(channel_id=self.channel_id).delete()
-                
-                for time_slot, days in schedule_data.items():
-                    for day_name, required_count in days.items():
-                        db.add(OccupancySchedule(
-                            channel_id=self.channel_id,
-                            time_slot=time_slot,
-                            day_of_week=day_name,
-                            required_count=required_count
-                        ))
-                db.commit()
-                
-                self._load_schedule_from_db()
-                logging.info(f"Schedule updated for {self.channel_name}")
-                return True
-        except Exception as e:
-            logging.error(f"Error updating schedule: {e}")
-            return False
-    
-    def update_roi(self, roi_data):
-        """Update ROI configuration in real-time"""
-        try:
-            points = roi_data.get('points', [])
-            if points and len(points) >= 3:
-                self.roi_polygon = Polygon(points)
-                logging.info(f"✅ ROI updated in real-time for {self.channel_name}: {len(points)} points")
-                return True
-            else:
-                logging.warning(f"Invalid ROI data for {self.channel_name}")
-                return False
-        except Exception as e:
-            logging.error(f"Error updating ROI for {self.channel_name}: {e}")
-            return False
-    
-    def get_frame(self):
-        """Return latest frame as JPEG bytes - zero-lag optimized"""
-        with self.lock:
-            if self.latest_frame is None:
-                placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, 'Connecting...', (180, 240), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
-                _, jpeg = cv2.imencode('.jpg', placeholder, [cv2.IMWRITE_JPEG_QUALITY, 50])
-                return jpeg.tobytes()
-            
-            # Zero-lag: Aggressive JPEG compression for instant encoding
-            success, jpeg = cv2.imencode('.jpg', self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 50])
-            return jpeg.tobytes() if success else b''
-    
-    def _is_within_schedule(self):
-        """Check if current time is within a scheduled slot"""
-        now = datetime.now(IST)
-        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        current_day = days[now.weekday()]
-        current_hour = f"{now.hour}:00"
-        
-        # Check if schedule exists for this time
-        if current_hour in self.schedule and current_day in self.schedule[current_hour]:
-            return True, current_hour, current_day, self.schedule[current_hour][current_day]
-        return False, current_hour, current_day, 0
-    
-    def _draw_roi_overlay(self, frame):
-        """Draw ROI polygon overlay on frame"""
-        if self.roi_polygon is None:
-            return frame
-        
-        try:
-            frame_height, frame_width = frame.shape[:2]
-            roi_points = np.array([
-                [int(x * frame_width), int(y * frame_height)] 
-                for x, y in self.roi_polygon.exterior.coords
-            ], dtype=np.int32)
-            
-            # Draw ROI polygon
-            cv2.polylines(frame, [roi_points], True, (255, 255, 0), 2)
-            
-            # Add ROI label
-            if len(roi_points) > 0:
-                cv2.putText(frame, "ROI", (roi_points[0][0], roi_points[0][1] - 10),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-        except Exception as e:
-            logging.error(f"Error drawing ROI overlay: {e}")
-        
-        return frame
-    
-    def _detect_people(self, frame):
-        """Enhanced YOLO detection with CUDA support and maximum accuracy"""
-        try:
-            frame_height, frame_width = frame.shape[:2]
-            
-            # Enhanced detection with very low confidence for maximum recall
-            with torch.inference_mode():
-                results = self.model(
-                    frame, 
-                    conf=0.15,
-                    iou=0.40,
-                    classes=[0],
-                    verbose=False,
-                    device=self.device,
-                    imgsz=640,
-                    max_det=100,
-                    agnostic_nms=True,
-                    half=False  # CPU mode - no FP16
-                )
-            person_count = 0
-            detections = []
-            
-            annotated_frame = frame.copy()
-            
-            # Draw ROI polygon if configured
-            if self.roi_polygon is not None:
-                try:
-                    roi_points = np.array([
-                        [int(x * frame_width), int(y * frame_height)] 
-                        for x, y in self.roi_polygon.exterior.coords
-                    ], dtype=np.int32)
-                    cv2.polylines(annotated_frame, [roi_points], True, (255, 255, 0), 2)
-                    cv2.putText(annotated_frame, "ROI", (roi_points[0][0], roi_points[0][1] - 10),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
-                except Exception as e:
-                    logging.error(f"Error drawing ROI: {e}")
-            
-            for result in results:
-                boxes = result.boxes
-                for box in boxes:
-                    conf = float(box.conf[0])
-                    
-                    # Very low threshold - catch everyone!
-                    if conf > 0.15:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        
-                        # ROI filtering - only count people inside ROI
-                        if not self._is_in_roi(x1, y1, x2, y2, frame_width, frame_height):
-                            # Draw filtered-out detections in gray
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
-                            cv2.putText(annotated_frame, 'Outside ROI', (x1, y1-5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
-                            continue
-                        
-                        person_count += 1
-                        detections.append({'conf': conf, 'bbox': (x1, y1, x2, y2)})
-                        
-                        # Enhanced color coding based on confidence
-                        if conf > 0.6:
-                            color = (0, 255, 0)    # Bright green - very confident
-                            thickness = 4
-                        elif conf > 0.4:
-                            color = (0, 220, 0)    # Green - confident
-                            thickness = 3
-                        elif conf > 0.25:
-                            color = (0, 255, 255)  # Yellow - moderate
-                            thickness = 3
-                        else:
-                            color = (255, 165, 0)  # Orange - low confidence
-                            thickness = 2
-                        
-                        # Draw bounding box with better visibility
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-                        # Add label background for better readability
-                        label = f'Person {person_count} ({conf:.2f})'
-                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                        cv2.rectangle(annotated_frame, (x1, y1-label_size[1]-10), (x1+label_size[0]+5, y1), color, -1)
-                        cv2.putText(annotated_frame, label, (x1, y1-5),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-            
-            # Log detections for debugging
-            if person_count > 0:
-                conf_list = [f"{d['conf']:.2f}" for d in detections]
-                logging.info(f"Detected {person_count} people with confidences: {', '.join(conf_list)}")
-            
-            return person_count, annotated_frame
-        except Exception as e:
-            logging.error(f"Detection error: {e}")
-            return 0, frame
-    
-    def _check_occupancy_requirement(self):
-        """Check if live count meets schedule requirement"""
-        now = datetime.now(IST)
-        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-        current_day = days[now.weekday()]
-        current_hour = f"{now.hour}:00"
-        
-        self.current_time_slot = f"{current_day} {current_hour}"
-        
-        # Get required count from schedule
-        self.required_count = 0
-        if current_hour in self.schedule and current_day in self.schedule[current_hour]:
-            self.required_count = self.schedule[current_hour][current_day]
-        
-        # Determine status
-        status = 'NO_SCHEDULE'
-        if self.required_count > 0:
-            if self.live_count >= self.required_count:
-                status = 'OK'
-                # Mark requirement as met
-                if not self.requirement_met:
-                    self.requirement_met = True
-                    self.requirement_met_time = time.time()
-                    logging.info(f"✅ Requirement MET for {self.channel_name}: {self.live_count}/{self.required_count}")
-            else:
-                status = 'BELOW_REQUIREMENT'
-                self.requirement_met = False
-                
-                # Send alert if cooldown period has passed
-                current_time = time.time()
-                if current_time - self.last_alert_time > self.alert_cooldown:
-                    shortage = self.required_count - self.live_count
-                    message = (f"⚠️ *OCCUPANCY ALERT* - {self.channel_name}\n"
-                             f"Time: {current_hour} ({current_day})\n"
-                             f"Required: {self.required_count} people\n"
-                             f"Detected: {self.live_count} people\n"
-                             f"Shortage: {shortage} people")
-                    self.send_notification(message)
-                    self.last_alert_time = current_time
-                    logging.warning(f"🚨 Occupancy alert: {shortage} people short at {self.channel_name}")
-        
-        # Log to database
-        try:
-            with self.SessionLocal() as db:
-                db.add(OccupancyLog(
-                    channel_id=self.channel_id,
-                    time_slot=current_hour,
-                    day_of_week=current_day,
-                    live_count=self.live_count,
-                    required_count=self.required_count,
-                    status=status
-                ))
-                db.commit()
-        except Exception as e:
-            logging.error(f"Error logging occupancy: {e}")
-        
-        # Calculate today's statistics
-        max_today = self.live_count  # Default to current
-        avg_today = self.live_count  # Default to current
-        
-        try:
-            with self.SessionLocal() as db:
-                today = datetime.now(IST).date()
-                today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=IST)
-                today_end = datetime.combine(today, datetime.max.time()).replace(tzinfo=IST)
-                
-                logs = db.query(OccupancyLog).filter(
-                    OccupancyLog.channel_id == self.channel_id,
-                    OccupancyLog.timestamp >= today_start,
-                    OccupancyLog.timestamp <= today_end
-                ).all()
-                
-                if logs:
-                    counts = [log.live_count for log in logs]
-                    max_today = max(counts) if counts else self.live_count
-                    avg_today = round(sum(counts) / len(counts)) if counts else self.live_count
-        except Exception as e:
-            logging.debug(f"Error calculating occupancy stats: {e}")
-        
-        # Generate banner text based on status
-        banner_text = ""
-        if status == 'OK':
-            banner_text = f"✅ REQUIREMENT MET - {self.live_count}/{self.required_count} people present"
-        elif status == 'BELOW_REQUIREMENT':
-            shortage = self.required_count - self.live_count
-            banner_text = f"⚠️ ALERT: {shortage} people short! ({self.live_count}/{self.required_count} present)"
-        elif status == 'PAUSED':
-            banner_text = f"✅ REQUIREMENT MET - Monitoring paused"
-        elif status == 'NO_SCHEDULE':
-            banner_text = "ℹ️ No schedule configured for this time"
-        
-        # Emit to dashboard via SocketIO
-        self.socketio.emit('occupancy_update', {
-            'channel_id': self.channel_id,
-            'channel_name': self.channel_name,
-            'time_slot': self.current_time_slot,
-            'live_count': self.live_count,
-            'required_count': self.required_count,
-            'status': status,
-            'max_today': max_today,
-            'avg_today': avg_today,
-            'banner_text': banner_text
-        })
-        
-        return status
-    
-    def _should_run_detection(self):
-        """
-        Determine if detection should run based on:
-        1. Schedule availability (only run during scheduled times)
-        2. Requirement status (pause if already met)
-        """
-        is_scheduled, current_hour, current_day, required = self._is_within_schedule()
-        
-        # If no schedule for this time, don't run detection
-        if not is_scheduled or required == 0:
-            return False, "NO_SCHEDULE"
-        
-        # If requirement is met and we're still in pause period
-        if self.requirement_met:
-            time_since_met = time.time() - self.requirement_met_time
-            if time_since_met < self.pause_after_met_duration:
-                # Still paused
-                return False, "PAUSED_REQ_MET"
-            else:
-                # Pause period over, resume detection
-                self.requirement_met = False
-                logging.info(f"🔄 Resuming detection for {self.channel_name} after pause period")
-        
-        return True, "ACTIVE"
-    
-    def run(self):
-        """Enhanced processing loop - SMOOTH STREAMING with continuous detection"""
-        logging.info(f"Starting Enhanced Occupancy Monitor for {self.channel_name}...")
-        logging.info(f"Device: {self.device.upper()}, Confidence: 0.15, Mode: CONTINUOUS (Smooth streaming)")
-        
-        # Use FrameHub for frames
-        frame_delay = 0.01
-        
-        reconnect_attempts = 0
-        max_reconnect_attempts = 5
-        last_schedule_check = 0
-        last_detection_time = 0
-        detection_cooldown = 1.0  # Run YOLO detection once per second (avoid GPU overload)
-        
-        while self.is_running:
-            frame_start_time = time.time()
-            
-            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
-            if frame is None:
-                time.sleep(0.01)
-                continue
-            
-            reconnect_attempts = 0
-            current_time = time.time()
-            
-            # Check schedule every 10 seconds
-            if current_time - last_schedule_check > 10:
-                should_detect, detection_status = self._should_run_detection()
-                last_schedule_check = current_time
-                
-                # Update schedule info
-                is_scheduled, current_hour, current_day, required = self._is_within_schedule()
-                self.required_count = required
-                self.current_time_slot = f"{current_day} {current_hour}"
-            else:
-                should_detect, detection_status = self._should_run_detection()
-            
-            # CONTINUOUS DETECTION (with 1-second cooldown for YOLO)
-            time_since_last_detection = current_time - last_detection_time
-            
-            if should_detect and time_since_last_detection >= detection_cooldown:
-                # RUN YOLO DETECTION
-                last_detection_time = current_time
-                
-                self.live_count, annotated_frame = self._detect_people(frame)
-                
-                # Clean video feed - no overlays for better user experience
-                with self.lock:
-                    self.latest_frame = annotated_frame
-                
-                # Check requirement
-                self._check_occupancy_requirement()
-                
-            elif should_detect:
-                # Between YOLO detections - smooth video with ROI overlay
-                display_frame = frame.copy()
-                
-                # Draw ROI overlay
-                display_frame = self._draw_roi_overlay(display_frame)
-                
-                with self.lock:
-                    self.latest_frame = display_frame
-                    
-            else:
-                # PAUSED/NO SCHEDULE - Show video with ROI overlay
-                display_frame = frame.copy()
-                
-                # Draw ROI overlay
-                display_frame = self._draw_roi_overlay(display_frame)
-                
-                with self.lock:
-                    self.latest_frame = display_frame
-            
-            # Maintain smooth FPS - NO FRAME SKIPPING
-            elapsed = time.time() - frame_start_time
-            sleep_time = max(0, frame_delay - elapsed)
-            if sleep_time > 0:
-                time.sleep(sleep_time)
-        
-        logging.info(f"Occupancy Monitor stopped for {self.channel_name}")
-    
-    def stop(self):
-        """Stop the processor"""
-        logging.info(f"Stopping Occupancy Monitor for {self.channel_name}...")
-        self.is_running = False
-    
-    def shutdown(self):
-        """Shutdown method for compatibility"""
-        self.stop()
+# OccupancyMonitorProcessor class moved to occupancy_monitor_processor.py module
 
 
 def get_app_configs(restaurant_id=None):
@@ -3266,52 +2127,23 @@ def get_peak_analytics(channel_id):
 def get_sales_analytics_daily():
     """
     Get daily sales analytics with proper restaurant filtering
-    Uses the same backend approach as conversion analytics for consistency
-    Supports restaurant filtering via restaurant_id query parameter
+    REFACTORED: Business logic moved to petpooja_integration.SalesAnalytics
     """
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
     
     try:
-        # Get query parameters
         days = request.args.get('days', default=7, type=int)
         restaurant_id = request.args.get('restaurant_id', type=int)
         
-        # Calculate date range
         end_date = datetime.now(IST).date()
         start_date = end_date - timedelta(days=days - 1)
         
         logging.info(f"📊 Sales Analytics Daily - days={days}, start={start_date}, end={end_date}, restaurant_id={restaurant_id}")
         
         with SessionLocal() as db:
-            # Convert database restaurant_id to PetPooja restID
-            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
-            
-            # Use the same approach as conversion analytics
-            sales_data, remote_used = pp_sales_analytics.get_sales_data(
-                db, start_date, end_date, use_remote=True, restaurant_id=restaurant_id
-            )
-            
-            if not sales_data:
-                return jsonify([])
-            
-            # Aggregate by date
-            daily_aggregates = defaultdict(lambda: {'orders': 0, 'revenue': 0.0})
-            for row in sales_data:
-                daily_aggregates[row.sale_date]['orders'] += row.orders
-                daily_aggregates[row.sale_date]['revenue'] += float(row.revenue) if row.revenue else 0
-            
-            # Convert to list format
-            results = [
-                {
-                    'date': date.strftime('%Y-%m-%d'),
-                    'total_sales': round(data['revenue'], 2),
-                    'order_count': data['orders']
-                }
-                for date, data in sorted(daily_aggregates.items())
-            ]
-            
-            logging.info(f"✅ Returning {len(results)} daily sales records (source: {'REMOTE' if remote_used else 'LOCAL'})")
+            # Delegate to service layer
+            results = pp_sales_analytics.get_daily_sales(db, start_date, end_date, days, restaurant_id)
             return jsonify(results)
             
     except Exception as e:
@@ -3326,7 +2158,7 @@ def get_sales_analytics_daily():
 def get_sales_analytics_payment_modes():
     """
     Get payment modes breakdown with proper restaurant filtering
-    Uses backend processing with restaurant_id filter
+    REFACTORED: Business logic moved to petpooja_integration.SalesAnalytics
     """
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
@@ -3336,93 +2168,14 @@ def get_sales_analytics_payment_modes():
         
         logging.info(f"📊 Payment Modes - restaurant_id={restaurant_id}")
         
+        # Get current month start
+        today = datetime.now(IST).date()
+        start_date = datetime(today.year, today.month, 1).date()
+        end_date = today
+        
         with SessionLocal() as db:
-            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
-            
-            # Get current month start
-            today = datetime.now(IST).date()
-            start_date = datetime(today.year, today.month, 1).date()
-            end_date = today
-            
-            # Get sales data
-            sales_data, remote_used = pp_sales_analytics.get_sales_data(
-                db, start_date, end_date, use_remote=True, restaurant_id=restaurant_id
-            )
-            
-            if not sales_data:
-                return jsonify([])
-            
-            # We need to get the raw events to extract payment modes
-            # Use the client to fetch raw events and process them
-            response = requests.get(
-                f"{pp_sales_analytics.client.base_url}/webhook/events/search/date-range",
-                params={
-                    'start_date': (start_date - timedelta(days=1)).isoformat(),
-                    'end_date': (end_date + timedelta(days=1)).isoformat(),
-                    'token': pp_sales_analytics.client.api_token
-                },
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                return jsonify([])
-            
-            all_events = response.json()
-            payment_aggregates = defaultdict(lambda: {'amount': 0.0, 'count': 0})
-            seen_orders = set()
-            
-            for event in all_events:
-                if event.get('content', {}).get('event') == 'orderdetails':
-                    properties = event.get('content', {}).get('properties', {})
-                    
-                    # Filter by restaurant if specified
-                    if petpooja_restaurant_id:
-                        event_rest_id = properties.get('Restaurant', {}).get('restID')
-                        if event_rest_id != petpooja_restaurant_id:
-                            continue
-                    
-                    order = properties.get('Order', {})
-                    order_id = order.get('orderID')
-                    
-                    if not order_id or order_id in seen_orders:
-                        continue
-                    
-                    seen_orders.add(order_id)
-                    
-                    # Parse date and filter
-                    try:
-                        if order.get('created_on'):
-                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
-                        else:
-                            created_at = event.get('created_at', '')
-                            if not created_at:
-                                continue
-                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        
-                        order_time_ist = order_time_utc.astimezone(IST)
-                        order_date_ist = order_time_ist.date()
-                        
-                        if order_date_ist < start_date or order_date_ist > end_date:
-                            continue
-                        
-                        payment_type = order.get('payment_type', 'Unknown')
-                        total = float(order.get('total', 0))
-                        
-                        payment_aggregates[payment_type]['amount'] += total
-                        payment_aggregates[payment_type]['count'] += 1
-                    
-                    except Exception as parse_error:
-                        continue
-            
-            results = [
-                {
-                    'method': method,
-                    'amount': round(data['amount'], 2),
-                    'count': data['count']
-                }
-                for method, data in payment_aggregates.items()
-            ]
-            
+            # Delegate to service layer
+            results = pp_sales_analytics.get_payment_modes(db, start_date, end_date, restaurant_id)
             logging.info(f"✅ Returning {len(results)} payment mode records")
             return jsonify(results)
             
@@ -3438,6 +2191,7 @@ def get_sales_analytics_payment_modes():
 def get_sales_analytics_order_types():
     """
     Get order types breakdown with proper restaurant filtering
+    REFACTORED: Business logic moved to petpooja_integration.SalesAnalytics
     """
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
@@ -3447,86 +2201,14 @@ def get_sales_analytics_order_types():
         
         logging.info(f"📊 Order Types - restaurant_id={restaurant_id}")
         
+        # Get current month start
+        today = datetime.now(IST).date()
+        start_date = datetime(today.year, today.month, 1).date()
+        end_date = today
+        
         with SessionLocal() as db:
-            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
-            
-            # Get current month start
-            today = datetime.now(IST).date()
-            start_date = datetime(today.year, today.month, 1).date()
-            end_date = today
-            
-            # Get raw events
-            response = requests.get(
-                f"{pp_sales_analytics.client.base_url}/webhook/events/search/date-range",
-                params={
-                    'start_date': (start_date - timedelta(days=1)).isoformat(),
-                    'end_date': (end_date + timedelta(days=1)).isoformat(),
-                    'token': pp_sales_analytics.client.api_token
-                },
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                return jsonify([])
-            
-            all_events = response.json()
-            order_type_aggregates = defaultdict(lambda: {'count': 0, 'total_sales': 0.0})
-            seen_orders = set()
-            
-            for event in all_events:
-                if event.get('content', {}).get('event') == 'orderdetails':
-                    properties = event.get('content', {}).get('properties', {})
-                    
-                    # Filter by restaurant
-                    if petpooja_restaurant_id:
-                        event_rest_id = properties.get('Restaurant', {}).get('restID')
-                        if event_rest_id != petpooja_restaurant_id:
-                            continue
-                    
-                    order = properties.get('Order', {})
-                    order_id = order.get('orderID')
-                    
-                    if not order_id or order_id in seen_orders:
-                        continue
-                    
-                    seen_orders.add(order_id)
-                    
-                    try:
-                        if order.get('created_on'):
-                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
-                        else:
-                            created_at = event.get('created_at', '')
-                            if not created_at:
-                                continue
-                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        
-                        order_time_ist = order_time_utc.astimezone(IST)
-                        order_date_ist = order_time_ist.date()
-                        
-                        if order_date_ist < start_date or order_date_ist > end_date:
-                            continue
-                        
-                        order_source = order.get('order_from', 'Unknown')
-                        order_type = order.get('order_type', 'Unknown')
-                        total = float(order.get('total', 0))
-                        
-                        key = (order_source, order_type)
-                        order_type_aggregates[key]['count'] += 1
-                        order_type_aggregates[key]['total_sales'] += total
-                    
-                    except Exception:
-                        continue
-            
-            results = [
-                {
-                    'order_source': source,
-                    'order_type': otype,
-                    'count': data['count'],
-                    'total_sales': round(data['total_sales'], 2)
-                }
-                for (source, otype), data in order_type_aggregates.items()
-            ]
-            
+            # Delegate to service layer
+            results = pp_sales_analytics.get_order_types(db, start_date, end_date, restaurant_id)
             logging.info(f"✅ Returning {len(results)} order type records")
             return jsonify(results)
             
@@ -3542,6 +2224,7 @@ def get_sales_analytics_order_types():
 def get_sales_analytics_top_items():
     """
     Get top selling items with proper restaurant filtering
+    REFACTORED: Business logic moved to petpooja_integration.SalesAnalytics
     """
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
@@ -3552,113 +2235,14 @@ def get_sales_analytics_top_items():
         
         logging.info(f"📊 Top Items - restaurant_id={restaurant_id}, limit={limit}")
         
+        # Get current month start
+        today = datetime.now(IST).date()
+        start_date = datetime(today.year, today.month, 1).date()
+        end_date = today
+        
         with SessionLocal() as db:
-            petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
-            
-            # Get current month start
-            today = datetime.now(IST).date()
-            start_date = datetime(today.year, today.month, 1).date()
-            end_date = today
-            
-            # Get raw events
-            response = requests.get(
-                f"{pp_sales_analytics.client.base_url}/webhook/events/search/date-range",
-                params={
-                    'start_date': (start_date - timedelta(days=1)).isoformat(),
-                    'end_date': (end_date + timedelta(days=1)).isoformat(),
-                    'token': pp_sales_analytics.client.api_token
-                },
-                timeout=30
-            )
-            
-            if response.status_code != 200:
-                return jsonify([])
-            
-            all_events = response.json()
-            item_aggregates = defaultdict(lambda: {'quantity': 0, 'revenue': 0.0})
-            seen_orders = set()
-            
-            for event in all_events:
-                if event.get('content', {}).get('event') == 'orderdetails':
-                    properties = event.get('content', {}).get('properties', {})
-                    
-                    # Filter by restaurant
-                    if petpooja_restaurant_id:
-                        event_rest_id = properties.get('Restaurant', {}).get('restID')
-                        if event_rest_id != petpooja_restaurant_id:
-                            continue
-                    
-                    order = properties.get('Order', {})
-                    order_id = order.get('orderID')
-                    
-                    if not order_id or order_id in seen_orders:
-                        continue
-                    
-                    seen_orders.add(order_id)
-                    
-                    try:
-                        if order.get('created_on'):
-                            order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
-                        else:
-                            created_at = event.get('created_at', '')
-                            if not created_at:
-                                continue
-                            order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                        
-                        order_time_ist = order_time_utc.astimezone(IST)
-                        order_date_ist = order_time_ist.date()
-                        
-                        if order_date_ist < start_date or order_date_ist > end_date:
-                            continue
-                        
-                        # Process order items
-                        order_items = properties.get('OrderItem', [])
-                        if not isinstance(order_items, list):
-                            continue
-                        
-                        order_total = float(order.get('total', 0))
-                        items_subtotal = sum(float(item.get('total', 0)) for item in order_items if isinstance(item, dict))
-                        
-                        for item in order_items:
-                            if not isinstance(item, dict):
-                                continue
-                            
-                            item_name = item.get('name', '').strip()
-                            if not item_name:
-                                continue
-                            
-                            quantity = float(item.get('quantity', 0))
-                            item_subtotal = float(item.get('total', 0))
-                            
-                            # Allocate order total proportionally
-                            if items_subtotal > 0:
-                                allocation_ratio = item_subtotal / items_subtotal
-                                revenue = order_total * allocation_ratio
-                            else:
-                                revenue = item_subtotal
-                            
-                            item_aggregates[item_name]['quantity'] += quantity
-                            item_aggregates[item_name]['revenue'] += revenue
-                    
-                    except Exception:
-                        continue
-            
-            # Sort by quantity and get top items
-            sorted_items = sorted(
-                item_aggregates.items(),
-                key=lambda x: x[1]['quantity'],
-                reverse=True
-            )[:limit]
-            
-            results = [
-                {
-                    'name': item_name,
-                    'quantity_sold': int(data['quantity']),
-                    'total_revenue': round(data['revenue'], 2)
-                }
-                for item_name, data in sorted_items
-            ]
-            
+            # Delegate to service layer
+            results = pp_sales_analytics.get_top_items(db, start_date, end_date, limit, restaurant_id)
             logging.info(f"✅ Returning {len(results)} top items")
             return jsonify(results)
             
@@ -3674,251 +2258,26 @@ def get_sales_analytics_top_items():
 def get_footfall_conversion():
     """
     Calculate footfall-to-sales conversion metrics
-    Fetches footfall from local DB and sales from remote FastAPI (or local DB if available)
-    Returns hourly breakdown with conversion rates
-    Supports multi-restaurant filtering via restaurant_id query parameter
     
-    REFACTORED: Now uses petpooja_integration module for clean separation of concerns
+    REFACTORED: Thin wrapper - all business logic in petpooja_integration module
     """
     logging.info(f"Conversion API called - Session: {session.get('logged_in')}, User: {session.get('username')}")
+    
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
     
     try:
-        # Get query parameters
+        # Parse parameters
         days = request.args.get('days', default=7, type=int)
-        date_str = request.args.get('date')  # Optional: specific date (YYYY-MM-DD)
-        restaurant_id = request.args.get('restaurant_id', type=int)  # Optional: filter by restaurant
+        date_str = request.args.get('date')
+        restaurant_id = request.args.get('restaurant_id', type=int)
         
-        # Calculate date range
-        if date_str:
-            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-            start_date = target_date
-            end_date = target_date
-        else:
-            end_date = datetime.now(IST).date()
-            start_date = end_date - timedelta(days=days - 1)
-        
-        logging.info(f"📅 Date Range Query: days={days}, start={start_date}, end={end_date}, restaurant_id={restaurant_id}")
-        
+        # Delegate to service
         with SessionLocal() as db:
-            # STEP 1: Get footfall data from local database (hourly_footfall)
-            try:
-                footfall_query = db.query(
-                    HourlyFootfall.report_date,
-                    HourlyFootfall.hour,
-                    func.sum(HourlyFootfall.in_count).label('visitors')
-                )
-                
-                # Only join with cameras if filtering by restaurant AND cameras table has data
-                if restaurant_id:
-                    camera_count = db.query(Camera).count()
-                    if camera_count > 0:
-                        footfall_query = footfall_query.join(
-                            Camera, HourlyFootfall.channel_id == Camera.channel_id
-                        ).filter(Camera.restaurant_id == restaurant_id)
-                        logging.info(f"Filtering footfall data by restaurant_id: {restaurant_id}")
-                    else:
-                        logging.warning(f"⚠️ restaurant_id={restaurant_id} provided but cameras table is empty - showing all footfall data")
-                
-                footfall_query = footfall_query.filter(
-                    HourlyFootfall.report_date >= start_date,
-                    HourlyFootfall.report_date <= end_date
-                ).group_by(
-                    HourlyFootfall.report_date,
-                    HourlyFootfall.hour
-                ).order_by(
-                    HourlyFootfall.report_date,
-                    HourlyFootfall.hour
-                ).all()
-            except Exception as footfall_error:
-                logging.error(f"❌ Error querying footfall data: {footfall_error}")
-                import traceback
-                traceback.print_exc()
-                return jsonify({"error": f"Failed to query footfall data: {str(footfall_error)}"}), 500
-            
-            logging.info(f"📊 Footfall Query Results: {len(footfall_query)} records from {start_date} to {end_date}")
-            if footfall_query:
-                logging.info(f"   First record: {footfall_query[0].report_date} hour {footfall_query[0].hour} - {footfall_query[0].visitors} visitors")
-                logging.info(f"   Last record: {footfall_query[-1].report_date} hour {footfall_query[-1].hour} - {footfall_query[-1].visitors} visitors")
-            
-            # STEP 2: Get sales data using PetPooja integration module
-            try:
-                sales_query, remote_api_used = pp_sales_analytics.get_sales_data(
-                    db, start_date, end_date, use_remote=True, restaurant_id=restaurant_id
-                )
-            except Exception as sales_error:
-                logging.error(f"❌ Error getting sales data: {sales_error}")
-                import traceback
-                traceback.print_exc()
-                return jsonify({"error": f"Failed to get sales data: {str(sales_error)}"}), 500
-            
-            logging.info(f"📊 Sales Query Results: {len(sales_query) if sales_query else 0} records (source: {'REMOTE' if remote_api_used else 'LOCAL'})")
-            if sales_query:
-                logging.info(f"   First sale: {sales_query[0].sale_date} hour {sales_query[0].sale_hour} - {sales_query[0].orders} orders, ₹{sales_query[0].revenue}")
-                logging.info(f"   Last sale: {sales_query[-1].sale_date} hour {sales_query[-1].sale_hour} - {sales_query[-1].orders} orders, ₹{sales_query[-1].revenue}")
-            
-            # If remote API failed, try daily distribution
-            if not sales_query and not remote_api_used:
-                # Convert database restaurant_id to PetPooja restID using database lookup
-                petpooja_restaurant_id = get_petpooja_restaurant_id(restaurant_id, db)
-                daily_sales = pp_sales_analytics.client.get_daily_sales(start_date, end_date, petpooja_restaurant_id)
-                if daily_sales:
-                    # Build footfall distribution for smart allocation
-                    footfall_by_date_hour = defaultdict(lambda: defaultdict(int))
-                    footfall_by_date_total = defaultdict(int)
-                    
-                    for f in footfall_query:
-                        footfall_by_date_hour[f.report_date][f.hour] = f.visitors or 0
-                        footfall_by_date_total[f.report_date] += f.visitors or 0
-                    
-                    # Use conversion analytics to distribute daily to hourly
-                    sales_query = pp_conversion_analytics.distribute_daily_to_hourly(
-                        daily_sales, footfall_by_date_hour, footfall_by_date_total, end_date
-                    )
-                    remote_api_used = True
-            
-            # Ensure sales_query is a list (handle None case)
-            if sales_query is None:
-                sales_query = []
-            
-            logging.info(f"📊 Data Summary: {len(footfall_query)} footfall records, {len(sales_query) if sales_query else 0} sales records")
-            logging.info(f"Using {'REMOTE FastAPI' if remote_api_used else 'LOCAL DATABASE'} for sales data")
-            
-            # STEP 3: Calculate conversion metrics using PetPooja integration module
-            try:
-                results = pp_conversion_analytics.calculate_conversion_metrics(footfall_query, sales_query)
-                logging.info(f"✅ Calculated {len(results)} hourly conversion records")
-            except Exception as calc_error:
-                logging.error(f"❌ Error calculating conversion metrics: {calc_error}")
-                import traceback
-                traceback.print_exc()
-                return jsonify({"error": f"Failed to calculate conversion metrics: {str(calc_error)}"}), 500
-            
-            # Calculate summary statistics
-            try:
-                total_visitors = sum(r['visitors'] for r in results)
-                total_orders = sum(r['orders'] for r in results)
-                total_revenue = sum(r['revenue'] for r in results)
-            except KeyError as ke:
-                logging.error(f"❌ Missing key in results dictionary: {ke}")
-                logging.error(f"Results structure: {results[:2] if results else 'empty'}")
-                return jsonify({"error": f"Invalid results structure: missing key {ke}"}), 500
-            except Exception as summary_error:
-                logging.error(f"❌ Error calculating summary: {summary_error}")
-                import traceback
-                traceback.print_exc()
-                return jsonify({"error": f"Failed to calculate summary: {str(summary_error)}"}), 500
-            
-            overall_conversion = (total_orders / total_visitors * 100) if total_visitors > 0 else 0
-            overall_revenue_per_visitor = (total_revenue / total_visitors) if total_visitors > 0 else 0
-            overall_avg_order_value = (total_revenue / total_orders) if total_orders > 0 else 0
-            
-            logging.info(f"✅ Final conversion totals: {total_orders} orders, ₹{total_revenue:.2f} revenue")
-            
-            # STEP 4: Identify busiest hours and peak demand patterns
-            # Group by hour to find average metrics per hour of day
-            hourly_aggregates = defaultdict(lambda: {'visitors': [], 'orders': [], 'revenue': []})
-            for row in results:
-                hour = row['hour']
-                hourly_aggregates[hour]['visitors'].append(row['visitors'])
-                hourly_aggregates[hour]['orders'].append(row['orders'])
-                hourly_aggregates[hour]['revenue'].append(row['revenue'])
-            
-            # Calculate averages and identify peaks - show all business hours 6am-11pm
-            hourly_stats = []
-            for hour in range(6, 24):  # Only business hours 6am-11pm
-                # Always include hour, even with no data (show 0, 0)
-                if hour in hourly_aggregates:
-                    agg = hourly_aggregates[hour]
-                    avg_visitors = sum(agg['visitors']) / len(agg['visitors']) if agg['visitors'] else 0
-                    avg_orders = sum(agg['orders']) / len(agg['orders']) if agg['orders'] else 0
-                    avg_revenue = sum(agg['revenue']) / len(agg['revenue']) if agg['revenue'] else 0
-                    total_volume = sum(agg['visitors']) + sum(agg['orders'])
-                else:
-                    # No data for this hour - show zeros
-                    avg_visitors = 0
-                    avg_orders = 0
-                    avg_revenue = 0
-                    total_volume = 0
-                    
-                hourly_stats.append({
-                    'hour': hour,
-                    'hour_label': datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0'),
-                    'avg_visitors': round(avg_visitors, 1),
-                    'avg_orders': round(avg_orders, 1),
-                    'avg_revenue': round(avg_revenue, 2),
-                    'total_volume': total_volume
-                })
-            
-            # Find busiest hour by visitors and hour with most orders
-            busiest_by_visitors = max(hourly_stats, key=lambda x: x['avg_visitors']) if hourly_stats else None
-            busiest_by_orders = max(hourly_stats, key=lambda x: x['avg_orders']) if hourly_stats else None
-            
-            # Sort by visitors to find peak hours based on footfall
-            hourly_stats_by_visitors = sorted(hourly_stats, key=lambda x: x['avg_visitors'], reverse=True)
-            top_visitor_hours = hourly_stats_by_visitors[:5]  # Top 5 by visitors for peak period calculation
-            
-            # Calculate staffing recommendations based on demand
-            # Base staff: 2, +1 for every 20 visitors/hour
-            matched_hours = 0  # Initialize counter for matched hours
-            for hour_stat in hourly_stats:
-                visitors_per_hour = hour_stat['avg_visitors']
-                orders_per_hour = hour_stat['avg_orders']
-                
-                # Staffing recommendation (minimum 2, scale with traffic)
-                base_staff = 2
-                additional_staff = int(visitors_per_hour / 20)  # +1 staff per 20 visitors
-                recommended_staff = max(base_staff, base_staff + additional_staff)
-                
-                # Inventory recommendation (scale with orders)
-                # Assume 1.5x buffer for peak hours
-                inventory_multiplier = 1.5 if hour_stat in top_visitor_hours[:3] else 1.2
-                recommended_inventory_units = int(orders_per_hour * inventory_multiplier)
-                
-                hour_stat['recommended_staff'] = recommended_staff
-                hour_stat['recommended_inventory'] = recommended_inventory_units
-                matched_hours += 1  # Count this as a successful match
-            
-            logging.info(f"✅ Successfully matched {matched_hours} out of {len(footfall_query)} footfall records with sales data")
-            
-            # Re-sort by hour for display
-            hourly_stats.sort(key=lambda x: x['hour'])
-            
-            # Identify peak periods based on visitor numbers only
-            peak_morning = [h for h in top_visitor_hours if 6 <= h['hour'] < 12]
-            peak_afternoon = [h for h in top_visitor_hours if 12 <= h['hour'] < 17]
-            peak_evening = [h for h in top_visitor_hours if 17 <= h['hour'] < 24]
-            
-            peak_periods = {
-                'morning': [h['hour_label'] for h in peak_morning],
-                'afternoon': [h['hour_label'] for h in peak_afternoon],
-                'evening': [h['hour_label'] for h in peak_evening]
-            }
-            
-            return jsonify({
-                'date_range': {
-                    'start': start_date.strftime('%Y-%m-%d'),
-                    'end': end_date.strftime('%Y-%m-%d'),
-                    'days': days
-                },
-                'summary': {
-                    'total_visitors': total_visitors,
-                    # Display total orders as an integer (rounded) while keeping internal precision
-                    'total_orders': int(round(total_orders)),
-                    'total_revenue': round(total_revenue, 2),
-                    'conversion_rate': round(overall_conversion, 2),
-                    'revenue_per_visitor': round(overall_revenue_per_visitor, 2),
-                    'avg_order_value': round(overall_avg_order_value, 2)
-                },
-                'hourly_data': results,
-                'peak_analysis': {
-                    'busiest_by_visitors': busiest_by_visitors,
-                    'busiest_by_orders': busiest_by_orders,
-                    'peak_periods': peak_periods,
-                    'hourly_recommendations': hourly_stats
-                }
-            })
+            result = pp_conversion_analytics.get_footfall_conversion_analytics(
+                db, days=days, date_str=date_str, restaurant_id=restaurant_id
+            )
+            return jsonify(result)
     
     except Exception as e:
         logging.error(f"Error in footfall conversion analytics: {e}")
@@ -4002,156 +2361,34 @@ def get_staffing_recommendations():
     """
     Provides detailed staffing and inventory recommendations based on historical demand patterns
     Analyzes footfall + billing data to suggest optimal resource allocation per hour
+    
+    REFACTORED: Business logic moved to petpooja_integration.StaffingRecommendations
     """
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
     
     try:
         # Get query parameters
-        days = request.args.get('days', default=14, type=int)  # Default to 2 weeks for better patterns
+        days = request.args.get('days', default=14, type=int)
         restaurant_id = request.args.get('restaurant_id', type=int)
         
         end_date = datetime.now(IST).date()
         start_date = end_date - timedelta(days=days - 1)
         
         with SessionLocal() as db:
-            # Get footfall data
-            footfall_query = db.query(
-                HourlyFootfall.hour,
-                func.avg(HourlyFootfall.in_count).label('avg_visitors'),
-                func.max(HourlyFootfall.in_count).label('max_visitors'),
-                func.count(HourlyFootfall.id).label('data_points')
-            ).filter(
-                HourlyFootfall.report_date >= start_date,
-                HourlyFootfall.report_date <= end_date,
-                HourlyFootfall.in_count > 0  # Only non-zero hours
+            # Delegate to service layer
+            result = pp_staffing_recommendations.calculate_recommendations(
+                db, start_date, end_date, restaurant_id
             )
             
-            # Only join with cameras if filtering by restaurant AND cameras table has data
-            if restaurant_id:
-                camera_count = db.query(Camera).count()
-                if camera_count > 0:
-                    footfall_query = footfall_query.join(
-                        Camera, HourlyFootfall.channel_id == Camera.channel_id
-                    ).filter(Camera.restaurant_id == restaurant_id)
-                else:
-                    logging.warning(f"⚠️ restaurant_id={restaurant_id} provided but cameras table is empty ({camera_count} records). Showing all footfall data.")
+            # Add date range info
+            result['date_range'] = {
+                'start': start_date.strftime('%Y-%m-%d'),
+                'end': end_date.strftime('%Y-%m-%d'),
+                'days': days
+            }
             
-            footfall_query = footfall_query.group_by(HourlyFootfall.hour).all()
-            
-            # Get sales data grouped by hour
-            sales_query = db.execute(text("""
-                SELECT 
-                    sale_hour,
-                    AVG(order_count) as avg_orders,
-                    MAX(order_count) as max_orders,
-                    AVG(revenue) as avg_revenue
-                FROM (
-                    SELECT 
-                        DATE(created_at AT TIME ZONE 'Asia/Kolkata') as sale_date,
-                        EXTRACT(HOUR FROM created_at AT TIME ZONE 'Asia/Kolkata')::INTEGER as sale_hour,
-                        COUNT(DISTINCT content->'properties'->'Order'->>'orderID') as order_count,
-                        SUM(CAST(content->'properties'->'Order'->>'total' AS DECIMAL)) as revenue
-                    FROM petpooja_webhook_events
-                    WHERE DATE(created_at AT TIME ZONE 'Asia/Kolkata') >= :start_date 
-                      AND DATE(created_at AT TIME ZONE 'Asia/Kolkata') <= :end_date
-                    GROUP BY sale_date, sale_hour
-                ) daily_sales
-                GROUP BY sale_hour
-                ORDER BY sale_hour
-            """), {
-                'start_date': start_date,
-                'end_date': end_date
-            }).fetchall()
-            
-            # Build hourly recommendations for business hours 6am-11pm (6-23)
-            recommendations = []
-            for hour in range(6, 24):  # Only 6am to 11pm
-                # Get footfall data for this hour
-                footfall_data = next((f for f in footfall_query if f.hour == hour), None)
-                sales_data = next((s for s in sales_query if s.sale_hour == hour), None)
-                
-                # Always include the hour, even if no data (show 0, 0)
-                # if not footfall_data and not sales_data:
-                #     continue  # OLD: Skip hours with no data
-                
-                avg_visitors = float(footfall_data.avg_visitors) if footfall_data else 0
-                max_visitors = int(footfall_data.max_visitors) if footfall_data else 0
-                avg_orders = float(sales_data.avg_orders) if sales_data else 0
-                max_orders = int(sales_data.max_orders) if sales_data else 0
-                avg_revenue = float(sales_data.avg_revenue) if sales_data else 0
-                
-                # Calculate demand score (0-100)
-                demand_score = min(100, int((avg_visitors / 50 * 60) + (avg_orders / 30 * 40)))
-                
-                # Determine demand level
-                if demand_score >= 75:
-                    demand_level = "Very High"
-                    demand_color = "#ef4444"  # Red
-                elif demand_score >= 50:
-                    demand_level = "High"
-                    demand_color = "#f59e0b"  # Orange
-                elif demand_score >= 25:
-                    demand_level = "Moderate"
-                    demand_color = "#3b82f6"  # Blue
-                else:
-                    demand_level = "Low"
-                    demand_color = "#22c55e"  # Green
-                
-                # Staffing recommendations
-                # Base: 2 staff, +1 per 15 visitors, +1 per 10 orders
-                base_staff = 2
-                visitor_based_staff = int(avg_visitors / 15)
-                order_based_staff = int(avg_orders / 10)
-                recommended_staff = max(base_staff, base_staff + visitor_based_staff + order_based_staff)
-                recommended_staff = min(recommended_staff, 12)  # Cap at 12
-                
-                # Inventory recommendations (in units/servings)
-                # Assume each order = 2 items average, add 30% buffer for peak
-                base_inventory = int(avg_orders * 2.3)
-                peak_buffer = int(max_orders * 0.5) if demand_score >= 50 else 0
-                recommended_inventory = base_inventory + peak_buffer
-                
-                hour_label = datetime.strptime(str(hour), '%H').strftime('%I %p').lstrip('0')
-                
-                recommendations.append({
-                    'hour': hour,
-                    'hour_label': hour_label,
-                    'hour_range': f"{hour}:00 - {hour}:59",
-                    'avg_visitors': round(avg_visitors, 1),
-                    'max_visitors': max_visitors,
-                    'avg_orders': round(avg_orders, 1),
-                    'max_orders': max_orders,
-                    'avg_revenue': round(avg_revenue, 2),
-                    'demand_score': demand_score,
-                    'demand_level': demand_level,
-                    'demand_color': demand_color,
-                    'recommended_staff': recommended_staff,
-                    'recommended_inventory': recommended_inventory,
-                    'notes': f"Plan for {recommended_staff} staff members and stock {recommended_inventory} units"
-                })
-            
-            # Calculate summary statistics
-            total_avg_visitors = sum(r['avg_visitors'] for r in recommendations)
-            total_avg_orders = sum(r['avg_orders'] for r in recommendations)
-            peak_hours = sorted(recommendations, key=lambda x: x['demand_score'], reverse=True)[:5]
-            
-            return jsonify({
-                'date_range': {
-                    'start': start_date.strftime('%Y-%m-%d'),
-                    'end': end_date.strftime('%Y-%m-%d'),
-                    'days': days
-                },
-                'summary': {
-                    'total_hours_analyzed': len(recommendations),
-                    'avg_daily_visitors': round(total_avg_visitors, 1),
-                    'avg_daily_orders': round(total_avg_orders, 1),
-                    'peak_hours': [h['hour_label'] for h in peak_hours],
-                    'max_concurrent_staff_needed': max(r['recommended_staff'] for r in recommendations) if recommendations else 0
-                },
-                'hourly_recommendations': recommendations,
-                'peak_hours_detail': peak_hours
-            })
+            return jsonify(result)
     
     except Exception as e:
         logging.error(f"Error in staffing recommendations: {e}")
@@ -4715,13 +2952,13 @@ def menu_time_popularity():
     Afternoon: 12 PM - 5 PM (hours 12-16)
     Evening: 5 PM - 6 AM (hours 17-23, 0-5)
     
-    FIXED: Corrected hour-to-period mapping to match sales analytics
+    REFACTORED: Business logic moved to petpooja_integration.TimeBasedMenu
     """
     if not db_connected:
         return jsonify({"error": "Database not connected"}), 500
     
     try:
-        # Get date range (default: last 30 days)
+        # Get query parameters
         days = request.args.get('days', 30, type=int)
         restaurant_id = request.args.get('restaurant_id', type=int)
         end_date_ist = datetime.now(IST).date()
@@ -4731,561 +2968,13 @@ def menu_time_popularity():
         logging.info(f"📅 Days requested: {days}")
         logging.info(f"🏪 Restaurant ID filter: {restaurant_id}")
         
-        # Get current time for filtering TODAY's future orders
-        current_time_ist = datetime.now(IST)
-        current_date = current_time_ist.date()
-        current_hour = current_time_ist.hour
-        is_viewing_today = end_date_ist == current_date
-        
-        logging.info(f"🕐 Current IST: {current_time_ist}, Hour: {current_hour}")
-        logging.info(f"📍 Viewing today: {is_viewing_today}")
-        
-        # Fetch from REMOTE API (same as sales analytics and conversion analytics)
-        FASTAPI_URL = 'http://13.202.92.108:8000'
-        API_TOKEN = 'Z4N8T2W9L3H6Q1P'
-        
-        seen_order_ids = {}
-        
-        try:
-            # Query remote API with expanded date range to account for timezone differences
-            # Add 1 day buffer on both sides since remote API might be in UTC
-            api_start_date = start_date_ist - timedelta(days=1)
-            api_end_date = end_date_ist + timedelta(days=1)
-            
-            logging.info(f"🌐 Querying remote API with buffer: {api_start_date} to {api_end_date}")
-            
-            # Build params - NOTE: Remote API doesn't support restaurant_id, we filter client-side
-            params = {
-                'start_date': api_start_date.isoformat(),
-                'end_date': api_end_date.isoformat(),
-                'token': API_TOKEN
-            }
-            
-            # Get PetPooja restaurant ID for client-side filtering
-            petpooja_rest_id = None
-            if restaurant_id:
-                with SessionLocal() as db:
-                    petpooja_rest_id = get_petpooja_restaurant_id(restaurant_id, db)
-                    if petpooja_rest_id:
-                        logging.info(f"🏪 Will filter by PetPooja restaurant_id: {petpooja_rest_id} (client-side)")
-            
-            response = requests.get(
-                f'{FASTAPI_URL}/webhook/events/search/date-range',
-                params=params,
-                timeout=30
-            )
-            response.raise_for_status()
-            all_events = response.json()
-            logging.info(f"✅ Fetched {len(all_events)} webhook events from remote API")
-            
-            # First pass: Filter and extract order data
-            filtered_orders = {}
-            restaurant_filtered_count = 0  # Track how many were filtered by restaurant
-            
-            for event in all_events:
-                if event.get('content', {}).get('event') == 'orderdetails':
-                    # Client-side restaurant filtering (since remote API doesn't support it)
-                    if petpooja_rest_id:
-                        event_rest_id = event.get('content', {}).get('properties', {}).get('Restaurant', {}).get('restID')
-                        if event_rest_id != petpooja_rest_id:
-                            restaurant_filtered_count += 1
-                            continue  # Skip orders from other restaurants
-                    
-                    order = event.get('content', {}).get('properties', {}).get('Order', {})
-                    order_id = order.get('orderID')
-                    
-                    if order_id:
-                        try:
-                            # Parse order time and convert to IST for filtering
-                            if order.get('created_on'):
-                                order_time_utc = datetime.fromisoformat(order['created_on'].replace('Z', '+00:00'))
-                                order_time_ist = order_time_utc.astimezone(IST)
-                            else:
-                                created_at = event.get('created_at', '')
-                                if created_at:
-                                    order_time_utc = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
-                                    order_time_ist = order_time_utc.astimezone(IST)
-                                else:
-                                    continue  # Skip if no timestamp
-                            
-                            order_date_ist = order_time_ist.date()
-                            order_hour_ist = order_time_ist.hour
-                            
-                            # Filter by IST date range FIRST
-                            if order_date_ist < start_date_ist or order_date_ist > end_date_ist:
-                                continue
-                            
-                            # REMOVED: Future hour filtering to match Sales Analytics behavior
-                            # All orders within date range are now included
-                            
-                            # NOW deduplicate - keep highest event_id for each order_id
-                            event_id = event.get('id', 0)
-                            if order_id not in filtered_orders or event_id > filtered_orders[order_id]['event_id']:
-                                filtered_orders[order_id] = {
-                                    'event_id': event_id,
-                                    'order': order,
-                                    'items': event.get('content', {}).get('properties', {}).get('OrderItem', []),
-                                    'created_on': order.get('created_on'),
-                                    'created_at': event.get('created_at'),
-                                    'order_hour': order_hour_ist,
-                                    'order_date': order_date_ist
-                                }
-                        except Exception as parse_error:
-                            logging.warning(f"Error parsing order {order_id} timestamp: {parse_error}")
-                            continue
-            
-            # Use filtered and deduplicated orders
-            seen_order_ids = filtered_orders
-            if petpooja_rest_id:
-                logging.info(f"🏪 Restaurant filter applied: Excluded {restaurant_filtered_count} orders from other restaurants")
-            logging.info(f"✅ Processed {len(seen_order_ids)} unique orders after IST filtering and deduplication")
-            
-        except Exception as e:
-            logging.error(f"❌ Failed to fetch from remote API: {e}")
-            import traceback
-            traceback.print_exc()
-            seen_order_ids = {}
-        
-        # Initialize item collections by time period
-        morning_items = {}   # hours 6-11
-        afternoon_items = {} # hours 12-16
-        evening_items = {}   # hours 17-23, 0-5
-        
-        # Track orders by date
-        orders_by_date = {}
-        actual_start_date = None
-        actual_end_date = None
-        hour_distribution = defaultdict(int)
-        
-        logging.info(f"📊 Processing {len(seen_order_ids)} orders for time period analysis...")
-        
-        # Process each order and categorize by hour
-        for order_id, order_data in seen_order_ids.items():
-            try:
-                # Use the hour and date already extracted
-                hour = order_data.get('order_hour', 12)
-                order_date = order_data.get('order_date', end_date_ist)
-                
-                hour_distribution[hour] += 1
-                
-                # Map early-morning orders (00:00 - 05:59) to the previous calendar date
-                # so they are attributed to the previous day's "evening" period.
-                period_date = order_date
-                if 0 <= hour <= 5:
-                    period_date = order_date - timedelta(days=1)
-                
-                # Use period_date when computing actual start/end and orders_by_date
-                if actual_start_date is None or period_date < actual_start_date:
-                    actual_start_date = period_date
-                if actual_end_date is None or period_date > actual_end_date:
-                    actual_end_date = period_date
-                    
-                if period_date not in orders_by_date:
-                    orders_by_date[period_date] = 0
-                orders_by_date[period_date] += 1
-            except Exception as order_error:
-                logging.warning(f"Error processing order {order_id}: {order_error}")
-                hour = 12  # Default to noon if parsing fails
-            
-            # Calculate order-level revenue for accurate allocation
-            order_total = float(order_data.get('order', {}).get('total', 0))
-            order_items = order_data.get('items', [])
-            
-            # Calculate sum of item totals to find allocation ratio
-            items_subtotal = sum(float(item.get('total', 0)) for item in order_items if isinstance(item, dict))
-            
-            # Process each item in the order
-            for item in order_items:
-                if isinstance(item, dict):
-                    item_name = item.get('name', 'Unknown')
-                    quantity = float(item.get('quantity', 0))
-                    item_subtotal = float(item.get('total', 0))
-                    
-                    if not item_name or item_name == 'Unknown':
-                        continue
-                    
-                    # Allocate order total proportionally to match sales analytics
-                    # This accounts for taxes, discounts, and delivery charges
-                    if items_subtotal > 0:
-                        allocation_ratio = item_subtotal / items_subtotal
-                        revenue = order_total * allocation_ratio
-                    else:
-                        revenue = item_subtotal
-                    
-                    # FIXED: Correct time period categorization
-                    # Morning: 6-11 (6 AM to 11:59 AM)
-                    # Afternoon: 12-16 (12 PM to 4:59 PM)
-                    # Evening: 17-23, 0-5 (5 PM to 5:59 AM next day)
-                    
-                    if 6 <= hour <= 11:  # Morning
-                        if item_name not in morning_items:
-                            morning_items[item_name] = {'quantity': 0, 'revenue': 0}
-                        morning_items[item_name]['quantity'] += quantity
-                        morning_items[item_name]['revenue'] += revenue
-                    
-                    elif 12 <= hour <= 16:  # Afternoon
-                        if item_name not in afternoon_items:
-                            afternoon_items[item_name] = {'quantity': 0, 'revenue': 0}
-                        afternoon_items[item_name]['quantity'] += quantity
-                        afternoon_items[item_name]['revenue'] += revenue
-                    
-                    else:  # Evening (17-23, 0-5)
-                        if item_name not in evening_items:
-                            evening_items[item_name] = {'quantity': 0, 'revenue': 0}
-                        evening_items[item_name]['quantity'] += quantity
-                        evening_items[item_name]['revenue'] += revenue
-        
-        logging.info(f"💰 Revenue Summary - Morning: ₹{sum(i['revenue'] for i in morning_items.values()):.2f}, Afternoon: ₹{sum(i['revenue'] for i in afternoon_items.values()):.2f}, Evening: ₹{sum(i['revenue'] for i in evening_items.values()):.2f}")
-        
-        # Convert to sorted lists (top 5)
-        morning_list = [{'name': k, 'quantity': v['quantity'], 'revenue': v['revenue']} for k, v in morning_items.items()]
-        afternoon_list = [{'name': k, 'quantity': v['quantity'], 'revenue': v['revenue']} for k, v in afternoon_items.items()]
-        evening_list = [{'name': k, 'quantity': v['quantity'], 'revenue': v['revenue']} for k, v in evening_items.items()]
-        
-        morning_top5 = sorted(morning_list, key=lambda x: x['revenue'], reverse=True)[:5]
-        afternoon_top5 = sorted(afternoon_list, key=lambda x: x['revenue'], reverse=True)[:5]
-        evening_top5 = sorted(evening_list, key=lambda x: x['revenue'], reverse=True)[:5]
-        
-        # Get footfall data from LOCAL database (using IST dates)
         with SessionLocal() as db:
-            footfall_query = db.execute(text("""
-                SELECT 
-                    CASE 
-                        WHEN hour BETWEEN 6 AND 11 THEN 'morning'
-                        WHEN hour BETWEEN 12 AND 16 THEN 'afternoon'
-                        ELSE 'evening'
-                    END as time_period,
-                    SUM(in_count) as total_visitors,
-                    COUNT(DISTINCT report_date) as days_count
-                FROM hourly_footfall
-                WHERE report_date >= :start_date
-                  AND report_date <= :end_date
-                GROUP BY 
-                    CASE 
-                        WHEN hour BETWEEN 6 AND 11 THEN 'morning'
-                        WHEN hour BETWEEN 12 AND 16 THEN 'afternoon'
-                        ELSE 'evening'
-                    END
-            """), {
-                'start_date': start_date_ist,
-                'end_date': end_date_ist
-            }).fetchall()
+            # Delegate to service layer
+            result = pp_time_based_menu.analyze_menu_popularity(
+                db, start_date_ist, end_date_ist, days, restaurant_id
+            )
             
-            footfall_data = {
-                'morning': {'visitors': 0, 'days_count': 0},
-                'afternoon': {'visitors': 0, 'days_count': 0},
-                'evening': {'visitors': 0, 'days_count': 0}
-            }
-            
-            logging.info(f"📊 Raw footfall query results: {len(footfall_query)} rows")
-            for row in footfall_query:
-                logging.info(f"  - {row.time_period}: {row.total_visitors} visitors, {row.days_count} days")
-                if row.time_period in footfall_data:
-                    footfall_data[row.time_period]['visitors'] = int(row.total_visitors) if row.total_visitors else 0
-                    footfall_data[row.time_period]['days_count'] = int(row.days_count) if row.days_count else 0
-        
-        # Calculate metrics - IMPORTANT: Adjust for current time when viewing today
-        # If viewing only today and current hour hasn't reached that time period yet, don't count today in the average
-        is_viewing_today = is_viewing_today and (end_date_ist == current_date)
-        
-        morning_days = footfall_data['morning']['days_count']
-        afternoon_days = footfall_data['afternoon']['days_count']
-        evening_days = footfall_data['evening']['days_count']
-        
-        if is_viewing_today and days == 1:
-            # If current time is before 6 AM, morning hasn't started today
-            if current_hour < 6:
-                morning_days = max(0, morning_days - 1)
-                logging.info(f"⏰ Current time {current_hour}:xx is before morning (6 AM) - excluding today from morning average")
-            
-            # If current time is before 12 PM, afternoon hasn't started today
-            if current_hour < 12:
-                afternoon_days = max(0, afternoon_days - 1)
-                logging.info(f"⏰ Current time {current_hour}:xx is before afternoon (12 PM) - excluding today from afternoon average")
-            
-            # If current time is before 5 PM (17:00), evening hasn't started today
-            if current_hour < 17:
-                evening_days = max(0, evening_days - 1)
-                logging.info(f"⏰ Current time {current_hour}:xx is before evening (5 PM) - excluding today from evening average")
-        
-        morning_avg_footfall = (footfall_data['morning']['visitors'] / morning_days) if morning_days > 0 else 0
-        afternoon_avg_footfall = (footfall_data['afternoon']['visitors'] / afternoon_days) if afternoon_days > 0 else 0
-        evening_avg_footfall = (footfall_data['evening']['visitors'] / evening_days) if evening_days > 0 else 0
-        
-        morning_total_sales = sum(item['revenue'] for item in morning_list)
-        afternoon_total_sales = sum(item['revenue'] for item in afternoon_list)
-        evening_total_sales = sum(item['revenue'] for item in evening_list)
-        
-        total_all_sales = morning_total_sales + afternoon_total_sales + evening_total_sales
-        
-        # Log breakdown by hour for verification
-        logging.info(f"💰 Revenue Breakdown by Time Period:")
-        logging.info(f"  - Morning (6-11):     ₹{morning_total_sales:.2f} ({len(morning_list)} unique items)")
-        logging.info(f"  - Afternoon (12-16):  ₹{afternoon_total_sales:.2f} ({len(afternoon_list)} unique items)")
-        logging.info(f"  - Evening (others):   ₹{evening_total_sales:.2f} ({len(evening_list)} unique items)")
-        logging.info(f"  - TOTAL:              ₹{total_all_sales:.2f}")
-        
-        logging.info(f"📊 Hour Distribution in Orders:")
-        for hour in sorted(hour_distribution.keys()):
-            period = "Morning" if 6 <= hour <= 11 else "Afternoon" if 12 <= hour <= 16 else "Evening"
-            logging.info(f"  - Hour {hour:02d} ({period}): {hour_distribution[hour]} orders")
-        
-        # Generate intelligent suggestions based on actual menu data
-        suggestions = []
-        
-        # Helper function to detect item type and suggest appropriate variations
-        def get_item_suggestions(item_name, revenue):
-            name_lower = item_name.lower()
-            
-            # Detect beverages
-            beverage_keywords = ['coffee', 'cappuccino', 'latte', 'espresso', 'tea', 'chai', 'juice', 
-                                'shake', 'smoothie', 'mojito', 'lassi', 'milk', 'frappe', 'americano', 
-                                'mocha', 'macchiato', 'hot chocolate', 'cold coffee']
-            is_beverage = any(keyword in name_lower for keyword in beverage_keywords)
-            
-            # Detect sandwiches/burgers
-            sandwich_keywords = ['sandwich', 'burger', 'toast', 'panini', 'wrap', 'roll']
-            is_sandwich = any(keyword in name_lower for keyword in sandwich_keywords)
-            
-            # Detect pizza/pasta
-            italian_keywords = ['pizza', 'pasta', 'lasagna', 'ravioli']
-            is_italian = any(keyword in name_lower for keyword in italian_keywords)
-            
-            if is_beverage:
-                return {
-                    'variations': 'size options (Regular/Large), flavor shots (Vanilla/Caramel/Hazelnut), temperature (Hot/Iced)',
-                    'combo_with': 'breakfast items or pastries',
-                    'upsell': 'extra shot, whipped cream, or cookie pairing'
-                }
-            elif is_sandwich:
-                return {
-                    'variations': 'spice levels (mild/medium/spicy), cheese options (regular/premium), bread choices',
-                    'combo_with': 'fries, beverage, or salad',
-                    'upsell': 'extra cheese, bacon, or make it a combo'
-                }
-            elif is_italian:
-                return {
-                    'variations': 'size (personal/medium/large), crust types, topping combinations',
-                    'combo_with': 'garlic bread, beverage, or dessert',
-                    'upsell': 'extra toppings, stuffed crust, or side salad'
-                }
-            else:
-                # Generic food items
-                return {
-                    'variations': 'portion sizes, spice levels, or add-on toppings',
-                    'combo_with': 'beverage or side dish',
-                    'upsell': 'extra portions or premium ingredients'
-                }
-        
-        # Calculate metrics per period
-        morning_orders = len([o for o in seen_order_ids.values() if 6 <= o.get('order_hour', 0) <= 11])
-        afternoon_orders = len([o for o in seen_order_ids.values() if 12 <= o.get('order_hour', 0) <= 16])
-        evening_orders = len([o for o in seen_order_ids.values() if o.get('order_hour', 0) >= 17 or o.get('order_hour', 0) <= 5])
-        
-        morning_aov = morning_total_sales / morning_orders if morning_orders > 0 else 0
-        afternoon_aov = afternoon_total_sales / afternoon_orders if afternoon_orders > 0 else 0
-        evening_aov = evening_total_sales / evening_orders if evening_orders > 0 else 0
-        
-        logging.info(f"📊 Order Analysis - Morning: {morning_orders} orders (AOV: ₹{morning_aov:.0f}), Afternoon: {afternoon_orders} orders (AOV: ₹{afternoon_aov:.0f}), Evening: {evening_orders} orders (AOV: ₹{evening_aov:.0f})")
-        
-        # Morning Analysis (6 AM - 12 PM)
-        if morning_orders > 0:
-            top_morning = sorted(morning_list, key=lambda x: x['quantity'], reverse=True)[:3]
-            top_item = top_morning[0]['name']
-            item_suggestions = get_item_suggestions(top_item, top_morning[0]['revenue'])
-            
-            if morning_aov < 250:
-                # Low AOV - suggest combos with popular items
-                top_items_str = ", ".join([item['name'] for item in top_morning])
-                suggestions.append({
-                    'period': 'Morning (6 AM - 12 PM)',
-                    'type': 'combo',
-                    'icon': '☕',
-                    'reason': f'Average order value is ₹{morning_aov:.0f}. Top sellers: {top_items_str}',
-                    'suggestion': f'Create breakfast combos: {top_item} + {item_suggestions["combo_with"]} at 15% discount to increase AOV to ₹300+'
-                })
-            elif morning_aov >= 250 and morning_orders < 15:
-                # Good AOV but low orders - attract more customers
-                suggestions.append({
-                    'period': 'Morning (6 AM - 12 PM)',
-                    'type': 'promotion',
-                    'icon': '🎁',
-                    'reason': f'Good order value (₹{morning_aov:.0f}) but only {morning_orders} orders',
-                    'suggestion': f'Launch "Early Bird Special" (before 10 AM): Get 20% off on {top_item} to drive morning traffic'
-                })
-            else:
-                # Strong performance - upsell opportunities
-                suggestions.append({
-                    'period': 'Morning (6 AM - 12 PM)',
-                    'type': 'upsell',
-                    'icon': '⬆️',
-                    'reason': f'Strong performance: {morning_orders} orders at ₹{morning_aov:.0f} AOV',
-                    'suggestion': f'Upsell strategy: Offer {item_suggestions["upsell"]} with {top_item} to push AOV to ₹350+'
-                })
-        
-        # Afternoon Analysis (12 PM - 5 PM)
-        if afternoon_orders > 0:
-            top_afternoon = sorted(afternoon_list, key=lambda x: x['quantity'], reverse=True)[:3]
-            top_item = top_afternoon[0]['name']
-            item_suggestions = get_item_suggestions(top_item, top_afternoon[0]['revenue'])
-            
-            if afternoon_aov < 300:
-                top_items_str = ", ".join([item['name'] for item in top_afternoon])
-                suggestions.append({
-                    'period': 'Afternoon (12 PM - 5 PM)',
-                    'type': 'combo',
-                    'icon': '🍱',
-                    'reason': f'Average order value is ₹{afternoon_aov:.0f}. Most ordered: {top_items_str}',
-                    'suggestion': f'Create "Lunch Deal": {top_item} + {item_suggestions["combo_with"]} at bundled price to boost AOV'
-                })
-            elif afternoon_orders < 20:
-                suggestions.append({
-                    'period': 'Afternoon (12 PM - 5 PM)',
-                    'type': 'promotion',
-                    'icon': '⏰',
-                    'reason': f'Peak lunch hours but only {afternoon_orders} orders',
-                    'suggestion': f'Introduce "Express Lunch" (12-2 PM): Fast service guarantee + {top_item} combo deals to capture office crowd'
-                })
-            else:
-                # Peak period - maximize revenue
-                suggestions.append({
-                    'period': 'Afternoon (12 PM - 5 PM)',
-                    'type': 'premium',
-                    'icon': '⭐',
-                    'reason': f'Peak period: {afternoon_orders} orders, ₹{afternoon_aov:.0f} AOV',
-                    'suggestion': f'Launch premium option: {top_item} with {item_suggestions["upsell"]} at ₹{int(afternoon_aov * 1.3)} to target high-value customers'
-                })
-        
-        # Evening Analysis (5 PM - 6 AM)
-        if evening_orders > 0:
-            top_evening = sorted(evening_list, key=lambda x: x['quantity'], reverse=True)[:3]
-            top_item = top_evening[0]['name'] if top_evening else "menu items"
-            item_suggestions = get_item_suggestions(top_item, top_evening[0]['revenue']) if top_evening else None
-            
-            if evening_aov < 350:
-                top_items_str = ", ".join([item['name'] for item in top_evening])
-                combo_suggestion = item_suggestions["combo_with"] if item_suggestions else "sides and drinks"
-                suggestions.append({
-                    'period': 'Evening (5 PM - 6 AM)',
-                    'type': 'combo',
-                    'icon': '🌙',
-                    'reason': f'Dinner period with ₹{evening_aov:.0f} AOV. Popular: {top_items_str}',
-                    'suggestion': f'Create "Dinner For Two": 2x {top_item} + {combo_suggestion} at ₹{int(evening_aov * 2.2)} value price'
-                })
-            elif evening_orders < 10:
-                suggestions.append({
-                    'period': 'Evening (5 PM - 6 AM)',
-                    'type': 'promotion',
-                    'icon': '🎉',
-                    'reason': f'Evening potential untapped - only {evening_orders} orders',
-                    'suggestion': f'Happy Hours (5-7 PM): Buy {top_item}, get 50% off second item + free beverage'
-                })
-            else:
-                suggestions.append({
-                    'period': 'Evening (5 PM - 6 AM)',
-                    'type': 'family',
-                    'icon': '👨‍👩‍👧',
-                    'reason': f'Dinner rush: {evening_orders} orders at ₹{evening_aov:.0f} AOV',
-                    'suggestion': f'Family Bundle: 4x {top_item} + family-size {item_suggestions["combo_with"] if item_suggestions else "sides"} at ₹{int(evening_aov * 3.5)}'
-                })
-        
-        # Add cross-period insights
-        if len(seen_order_ids) > 0:
-            # Find most consistent seller across all periods
-            all_items = {}
-            for period_items in [morning_items, afternoon_items, evening_items]:
-                for name, data in period_items.items():
-                    if name not in all_items:
-                        all_items[name] = {'count': 0, 'revenue': 0}
-                    all_items[name]['count'] += 1  # Present in how many periods
-                    all_items[name]['revenue'] += data['revenue']
-            
-            if all_items:
-                consistent_sellers = sorted(
-                    [(name, data) for name, data in all_items.items() if data['count'] >= 2],
-                    key=lambda x: x[1]['revenue'],
-                    reverse=True
-                )
-                
-                if consistent_sellers:
-                    bestseller = consistent_sellers[0]
-                    bestseller_name = bestseller[0]
-                    item_suggestions = get_item_suggestions(bestseller_name, bestseller[1]['revenue'])
-                    
-                    suggestions.append({
-                        'period': 'All Day Strategy',
-                        'type': 'signature',
-                        'icon': '🏆',
-                        'reason': f'{bestseller_name} is popular across multiple time periods (₹{bestseller[1]["revenue"]:.0f} total)',
-                        'suggestion': f'Make {bestseller_name} your "Signature Item" - feature it prominently and offer {item_suggestions["variations"]} to boost sales further'
-                    })
-        
-        # Use actual date range from data
-        display_start_date = actual_start_date if actual_start_date else start_date_ist
-        display_end_date = actual_end_date if actual_end_date else end_date_ist
-        actual_days = len(orders_by_date) if orders_by_date else 0
-        
-        # Add note if viewing today's data (up to current time)
-        time_note = f"Data up to {current_time_ist.strftime('%I:%M %p').lstrip('0')}" if is_viewing_today else "Full day data"
-        
-        logging.info(f"📅 Actual date range: {display_start_date} to {display_end_date} (IST)")
-        logging.info(f"⏰ {time_note}")
-        
-        # Return comprehensive data
-        return jsonify({
-            'success': True,
-            'date_range': {
-                'start': display_start_date.strftime('%Y-%m-%d'),
-                'end': display_end_date.strftime('%Y-%m-%d'),
-                'days': actual_days,
-                'requested_days': days,
-                'orders_by_date': {date.strftime('%Y-%m-%d'): count for date, count in orders_by_date.items()},
-                'timezone': 'IST',
-                'viewing_today': is_viewing_today,
-                'current_time': current_time_ist.strftime('%Y-%m-%d %I:%M %p').lstrip('0') if is_viewing_today else None,
-                'note': time_note
-            },
-            'morning': {
-                'period': '6 AM - 12 PM',
-                'top_items': morning_top5,
-                'total_items': len(morning_list),
-                'total_revenue': round(morning_total_sales, 2),
-                'total_quantity': sum(item['quantity'] for item in morning_list),
-                'footfall': {
-                    'total_visitors': footfall_data['morning']['visitors'],
-                    'avg_per_day': round(morning_avg_footfall),
-                    'days_tracked': footfall_data['morning']['days_count']
-                }
-            },
-            'afternoon': {
-                'period': '12 PM - 5 PM',
-                'top_items': afternoon_top5,
-                'total_items': len(afternoon_list),
-                'total_revenue': round(afternoon_total_sales, 2),
-                'total_quantity': sum(item['quantity'] for item in afternoon_list),
-                'footfall': {
-                    'total_visitors': footfall_data['afternoon']['visitors'],
-                    'avg_per_day': round(afternoon_avg_footfall),
-                    'days_tracked': footfall_data['afternoon']['days_count']
-                }
-            },
-            'evening': {
-                'period': '5 PM - 6 AM (Evening + Late Night)',
-                'top_items': evening_top5,
-                'total_items': len(evening_list),
-                'total_revenue': round(evening_total_sales, 2),
-                'total_quantity': sum(item['quantity'] for item in evening_list),
-                'footfall': {
-                    'total_visitors': footfall_data['evening']['visitors'],
-                    'avg_per_day': round(evening_avg_footfall),
-                    'days_tracked': footfall_data['evening']['days_count']
-                },
-                'note': 'Includes late-night orders (11 PM - 6 AM)'
-            },
-            'suggestions': suggestions,
-            'has_data': len(morning_list) > 0 or len(afternoon_list) > 0 or len(evening_list) > 0,
-            'data_source': 'remote_api'
-        })
+            return jsonify(result)
             
     except Exception as e:
         logging.error(f"Error in menu_time_popularity: {e}")
@@ -5296,35 +2985,39 @@ def menu_time_popularity():
 
 _MODEL_CACHE = {}
 
-def load_model(model_path: str):
-    if model_path in _MODEL_CACHE:
-        return _MODEL_CACHE[model_path]
+def load_model(model_path: str, force_device=None):
+    cache_key = f"{model_path}_{force_device or 'auto'}"
+    if cache_key in _MODEL_CACHE:
+        return _MODEL_CACHE[cache_key]
     if not os.path.exists(model_path):
         logging.error(f"Model file not found: {model_path}")
         return None
     try:
         model = YOLO(model_path)
-        # FORCE CPU MODE - No CUDA
-        model.to('cpu')
+        # Use force_device if provided, otherwise use DEVICE
+        device = force_device if force_device is not None else DEVICE
+        model.to(device)
         
-        # No half precision or fuse on CPU
-        # try:
-        #     model.fuse()
-        # except Exception:
-        #     pass
+        # Enable optimizations for CUDA only
+        if device == 'cuda':
+            try:
+                model.fuse()
+            except Exception:
+                pass
         
-        # Warmup with CPU
+        # Warmup
         try:
             import numpy as _np
             dummy = _np.zeros((640, 640, 3), dtype=_np.uint8)
             with torch.inference_mode():
-                for _ in range(2):  # Reduced warmup iterations for CPU
-                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device='cpu', verbose=False)
+                warmup_iterations = 3 if device == 'cuda' else 2
+                for _ in range(warmup_iterations):
+                    _ = model(dummy, conf=0.25, iou=0.45, imgsz=640, device=device, verbose=False)
         except Exception:
             pass
         
-        logging.info(f"Loaded '{model_path}' on cpu (half=False)")
-        _MODEL_CACHE[model_path] = model
+        logging.info(f"Loaded '{model_path}' on {device}")
+        _MODEL_CACHE[cache_key] = model
         return model
     except Exception as e:
         logging.error(f"Failed to load model '{model_path}': {e}")
@@ -5430,7 +3123,7 @@ def _start_streams_from_data(stream_assignments):
         hub.start()
         atexit.register(hub.stop)
         if 'PeopleCounter' in active_app_names:
-            model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
+            model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'], force_device='cpu')
             if model_obj:
                 pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
                 pc_processor.frame_hub = hub
@@ -5438,11 +3131,23 @@ def _start_streams_from_data(stream_assignments):
                 logging.info(f"Started PeopleCounter for {channel_id} ({channel_name}).")
                 atexit.register(pc_processor.shutdown); active_app_names.remove('PeopleCounter')
         if 'QueueMonitor' in active_app_names:
-            model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'])
+            model_obj = load_model(APP_TASKS_CONFIG['QueueMonitor']['model_path'], force_device='cpu')
             if model_obj:
                 # Pass restaurant_id to QueueMonitor processor
                 restaurant_id = restaurant.id if restaurant else None
-                qm_processor = QueueMonitorProcessor(link, channel_id, channel_name, model_obj, restaurant_id=restaurant_id)
+                qm_processor = QueueMonitorProcessor(
+                    rtsp_url=link,
+                    channel_id=channel_id,
+                    channel_name=channel_name,
+                    model=model_obj,
+                    restaurant_id=restaurant_id,
+                    db_session_factory=SessionLocal,
+                    socketio=socketio,
+                    detection_handler=handle_detection,
+                    notification_sender=send_telegram_notification,
+                    tracking_function=safe_track_persons,
+                    timezone=IST
+                )
                 qm_processor.frame_hub = hub
                 stream_processors[channel_id].append(qm_processor); qm_processor.start()
                 logging.info(f"Started QueueMonitor for {channel_id} ({channel_name}) - Restaurant ID: {restaurant_id}")
@@ -5462,15 +3167,26 @@ def _start_streams_from_data(stream_assignments):
             atexit.register(kc_processor.shutdown)
             active_app_names.remove('KitchenCompliance')
         if 'OccupancyMonitor' in active_app_names:
-            model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'])
+            model_obj = load_model(APP_TASKS_CONFIG['OccupancyMonitor']['model_path'], force_device=DEVICE)
             if model_obj:
-                om_processor = OccupancyMonitorProcessor(
-                    link, channel_id, channel_name, model_obj, socketio, 
-                    SessionLocal, send_telegram_notification
+                om_processor = run_occupancy_monitor(
+                    config={
+                        'rtsp_url': link,
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                        'model': model_obj,
+                        'socketio': socketio,
+                        'session_factory': SessionLocal,
+                        'notification_sender': send_telegram_notification,
+                        'OccupancyLog': OccupancyLog,
+                        'OccupancySchedule': OccupancySchedule,
+                        'timezone': IST,
+                        'database_url': DATABASE_URL,
+                        'device': DEVICE  # Use CUDA if available
+                    },
+                    frame_hub=hub
                 )
-                om_processor.frame_hub = hub
                 stream_processors[channel_id].append(om_processor)
-                om_processor.start()
                 logging.info(f"Started OccupancyMonitor for {channel_id} ({channel_name}).")
                 atexit.register(om_processor.shutdown)
                 active_app_names.remove('OccupancyMonitor')
@@ -5495,7 +3211,9 @@ def _start_streams_from_data(stream_assignments):
                 config = APP_TASKS_CONFIG.get(app_name)
                 if config and 'model_path' in config:
                     logging.info(f"Loading model for {app_name}: {config['model_path']}")
-                    model_obj = load_model(config['model_path'])
+                    # Generic runs on CUDA for better performance
+                    device_for_app = DEVICE if app_name == 'Generic' else 'cpu'
+                    model_obj = load_model(config['model_path'], force_device=device_for_app)
                     if model_obj: 
                         tasks_for_multi_model.append({'app_name': app_name, 'model': model_obj, **config})
                         logging.info(f"✅ Model loaded for {app_name}. Target classes: {config.get('target_class_id', 'all')}, Confidence: {config.get('confidence', 0.5)}")
@@ -5606,7 +3324,7 @@ def initialize_app():
             # scheduler.add_job(log_queue_counts, 'interval', minutes=5)  # disabled queue_logs periodic write
             scheduler.start()
             atexit.register(lambda: scheduler.shutdown())
-            logging.info("Scheduler started (CPU-only mode - no CUDA recovery needed)")
+            logging.info("Scheduler started successfully")
         else:
             logging.warning("Database not connected, scheduler not started")
         

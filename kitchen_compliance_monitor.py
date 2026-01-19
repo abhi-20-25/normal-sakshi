@@ -66,9 +66,10 @@ class KitchenComplianceProcessor(threading.Thread):
         self.handle_main_detection = detection_callback
 
         try:
-            # Force CPU mode - CUDA causes "double free" crashes with OpenCV cleanup
-            self.device = 'cpu'
-            logging.info(f"Kitchen channel {self.channel_name} using device: CPU")
+            # Use CUDA if available for better performance
+            import torch
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            logging.info(f"Kitchen channel {self.channel_name} using device: {self.device.upper()}")
             
             # Load unified model
             if not os.path.exists(UNIFIED_MODEL_PATH):
@@ -394,6 +395,7 @@ class KitchenComplianceProcessor(threading.Thread):
                     frame, 
                     classes=VIOLATION_CLASSES + COMPLIANCE_CLASSES + PERSON_CLASS,  # violations (2,4,6,7,8) + compliance (1,3,5) + person (0)
                     conf=CONFIDENCE_THRESHOLD,  # 0.3 confidence threshold
+                    device=self.device,
                     verbose=False
                 )
                 

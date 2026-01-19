@@ -19,32 +19,39 @@ import json
 import os
 from datetime import datetime
 from sqlalchemy import Column, Integer, String, DateTime, Text, UniqueConstraint, text, create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import sessionmaker
 from shapely.geometry import Point, Polygon
 
-IST = pytz.timezone('Asia/Kolkata')
-Base = declarative_base()
 
-# Database tables
-class OccupancyLog(Base):
-    __tablename__ = "occupancy_logs"
-    id = Column(Integer, primary_key=True, index=True)
-    channel_id = Column(String, index=True)
-    timestamp = Column(DateTime, default=lambda: datetime.now(IST))
-    time_slot = Column(String)
-    day_of_week = Column(String)
-    live_count = Column(Integer)
-    required_count = Column(Integer)
-    status = Column(String)  # 'OK', 'BELOW_REQUIREMENT', 'NO_SCHEDULE', 'PAUSED'
+# Database tables (Base will be provided by caller)
+def get_occupancy_tables(Base):
+    """Define occupancy database tables using provided Base"""
     
-class OccupancySchedule(Base):
-    __tablename__ = "occupancy_schedules"
-    id = Column(Integer, primary_key=True, index=True)
-    channel_id = Column(String, index=True)
-    time_slot = Column(String)  # e.g., "9:00"
-    day_of_week = Column(String)  # e.g., "Monday"
-    required_count = Column(Integer)
-    __table_args__ = (UniqueConstraint('channel_id', 'time_slot', 'day_of_week', name='_occupancy_schedule_uc'),)
+    class OccupancyLog(Base):
+        __tablename__ = "occupancy_logs"
+        __table_args__ = {'extend_existing': True}
+        id = Column(Integer, primary_key=True, index=True)
+        channel_id = Column(String, index=True)
+        timestamp = Column(DateTime)
+        time_slot = Column(String)
+        day_of_week = Column(String)
+        live_count = Column(Integer)
+        required_count = Column(Integer)
+        status = Column(String)  # 'OK', 'BELOW_REQUIREMENT', 'NO_SCHEDULE', 'PAUSED'
+    
+    class OccupancySchedule(Base):
+        __tablename__ = "occupancy_schedules"
+        __table_args__ = (
+            UniqueConstraint('channel_id', 'time_slot', 'day_of_week', name='_occupancy_schedule_uc'),
+            {'extend_existing': True}
+        )
+        id = Column(Integer, primary_key=True, index=True)
+        channel_id = Column(String, index=True)
+        time_slot = Column(String)  # e.g., "9:00"
+        day_of_week = Column(String)  # e.g., "Monday"
+        required_count = Column(Integer)
+    
+    return OccupancyLog, OccupancySchedule
 
 
 class OccupancyMonitorProcessor(threading.Thread):
@@ -52,7 +59,8 @@ class OccupancyMonitorProcessor(threading.Thread):
     Enhanced Occupancy Monitor - CUDA enabled, accurate detection, scheduled operation
     """
     
-    def __init__(self, rtsp_url, channel_id, channel_name, model, socketio, SessionLocal, send_notification):
+    def __init__(self, rtsp_url, channel_id, channel_name, model, socketio, SessionLocal, send_notification, 
+                 OccupancyLog, OccupancySchedule, timezone=None, database_url=None, device='cuda'):
         super().__init__(name=f"OccupancyMonitor-{channel_name}")
         self.rtsp_url = rtsp_url
         self.channel_id = channel_id
@@ -61,9 +69,13 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.socketio = socketio
         self.SessionLocal = SessionLocal
         self.send_notification = send_notification
+        self.OccupancyLog = OccupancyLog
+        self.OccupancySchedule = OccupancySchedule
+        self.timezone = timezone or pytz.timezone('Asia/Kolkata')
+        self.database_url = database_url
         
-        # Auto-detect device (CUDA if available, else CPU)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        # Use provided device setting
+        self.device = device
         self.model.to(self.device)
         logging.info(f"🎯 Using device: {self.device.upper()}")
         
@@ -76,12 +88,12 @@ class OccupancyMonitorProcessor(threading.Thread):
         self.required_count = 0
         self.current_time_slot = ""
         self.last_alert_time = 0
-        self.alert_cooldown = 300  # 5 minutes between alerts
+        self.alert_cooldown = 3  # 5 minutes between alerts
         
         # Track if requirement is met
         self.requirement_met = False
         self.requirement_met_time = 0
-        self.pause_after_met_duration = 300  # Pause for 5 minutes after requirement met
+        self.pause_after_met_duration = 3  # Pause for 5 minutes after requirement met
         
         # ROI Configuration
         self.roi_polygon = None
@@ -92,22 +104,14 @@ class OccupancyMonitorProcessor(threading.Thread):
         
         logging.info(f"✅ Occupancy Monitor initialized for {self.channel_name}")
     
-    @staticmethod
-    def initialize_tables(engine):
-        """Initialize database tables"""
-        try:
-            Base.metadata.create_all(bind=engine)
-            logging.info("Tables 'occupancy_logs' and 'occupancy_schedules' checked/created.")
-        except Exception as e:
-            logging.error(f"Could not create OccupancyMonitor tables: {e}")
-    
     def _load_roi_from_db(self):
         """Load ROI configuration from database for this channel"""
         try:
-            database_url = os.environ.get('DATABASE_URL')
-            if not database_url:
+            if not self.database_url:
                 logging.info(f"No DATABASE_URL found for OccupancyMonitor {self.channel_name} - skipping ROI load")
                 return
+            
+            database_url = self.database_url
             
             engine = create_engine(database_url, pool_pre_ping=True)
             SessionLocal_roi = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -181,7 +185,7 @@ class OccupancyMonitorProcessor(threading.Thread):
         """Load schedule from database for this channel"""
         try:
             with self.SessionLocal() as db:
-                records = db.query(OccupancySchedule).filter_by(channel_id=self.channel_id).all()
+                records = db.query(self.OccupancySchedule).filter_by(channel_id=self.channel_id).all()
                 self.schedule = {}
                 for record in records:
                     if record.time_slot not in self.schedule:
@@ -195,11 +199,11 @@ class OccupancyMonitorProcessor(threading.Thread):
         """Update schedule for this channel"""
         try:
             with self.SessionLocal() as db:
-                db.query(OccupancySchedule).filter_by(channel_id=self.channel_id).delete()
+                db.query(self.OccupancySchedule).filter_by(channel_id=self.channel_id).delete()
                 
                 for time_slot, days in schedule_data.items():
                     for day_name, required_count in days.items():
-                        db.add(OccupancySchedule(
+                        db.add(self.OccupancySchedule(
                             channel_id=self.channel_id,
                             time_slot=time_slot,
                             day_of_week=day_name,
@@ -245,7 +249,7 @@ class OccupancyMonitorProcessor(threading.Thread):
     
     def _is_within_schedule(self):
         """Check if current time is within a scheduled slot"""
-        now = datetime.now(IST)
+        now = datetime.now(self.timezone)
         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         current_day = days[now.weekday()]
         current_hour = f"{now.hour}:00"
@@ -326,10 +330,7 @@ class OccupancyMonitorProcessor(threading.Thread):
                         
                         # ROI filtering - only count people inside ROI
                         if not self._is_in_roi(x1, y1, x2, y2, frame_width, frame_height):
-                            # Draw filtered-out detections in gray
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (128, 128, 128), 1)
-                            cv2.putText(annotated_frame, 'Outside ROI', (x1, y1-5),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+                            # Skip filtered-out detections
                             continue
                         
                         person_count += 1
@@ -349,14 +350,8 @@ class OccupancyMonitorProcessor(threading.Thread):
                             color = (255, 165, 0)  # Orange - low confidence
                             thickness = 2
                         
-                        # Draw bounding box with better visibility
+                        # Draw bounding box only (no labels)
                         cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
-                        # Add label background for better readability
-                        label = f'Person {person_count} ({conf:.2f})'
-                        label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                        cv2.rectangle(annotated_frame, (x1, y1-label_size[1]-10), (x1+label_size[0]+5, y1), color, -1)
-                        cv2.putText(annotated_frame, label, (x1, y1-5),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
             
             # Log detections for debugging
             if person_count > 0:
@@ -370,7 +365,7 @@ class OccupancyMonitorProcessor(threading.Thread):
     
     def _check_occupancy_requirement(self):
         """Check if live count meets schedule requirement"""
-        now = datetime.now(IST)
+        now = datetime.now(self.timezone)
         days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
         current_day = days[now.weekday()]
         current_hour = f"{now.hour}:00"
@@ -412,8 +407,9 @@ class OccupancyMonitorProcessor(threading.Thread):
         # Log to database
         try:
             with self.SessionLocal() as db:
-                db.add(OccupancyLog(
+                db.add(self.OccupancyLog(
                     channel_id=self.channel_id,
+                    timestamp=datetime.now(self.timezone),
                     time_slot=current_hour,
                     day_of_week=current_day,
                     live_count=self.live_count,
@@ -424,6 +420,18 @@ class OccupancyMonitorProcessor(threading.Thread):
         except Exception as e:
             logging.error(f"Error logging occupancy: {e}")
         
+        # Generate banner text
+        banner_text = ''
+        if status == 'BELOW_REQUIREMENT':
+            shortage = self.required_count - self.live_count
+            banner_text = f"⚠️ ALERT: {shortage} people short! ({self.live_count}/{self.required_count} present)"
+        elif status == 'OK':
+            banner_text = f"✅ OK ({self.live_count}/{self.required_count} present)"
+        elif status == 'PAUSED':
+            banner_text = f"✓ Requirement met - Monitoring paused"
+        elif status == 'NO_SCHEDULE':
+            banner_text = ''
+        
         # Emit to dashboard via SocketIO
         self.socketio.emit('occupancy_update', {
             'channel_id': self.channel_id,
@@ -431,7 +439,8 @@ class OccupancyMonitorProcessor(threading.Thread):
             'time_slot': self.current_time_slot,
             'live_count': self.live_count,
             'required_count': self.required_count,
-            'status': status
+            'status': status,
+            'banner_text': banner_text
         })
         
         return status
@@ -491,31 +500,19 @@ class OccupancyMonitorProcessor(threading.Thread):
         last_schedule_check = 0
         last_detection_time = 0
         detection_cooldown = 1.0  # Run YOLO detection once per second (avoid GPU overload)
+        frame_delay = 0.03  # ~30 FPS
+        
+        # Close the direct capture - we'll use frame_hub instead
+        cap.release()
         
         while self.is_running:
             frame_start_time = time.time()
             
-            # Aggressive frame skipping to get the absolute latest frame (zero lag)
-            for _ in range(3):
-                cap.grab()
-            
-            ret, frame = cap.retrieve()
-            
-            if not ret:
-                logging.warning(f"Failed to read frame from {self.channel_name}, attempting reconnect...")
-                cap.release()
-                time.sleep(2)
-                cap = cv2.VideoCapture(self.rtsp_url)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                cap.set(cv2.CAP_PROP_FPS, 15)
-                reconnect_attempts += 1
-                
-                if reconnect_attempts >= max_reconnect_attempts:
-                    logging.error(f"Max reconnection attempts reached for {self.channel_name}")
-                    break
+            # Get frame from shared frame hub (same as Queue Monitor)
+            frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
+            if frame is None:
+                time.sleep(0.01)
                 continue
-            
-            reconnect_attempts = 0
             current_time = time.time()
             
             # Check schedule every 10 seconds
@@ -539,26 +536,6 @@ class OccupancyMonitorProcessor(threading.Thread):
                 
                 self.live_count, annotated_frame = self._detect_people(frame)
                 
-                # Add comprehensive info overlay
-                cv2.putText(annotated_frame, f"Live: {self.live_count} | Required: {self.required_count}", 
-                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(annotated_frame, self.current_time_slot, (10, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                cv2.putText(annotated_frame, f"Device: {self.device.upper()} | Conf: 0.15", (10, 90),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                
-                # Add alert overlay if below requirement
-                if self.required_count > 0 and self.live_count < self.required_count:
-                    cv2.rectangle(annotated_frame, (0, 0), (annotated_frame.shape[1], 120), (0, 0, 255), -1)
-                    cv2.putText(annotated_frame, f"ALERT: {self.required_count - self.live_count} people short!", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                
-                # Add "OK" indicator if requirement met
-                elif self.required_count > 0 and self.live_count >= self.required_count:
-                    cv2.rectangle(annotated_frame, (0, 0), (annotated_frame.shape[1], 120), (0, 255, 0), -1)
-                    cv2.putText(annotated_frame, f"REQUIREMENT MET! ({self.live_count}/{self.required_count})", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                
                 with self.lock:
                     self.latest_frame = annotated_frame
                 
@@ -566,56 +543,27 @@ class OccupancyMonitorProcessor(threading.Thread):
                 self._check_occupancy_requirement()
                 
             elif should_detect:
-                # Between YOLO detections - still show smooth video with last detection overlay
+                # Between YOLO detections - still show smooth video
                 # This ensures smooth streaming without frame skip
                 display_frame = frame.copy()
                 
                 # Draw ROI overlay
                 display_frame = self._draw_roi_overlay(display_frame)
                 
-                # Reapply last detection info (smooth display)
-                cv2.putText(display_frame, f"Live: {self.live_count} | Required: {self.required_count}", 
-                          (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                cv2.putText(display_frame, self.current_time_slot, (10, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                cv2.putText(display_frame, f"Device: {self.device.upper()} | Conf: 0.15", (10, 90),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-                
-                # Add status banner
-                if self.required_count > 0 and self.live_count < self.required_count:
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (0, 0, 255), -1)
-                    cv2.putText(display_frame, f"ALERT: {self.required_count - self.live_count} people short!", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                elif self.required_count > 0:
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (0, 255, 0), -1)
-                    cv2.putText(display_frame, f"REQUIREMENT MET! ({self.live_count}/{self.required_count})", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                
                 with self.lock:
                     self.latest_frame = display_frame
                     
             else:
-                # PAUSED/NO SCHEDULE - Show status on frame
+                # PAUSED/NO SCHEDULE - Show clean video frame without overlays
                 display_frame = frame.copy()
                 
-                # Draw ROI overlay
-                display_frame = self._draw_roi_overlay(display_frame)
-                
+                # Optional: Add tiny status indicator in corner (minimal intrusion)
                 if detection_status == "NO_SCHEDULE":
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (100, 100, 100), -1)
-                    cv2.putText(display_frame, "NO SCHEDULE FOR THIS TIME", 
-                              (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                    # Tiny gray dot indicator
+                    cv2.circle(display_frame, (display_frame.shape[1] - 20, 20), 8, (100, 100, 100), -1)
                 elif detection_status == "PAUSED_REQ_MET":
-                    time_paused = int(time.time() - self.requirement_met_time)
-                    time_remaining = self.pause_after_met_duration - time_paused
-                    cv2.rectangle(display_frame, (0, 0), (display_frame.shape[1], 120), (0, 200, 0), -1)
-                    cv2.putText(display_frame, f"REQUIREMENT MET - PAUSED", 
-                              (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-                    cv2.putText(display_frame, f"Resuming in {time_remaining}s", 
-                              (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                
-                cv2.putText(display_frame, f"Time: {self.current_time_slot}", (10, 110),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                    # Tiny green dot indicator
+                    cv2.circle(display_frame, (display_frame.shape[1] - 20, 20), 8, (0, 200, 0), -1)
                 
                 with self.lock:
                     self.latest_frame = display_frame
@@ -637,3 +585,55 @@ class OccupancyMonitorProcessor(threading.Thread):
     def shutdown(self):
         """Shutdown method for compatibility"""
         self.stop()
+
+
+def run_occupancy_monitor(config, frame_hub):
+    """
+    Public entry function to run occupancy monitor.
+    
+    Args:
+        config: Configuration dictionary containing:
+            - rtsp_url: Camera RTSP stream URL
+            - channel_id: Unique channel identifier
+            - channel_name: Human-readable channel name
+            - model: YOLO model for person detection
+            - socketio: SocketIO instance for real-time updates
+            - session_factory: SQLAlchemy session factory
+            - notification_sender: Function to send notifications
+            - OccupancyLog: SQLAlchemy ORM class for occupancy logs table
+            - OccupancySchedule: SQLAlchemy ORM class for occupancy schedules table
+            - timezone: Timezone object (default: Asia/Kolkata)
+            - database_url: Database connection URL
+            - device: Device to use ('cpu' or 'cuda')
+        frame_hub: FrameHub instance providing camera frames
+    
+    Returns:
+        OccupancyMonitorProcessor: The running processor instance
+    """
+    # Extract table classes from config
+    OccupancyLog = config.get('OccupancyLog')
+    OccupancySchedule = config.get('OccupancySchedule')
+    
+    # Create processor with all dependencies injected
+    processor = OccupancyMonitorProcessor(
+        rtsp_url=config.get('rtsp_url'),
+        channel_id=config.get('channel_id'),
+        channel_name=config.get('channel_name'),
+        model=config.get('model'),
+        socketio=config.get('socketio'),
+        SessionLocal=config.get('session_factory'),
+        send_notification=config.get('notification_sender'),
+        OccupancyLog=OccupancyLog,
+        OccupancySchedule=OccupancySchedule,
+        timezone=config.get('timezone'),
+        database_url=config.get('database_url'),
+        device=config.get('device', 'cuda')
+    )
+    
+    # Attach frame hub
+    processor.frame_hub = frame_hub
+    
+    # Start processor thread
+    processor.start()
+    
+    return processor

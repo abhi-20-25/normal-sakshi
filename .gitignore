@@ -28,6 +28,7 @@ weights/
 *.Zone.Identifier
 
 # Logs
+logs/
 *.log
 *.log.*
 cpu_usage_log.json
