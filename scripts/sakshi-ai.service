@@ -6,8 +6,12 @@ After=network.target
 User=ubuntu
 Group=www-data
 WorkingDirectory=/home/ubuntu/normal-sakshi
-Environment="PATH=/home/ubuntu/normal-sakshi/venv/bin"
-ExecStart=/home/ubuntu/normal-sakshi/venv/bin/gunicorn \
+# Old venv path (commented out)
+# Environment="PATH=/home/ubuntu/normal-sakshi/venv/bin"
+# ExecStart=/home/ubuntu/normal-sakshi/venv/bin/gunicorn \
+# New venv_new path
+Environment="PATH=/home/ubuntu/normal-sakshi/venv_new/bin"
+ExecStart=/home/ubuntu/normal-sakshi/venv_new/bin/gunicorn \
     --worker-class eventlet \
     --workers 1 \
     --worker-connections 1000 \
