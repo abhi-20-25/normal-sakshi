@@ -61,6 +61,7 @@ from petpooja_integration import (
 )
 from queue_monitor import QueueMonitorProcessor
 from occupancy_monitor_processor import run_occupancy_monitor, get_occupancy_tables, OccupancyMonitorProcessor
+from people_counter import PeopleCounterProcessor
 
 # --- Basic Logging Setup ---
 import sys
@@ -102,10 +103,10 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/02_01_2026_teatost_best.pt', 'target_class_id': [1, 2, 3, 4, 5, 6, 7, 8], 'confidence': 0.3, 'is_gif': False},
+    'Generic': {'model_path': 'models/kitchen_violation_18_01_2026.pt', 'target_class_id': [0, 1, 2, 3, 4, 5, 6, 7, 8], 'confidence': 0.3, 'is_gif': False},
     'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
     'QueueMonitor': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Unified model with person detection
+    'KitchenCompliance': {'model_path': 'models/kitchen_violation_18_01_2026.pt', 'confidence': 0.3},  # Kitchen violation model (person detection via yolo11n.pt)
     'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
     'IdlePeopleViolation': {'model_path': 'models/yolo11n.pt', 'confidence': 0.3}
 }
@@ -615,11 +616,12 @@ class MultiModelProcessor(threading.Thread):
         """
         Apply smart validation logic using complementary pairs:
         Compare confidence scores and keep the higher confidence detection.
-        - Cap_present (1) vs Without_cap (2)
-        - With_apron (3) vs Without_apron (4)
-        - With_gloves (5) vs Without_gloves (6)
-        - Using_phone (7) always triggers as violation
-        - Without_uniform (8) triggers as violation
+        NEW MODEL CLASS IDs:
+        - Cap_present (0) vs Without_cap (1)
+        - With_apron (2) vs Without_apron (3)
+        - With_gloves (4) vs Without_gloves (5)
+        - Uniform (6) vs Without_uniform (7)
+        - Using_phone (8) always triggers as violation
         """
         if not detections:
             return detections
@@ -643,28 +645,36 @@ class MultiModelProcessor(threading.Thread):
             conf = det['confidence']
             should_keep = True
             
-            # Without_cap (2) vs Cap_present (1) - keep higher confidence
-            if class_id == 2 and 1 in max_conf_by_class:
-                if max_conf_by_class[1] > conf:  # Cap_present has higher confidence
+            # Without_cap (1) vs Cap_present (0) - keep higher confidence
+            if class_id == 1 and 0 in max_conf_by_class:
+                if max_conf_by_class[0] > conf:  # Cap_present has higher confidence
                     should_keep = False
-            elif class_id == 1 and 2 in max_conf_by_class:
-                if max_conf_by_class[2] > conf:  # Without_cap has higher confidence
-                    should_keep = False
-            
-            # Without_apron (4) vs With_apron (3) - keep higher confidence
-            elif class_id == 4 and 3 in max_conf_by_class:
-                if max_conf_by_class[3] > conf:  # With_apron has higher confidence
-                    should_keep = False
-            elif class_id == 3 and 4 in max_conf_by_class:
-                if max_conf_by_class[4] > conf:  # Without_apron has higher confidence
+            elif class_id == 0 and 1 in max_conf_by_class:
+                if max_conf_by_class[1] > conf:  # Without_cap has higher confidence
                     should_keep = False
             
-            # Without_gloves (6) vs With_gloves (5) - keep higher confidence
-            elif class_id == 6 and 5 in max_conf_by_class:
-                if max_conf_by_class[5] > conf:  # With_gloves has higher confidence
+            # Without_apron (3) vs With_apron (2) - keep higher confidence
+            elif class_id == 3 and 2 in max_conf_by_class:
+                if max_conf_by_class[2] > conf:  # With_apron has higher confidence
                     should_keep = False
-            elif class_id == 5 and 6 in max_conf_by_class:
-                if max_conf_by_class[6] > conf:  # Without_gloves has higher confidence
+            elif class_id == 2 and 3 in max_conf_by_class:
+                if max_conf_by_class[3] > conf:  # Without_apron has higher confidence
+                    should_keep = False
+            
+            # Without_gloves (5) vs With_gloves (4) - keep higher confidence
+            elif class_id == 5 and 4 in max_conf_by_class:
+                if max_conf_by_class[4] > conf:  # With_gloves has higher confidence
+                    should_keep = False
+            elif class_id == 4 and 5 in max_conf_by_class:
+                if max_conf_by_class[5] > conf:  # Without_gloves has higher confidence
+                    should_keep = False
+            
+            # Without_uniform (7) vs Uniform (6) - keep higher confidence
+            elif class_id == 7 and 6 in max_conf_by_class:
+                if max_conf_by_class[6] > conf:  # Uniform has higher confidence
+                    should_keep = False
+            elif class_id == 6 and 7 in max_conf_by_class:
+                if max_conf_by_class[7] > conf:  # Without_uniform has higher confidence
                     should_keep = False
             
             if should_keep:
@@ -825,7 +835,7 @@ class MultiModelProcessor(threading.Thread):
                     PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
                     final_detections = []
                     for det in filtered_detections:
-                        if det['class_id'] == 7:  # Using_phone
+                        if det['class_id'] == 8:  # Using_phone (class 8 in new model)
                             if det['confidence'] >= PHONE_MIN_CONFIDENCE:
                                 final_detections.append(det)
                             else:
@@ -840,13 +850,14 @@ class MultiModelProcessor(threading.Thread):
                         logging.info(f"🔍 Generic {self.channel_name} Frame {frame_count}: Raw: {detected_classes_debug} | After filtering: {filtered_classes_debug}")
                         
                         # Special alert for phone detection
-                        phone_detections = [det for det in final_detections if det['class_id'] == 7]
+                        phone_detections = [det for det in final_detections if det['class_id'] == 8]  # Using_phone is class 8
                         if phone_detections:
                             logging.warning(f"📱 PHONE DETECTED in {self.channel_name}! Confidence: {phone_detections[0]['confidence']:.2f}")
                     
                     # Define class sets and colors
-                    violation_classes = {2, 4, 6, 7, 8}  # Without_cap, Without_apron, Without_gloves, Using_phone, Without_uniform
-                    compliance_classes = {1, 3, 5}  # Cap_present, With_apron, With_gloves
+                    # NEW MODEL: Only "Without_" classes and "Using_phone" are violations
+                    violation_classes = {1, 3, 5, 7, 8}  # Without_cap, Without_apron, Without_gloves, Without_uniform, Using_phone
+                    compliance_classes = {0, 2, 4, 6}  # Cap_present, With_apron, With_gloves, Uniform
                     COLOR_GREEN = (0, 255, 0)  # Compliance
                     COLOR_RED = (0, 0, 255)    # Violations
                     
@@ -1043,368 +1054,8 @@ class RawFeedProcessor(threading.Thread):
             
             time.sleep(0.03)  # ~30 FPS
 
-class PeopleCounterProcessor(threading.Thread):
-    def __init__(self, rtsp_url, channel_id, channel_name, model, detection_callback, socketio):
-        super().__init__()
-        self.rtsp_url, self.channel_id, self.model, self.detection_callback = rtsp_url, channel_id, model, detection_callback
-        self.channel_name, self.app_name = channel_name, "PeopleCounter"
-        self.socketio = socketio
-        self.is_running, self.lock = True, threading.Lock()
-        
-        # LINE CROSSING APPROACH - Simple & Reliable!
-        self.previous_centroids = []  # List of (x, y) from previous frame
-        self.counting_line_position = 0.38  # Default: Line at 38% (LEFT=0-38%, RIGHT=38-100%)
-        self.cooldown_zones = {}  # {(approx_x, approx_y): timestamp} to prevent double counting
-        self.cooldown_duration = 0.8  # 800ms cooldown per zone
-        
-        # Load counting line position from database
-        self._load_line_position_from_db()
-        
-        self.counts = {'in': 0, 'out': 0}
-        self.current_hour = datetime.now(IST).hour
-        self.tracking_date = datetime.now(IST).date()
-        self.latest_frame = None
-        
-        self._load_initial_counts()
-
-        hourly_data = self._get_hourly_data()
-        self.socketio.emit('count_update', {
-            'channel_id': self.channel_id, 
-            'in_count': self.counts['in'], 
-            'out_count': self.counts['out'],
-            'hourly_data': hourly_data
-        })
-
-    def update_line_position(self, new_position):
-        """Update counting line position from ROI editor"""
-        with self.lock:
-            self.counting_line_position = new_position
-            logging.info(f"🎯 PeopleCounter {self.channel_name} line position updated to {new_position*100:.0f}%")
-    
-    def stop(self): self.is_running = False
-    def shutdown(self):
-        logging.info(f"Shutting down PeopleCounter for {self.channel_name}. Saving final counts...")
-        self._update_and_log_counts()
-        self.is_running = False
-
-    def get_frame(self):
-        with self.lock:
-            if self.latest_frame is None:
-                placeholder = np.full((480, 640, 3), (22, 27, 34), dtype=np.uint8)
-                cv2.putText(placeholder, 'Connecting...', (180, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (201, 209, 217), 2)
-                _, jpeg = cv2.imencode('.jpg', placeholder); return jpeg.tobytes()
-            _, jpeg = cv2.imencode('.jpg', self.latest_frame); return jpeg.tobytes()
-
-    def _get_hourly_data(self):
-        """Get today's hourly IN counts for the bar chart"""
-        hourly_data = [0] * 24  # Initialize 24 hours with 0
-        if not db_connected: return hourly_data
-        
-        with SessionLocal() as db:
-            try:
-                today_ist = datetime.now(IST).date()
-                records = db.query(HourlyFootfall).filter_by(
-                    channel_id=self.channel_id, 
-                    report_date=today_ist
-                ).all()
-                
-                for record in records:
-                    if 0 <= record.hour < 24:
-                        hourly_data[record.hour] = record.in_count
-            except Exception as e:
-                logging.error(f"Failed to fetch hourly data: {e}")
-        
-        return hourly_data
-
-    def _load_line_position_from_db(self):
-        """Load counting line position from database"""
-        if not db_connected: return
-        try:
-            with SessionLocal() as db:
-                roi_record = db.query(RoiConfig).filter_by(channel_id=self.channel_id, app_name='PeopleCounter').first()
-                if roi_record and roi_record.roi_points:
-                    points = json.loads(roi_record.roi_points)
-                    if 'line_position' in points:
-                        self.counting_line_position = points['line_position']
-                        logging.info(f"✅ Loaded counting line position: {self.counting_line_position*100:.0f}% for {self.channel_name}")
-                    else:
-                        logging.info(f"Using default counting line position: 45% for {self.channel_name}")
-                else:
-                    logging.info(f"No saved line position found, using default: 45% for {self.channel_name}")
-        except Exception as e:
-            logging.error(f"Error loading line position: {e}. Using default 45%")
-
-    def _load_initial_counts(self):
-        if not db_connected: return
-        with SessionLocal() as db:
-            try:
-                today_ist = datetime.now(IST).date()
-                self.tracking_date = today_ist
-                record = db.query(DailyFootfall).filter_by(channel_id=self.channel_id, report_date=today_ist).first()
-                if record: self.counts = {'in': record.in_count, 'out': record.out_count}
-                else: self._reset_counts_for_new_day(db, today_ist)
-            except Exception as e: logging.error(f"Failed to load initial counts: {e}")
-
-    def _reset_counts_for_new_day(self, db, new_date):
-        self.counts = {'in': 0, 'out': 0}
-        self.tracking_date = new_date
-        db.add(DailyFootfall(channel_id=self.channel_id, report_date=new_date, in_count=0, out_count=0))
-        db.commit()
-
-    def _update_and_log_counts(self):
-        """Update daily counts in database"""
-        if not db_connected: return
-        with SessionLocal() as db, self.lock:
-            try:
-                db.query(DailyFootfall).filter_by(channel_id=self.channel_id, report_date=self.tracking_date).update({'in_count': self.counts['in'], 'out_count': self.counts['out']})
-                db.commit()
-            except Exception as e:
-                logging.error(f"Error updating daily counts in DB: {e}"); db.rollback()
-    
-    def _update_hourly_count_realtime(self, count_type):
-        """Update hourly count in database in real-time when in/out is detected"""
-        if not db_connected: return
-        current_time = datetime.now(IST)
-        current_hour_ist = current_time.hour
-        current_date_ist = current_time.date()
-        
-        # Check if hour changed - if so, update current_hour
-        if current_hour_ist != self.current_hour:
-            self.current_hour = current_hour_ist
-        
-        # Check if day changed - if so, update tracking_date
-        if current_date_ist != self.tracking_date:
-            self.tracking_date = current_date_ist
-        
-        with SessionLocal() as db:
-            try:
-                # Increment hourly count for current hour
-                stmt = text("""
-                    INSERT INTO hourly_footfall (channel_id, report_date, hour, in_count, out_count)
-                    VALUES (:cid, :rdate, :hour, :inc, :outc)
-                    ON CONFLICT (channel_id, report_date, hour)
-                    DO UPDATE SET 
-                        in_count = hourly_footfall.in_count + EXCLUDED.in_count,
-                        out_count = hourly_footfall.out_count + EXCLUDED.out_count;
-                """)
-                inc = 1 if count_type == 'in' else 0
-                outc = 1 if count_type == 'out' else 0
-                db.execute(stmt, {
-                    'cid': self.channel_id,
-                    'rdate': self.tracking_date,
-                    'hour': self.current_hour,
-                    'inc': inc,
-                    'outc': outc
-                })
-                db.commit()
-                logging.info(f"PeopleCounter {self.channel_name}: Updated hourly count in real-time - Hour {self.current_hour:02d}:00, {count_type.upper()}+1")
-            except Exception as e:
-                logging.error(f"Error updating hourly count in DB: {e}"); db.rollback()
-
-    def _check_for_new_day(self):
-        current_date_ist = datetime.now(IST).date()
-        current_hour_ist = datetime.now(IST).hour
-        if current_date_ist > self.tracking_date:
-            logging.info("New day detected. Resetting people counter.")
-            self._update_and_log_counts()
-            with SessionLocal() as db:
-                self._reset_counts_for_new_day(db, current_date_ist)
-                self.current_hour = current_hour_ist
-
-    def run(self):
-        consecutive_errors = 0
-        max_consecutive_errors = 5
-        
-        while self.is_running:
-            try:
-                self._check_for_new_day()
-                frame = getattr(self, 'frame_hub', None).get_latest() if hasattr(self, 'frame_hub') else None
-                if frame is None:
-                    time.sleep(0.01)
-                    continue
-                # Ensure we have a fresh copy to prevent any cross-contamination with other processors
-                frame = frame.copy()
-                
-                # Apply adaptive histogram equalization for better detection in varying lighting
-                # Convert to LAB color space and equalize the L channel
-                lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-                l, a, b = cv2.split(lab)
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-                l_equalized = clahe.apply(l)
-                enhanced_frame = cv2.merge([l_equalized, a, b])
-                enhanced_frame = cv2.cvtColor(enhanced_frame, cv2.COLOR_LAB2BGR)
-                
-                # Use YOLO predict (no tracking needed for line-crossing!)
-                results = safe_track_persons(self.model, enhanced_frame, conf=0.20, iou=0.5, processor_name=f"{self.channel_name}-PeopleCounter")
-                consecutive_errors = 0  # Reset on successful frame
-                r0 = results[0] if (results and len(results) > 0) else None
-                
-                # LINE CROSSING DETECTION - Counting line at 55%
-                frame_width = frame.shape[1]
-                frame_height = frame.shape[0]
-                counting_line_x = int(frame_width * self.counting_line_position)  # 55% line
-                
-                if r0 is not None and getattr(r0, 'boxes', None) is not None:
-                    boxes_xyxy = r0.boxes.xyxy.cpu()
-                    boxes_conf = r0.boxes.conf.cpu()
-                    
-                    # Calculate frame dimensions for size filtering
-                    frame_area = frame_width * frame_height
-                    min_box_area = frame_area * 0.003  # Minimum 0.3% of frame area
-                    max_box_area = frame_area * 0.9    # Maximum 90% of frame area
-                    min_confidence = 0.20  # Balanced threshold
-                    
-                    # Collect current frame centroids
-                    current_centroids = []
-                    
-                    for i, box in enumerate(boxes_xyxy):
-                        # Get box dimensions
-                        x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
-                        box_width = float(x2 - x1)
-                        box_height = float(y2 - y1)
-                        box_area = box_width * box_height
-                        confidence = float(boxes_conf[i])
-                        
-                        # Filter: person-shaped, valid size, high confidence
-                        aspect_ratio = box_height / box_width if box_width > 0 else 0
-                        is_person_shaped = 1.2 <= aspect_ratio <= 4.0
-                        is_valid_size = min_box_area <= box_area <= max_box_area
-                        is_confident = confidence >= min_confidence
-                        
-                        if is_person_shaped and is_valid_size and is_confident:
-                            # Calculate centroid (center point)
-                            center_x = int((x1 + x2) / 2)
-                            center_y = int((y1 + y2) / 2)
-                            current_centroids.append((center_x, center_y))
-                    
-                    # LINE CROSSING DETECTION
-                    current_time = time.time()
-                    
-                    # Clean up old cooldown zones
-                    expired_zones = [zone for zone, timestamp in self.cooldown_zones.items() 
-                                    if current_time - timestamp > self.cooldown_duration]
-                    for zone in expired_zones:
-                        del self.cooldown_zones[zone]
-                    
-                    # For each current centroid, find closest match in previous frame
-                    for curr_x, curr_y in current_centroids:
-                        # Find closest previous centroid (within 100px threshold)
-                        closest_prev = None
-                        min_distance = float('inf')
-                        
-                        for prev_x, prev_y in self.previous_centroids:
-                            distance = ((curr_x - prev_x)**2 + (curr_y - prev_y)**2)**0.5
-                            if distance < min_distance and distance < 100:  # Max 100px movement per frame
-                                min_distance = distance
-                                closest_prev = (prev_x, prev_y)
-                        
-                        # Check if line was crossed
-                        if closest_prev is not None:
-                            prev_x, prev_y = closest_prev
-                            
-                            # Check cooldown zone (approximate location to prevent double-counting)
-                            zone_key = (int(curr_x / 80) * 80, int(curr_y / 80) * 80)  # 80px grid
-                            if zone_key in self.cooldown_zones:
-                                continue  # Skip - recently counted in this area
-                            
-                            # Detect crossing: previous position on one side, current on other
-                            crossed_left_to_right = prev_x < counting_line_x and curr_x >= counting_line_x
-                            crossed_right_to_left = prev_x >= counting_line_x and curr_x < counting_line_x
-                            
-                            if crossed_left_to_right:
-                                # Person entered (LEFT → RIGHT)
-                                with self.lock:
-                                    self.counts['in'] += 1
-                                self._update_hourly_count_realtime('in')
-                                self._update_and_log_counts()
-                                self.cooldown_zones[zone_key] = current_time
-                                logging.info(f"✅ IN: Person crossed line LEFT→RIGHT at ({curr_x},{curr_y}). Total IN: {self.counts['in']}")
-                            
-                            elif crossed_right_to_left:
-                                # Person exited (RIGHT → LEFT)
-                                with self.lock:
-                                    self.counts['out'] += 1
-                                self._update_hourly_count_realtime('out')
-                                self._update_and_log_counts()
-                                self.cooldown_zones[zone_key] = current_time
-                                logging.info(f"✅ OUT: Person crossed line RIGHT→LEFT at ({curr_x},{curr_y}). Total OUT: {self.counts['out']}")
-                    
-                    # Update previous centroids for next frame
-                    self.previous_centroids = current_centroids
-                
-                # Create annotated frame with person bounding boxes only
-                annotated_frame = frame.copy()
-                
-                # Counting line visualization removed for cleaner view
-                # frame_width = frame.shape[1]
-                # frame_height = frame.shape[0]
-                # counting_line_x = int(frame_width * self.counting_line_position)
-                # cv2.line(annotated_frame, (counting_line_x, 0), (counting_line_x, frame_height), (0, 0, 255), 3)
-                # cv2.putText(annotated_frame, "COUNTING LINE", (counting_line_x + 10, 30),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                # cv2.putText(annotated_frame, "IN ->", (counting_line_x - 80, frame_height // 2),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                # cv2.putText(annotated_frame, "<- OUT", (counting_line_x + 10, frame_height // 2),
-                #            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                
-                # Person bounding boxes removed for cleaner view
-                # if r0 is not None and getattr(r0, 'boxes', None) is not None:
-                #     boxes = r0.boxes
-                #     frame_area = frame.shape[0] * frame.shape[1]
-                #     min_box_area = frame_area * 0.003
-                #     max_box_area = frame_area * 0.9
-                #     min_confidence = 0.20
-                #     
-                #     for i in range(len(boxes)):
-                #         box = boxes.xyxy[i].cpu().numpy()
-                #         x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-                #         conf = float(boxes.conf[i].cpu())
-                #         
-                #         box_width = x2 - x1
-                #         box_height = y2 - y1
-                #         box_area = box_width * box_height
-                #         aspect_ratio = box_height / box_width if box_width > 0 else 0
-                #         
-                #         is_person_shaped = 1.2 <= aspect_ratio <= 4.0
-                #         is_valid_size = min_box_area <= box_area <= max_box_area
-                #         is_confident = conf >= min_confidence
-                #         
-                #         # Draw only valid person boxes
-                #         if is_person_shaped and is_valid_size and is_confident:
-                #             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                #             label = f"Person {conf:.2f}"
-                #             cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                
-                with self.lock: self.latest_frame = annotated_frame.copy()
-                hourly_data = self._get_hourly_data()
-                socketio.emit('count_update', {
-                    'channel_id': self.channel_id, 
-                    'in_count': self.counts['in'], 
-                    'out_count': self.counts['out'],
-                    'hourly_data': hourly_data
-                })
-            except RuntimeError as e:
-                logging.error(f"Runtime error in PeopleCounter {self.channel_name} run loop: {e}. Error count: {consecutive_errors}")
-                
-                consecutive_errors += 1
-                if consecutive_errors >= max_consecutive_errors:
-                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing for recovery...")
-                    time.sleep(10)  # Pause for recovery
-                    consecutive_errors = 0
-                else:
-                    time.sleep(2)  # Short pause before retry
-            except Exception as e:
-                logging.error(f"Unexpected error in PeopleCounter {self.channel_name}: {e}")
-                consecutive_errors += 1
-                if consecutive_errors >= max_consecutive_errors:
-                    logging.error(f"Too many consecutive errors for {self.channel_name}. Pausing...")
-                    time.sleep(10)
-                    consecutive_errors = 0
-                else:
-                    time.sleep(1)
-        # No cap to release when using FrameHub
-
 # QueueMonitorProcessor class moved to queue_monitor.py module
+# PeopleCounterProcessor class moved to people_counter.py module
 
 # OccupancyMonitorProcessor class moved to occupancy_monitor_processor.py module
 
@@ -3125,7 +2776,11 @@ def _start_streams_from_data(stream_assignments):
         if 'PeopleCounter' in active_app_names:
             model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'], force_device='cpu')
             if model_obj:
-                pc_processor = PeopleCounterProcessor(link, channel_id, channel_name, model_obj, handle_detection, socketio)
+                pc_processor = PeopleCounterProcessor(
+                    link, channel_id, channel_name, model_obj, handle_detection, socketio,
+                    db_session_factory=SessionLocal, db_connected=db_connected, 
+                    timezone=IST, safe_track_persons_func=safe_track_persons
+                )
                 pc_processor.frame_hub = hub
                 stream_processors[channel_id].append(pc_processor); pc_processor.start()
                 logging.info(f"Started PeopleCounter for {channel_id} ({channel_name}).")
@@ -3260,7 +2915,11 @@ def restart_processor(processor_info):
         if processor_type == PeopleCounterProcessor:
             model_obj = load_model(APP_TASKS_CONFIG['PeopleCounter']['model_path'])
             if model_obj:
-                new_processor = PeopleCounterProcessor(rtsp_url, channel_id, channel_name, model_obj, handle_detection, socketio)
+                new_processor = PeopleCounterProcessor(
+                    rtsp_url, channel_id, channel_name, model_obj, handle_detection, socketio,
+                    db_session_factory=SessionLocal, db_connected=db_connected,
+                    timezone=IST, safe_track_persons_func=safe_track_persons
+                )
                 new_processor.frame_hub = frame_hub
                 new_processor.start()
                 processors.append(new_processor)
