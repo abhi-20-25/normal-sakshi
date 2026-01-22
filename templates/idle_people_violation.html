@@ -156,8 +156,8 @@
       </div>
       
       <div class="content">
-        <div class="legend">
-          <h4>Detection Guide</h4>
+        <!-- Summary section: Hidden for restaurant_id = 1 (Sangli), visible for others -->
+        {% if restaurant_id != 1 %}
         <div class="legend">
           <h4>Detection Guide</h4>
           <div class="legend-item">
@@ -192,6 +192,7 @@
             <div class="description">Filtered results</div>
           </div>
         </div>
+        {% endif %}
         
         {% if channels %}
           {% for channel in channels %}
@@ -282,7 +283,11 @@
         .then(data => {
           renderViolations(data.detections);
           renderPagination(data.page, data.total_pages, data.total);
-          document.getElementById('total-violations').textContent = data.total;
+          // Only update total violations count if element exists (hidden for restaurant_id=1)
+          const totalViolationsElement = document.getElementById('total-violations');
+          if (totalViolationsElement) {
+            totalViolationsElement.textContent = data.total;
+          }
         })
         .catch(err => {
           console.error('Error loading violations:', err);

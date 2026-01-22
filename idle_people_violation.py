@@ -45,13 +45,17 @@ class IdlePeopleViolationProcessor(threading.Thread):
     Processor for detecting idle people in camera feeds.
     Tracks people using YOLO object detection and flags violations when a person
     is detected for more than IDLE_FRAME_THRESHOLD consecutive frames.
+    
+    For restaurant_id == 1: Detects phone usage instead of idle people.
+    For restaurant_id == 2: Uses default idle people detection.
     """
     
-    def __init__(self, rtsp_url, channel_id, channel_name, SessionLocal, socketio, telegram_sender, detection_callback):
+    def __init__(self, rtsp_url, channel_id, channel_name, SessionLocal, socketio, telegram_sender, detection_callback, restaurant_id=None):
         super().__init__(name=f"IdlePeople-{channel_name}")
         self.rtsp_url = rtsp_url
         self.channel_id = channel_id
         self.channel_name = channel_name
+        self.restaurant_id = restaurant_id  # Store restaurant_id for behavior switching
         self.is_running = True
         self.error_message = None
         self.latest_frame = None
@@ -70,19 +74,38 @@ class IdlePeopleViolationProcessor(threading.Thread):
         self.roi_polygon = None
         self._load_roi()
         
-        # Load YOLO model
+        # Load YOLO model based on restaurant_id
         try:
-            self.device = 'cpu'  # Use CPU for stability
-            logging.info(f"Idle People Monitor {self.channel_name} using device: CPU")
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            logging.info(f"Idle People Monitor {self.channel_name} using device: {self.device.upper()}")
             
-            if not os.path.exists(MODEL_PATH):
-                raise FileNotFoundError(f"Missing model file: {MODEL_PATH}")
+            # Store phone usage model path
+            self.phone_model_path = 'models/02_01_2026_teatost_best.pt'
             
-            self.model = YOLO(MODEL_PATH)
-            self.model.to(self.device)
-            
-            logging.info(f"✅ Idle People {self.channel_name}: Loaded model {MODEL_PATH}")
-            logging.info(f"   Monitoring for idle people (threshold: {IDLE_FRAME_THRESHOLD} frames)")
+            if self.restaurant_id == 1:
+                # Sangli store: Use phone usage detection
+                logging.info(f"⚡ Restaurant ID {self.restaurant_id} (Sangli): Using Phone Usage detection")
+                if not os.path.exists(self.phone_model_path):
+                    raise FileNotFoundError(f"Missing phone detection model: {self.phone_model_path}")
+                
+                self.model = YOLO(self.phone_model_path)
+                self.model.to(self.device)
+                self.phone_class_id = 7  # Using_phone class from unified model
+                self.phone_confidence_threshold = 0.5  # Higher threshold for phone detection
+                
+                logging.info(f"✅ Idle People {self.channel_name}: Loaded phone detection model {self.phone_model_path}")
+                logging.info(f"   Monitoring for phone usage (class: {self.phone_class_id}, conf: {self.phone_confidence_threshold})")
+            else:
+                # Other stores: Use idle people detection
+                logging.info(f"⚡ Restaurant ID {self.restaurant_id}: Using Idle People detection")
+                if not os.path.exists(MODEL_PATH):
+                    raise FileNotFoundError(f"Missing model file: {MODEL_PATH}")
+                
+                self.model = YOLO(MODEL_PATH)
+                self.model.to(self.device)
+                
+                logging.info(f"✅ Idle People {self.channel_name}: Loaded model {MODEL_PATH}")
+                logging.info(f"   Monitoring for idle people (threshold: {IDLE_FRAME_THRESHOLD} frames)")
             
         except Exception as e:
             self.error_message = f"Model Error: {e}"
@@ -95,6 +118,9 @@ class IdlePeopleViolationProcessor(threading.Thread):
         self.fps_frame_count = 0
         self.current_fps = 0.0
         self.frame_counter = 0  # For frame skipping
+        
+        # SocketIO tracking for dashboard updates
+        self.last_socketio_emit = 0
 
     @staticmethod
     def initialize_tables(engine):
@@ -298,6 +324,47 @@ class IdlePeopleViolationProcessor(threading.Thread):
         
         self.alert_executor.submit(async_alert)
 
+    def _trigger_phone_alert(self, frame, bbox, confidence):
+        """Trigger alert for phone usage violation (restaurant_id == 1)"""
+        details = f"Phone Usage detected (confidence: {confidence:.2%})"
+        logging.warning(f"🚨 PHONE USAGE ALERT on {self.channel_name}: {details}")
+        
+        # Run screenshot saving in background thread pool (no Telegram for Sangli)
+        def async_alert():
+            try:
+                # Skip Telegram notification for Sangli store
+                # telegram_message = f"🚨 Phone Usage Alert: {self.channel_name}\nConfidence: {confidence:.2%}\nLocation: {bbox}"
+                # self.send_telegram_notification(telegram_message)
+                
+                # Create frame with bounding box annotation
+                annotated_frame = frame.copy()
+                x1, y1, x2, y2 = bbox
+                
+                # Draw red bounding box for violation
+                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+                
+                # Draw label with background
+                label = f"Phone Usage! ({confidence:.2%})"
+                (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(annotated_frame, (x1, y1 - label_h - 10), 
+                            (x1 + label_w, y1), (0, 0, 255), -1)
+                cv2.putText(annotated_frame, label, (x1, y1 - 5), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                media_path = self.handle_main_detection(
+                    'IdlePeopleViolation', self.channel_id, [annotated_frame], details, is_gif=False
+                )
+                
+                if media_path:
+                    # Save as violation with phone usage details
+                    self._save_violation_to_db(0, 0, details, media_path)
+                    
+                logging.info(f"Idle People: Phone usage alert saved")
+            except Exception as e:
+                logging.error(f"Phone usage alert background task failed: {e}")
+        
+        self.alert_executor.submit(async_alert)
+
     def _update_fps(self):
         """Update FPS calculation"""
         self.fps_frame_count += 1
@@ -306,6 +373,166 @@ class IdlePeopleViolationProcessor(threading.Thread):
             self.current_fps = self.fps_frame_count / elapsed
             self.fps_frame_count = 0
             self.fps_start_time = time.time()
+
+    def _process_idle_people_detection(self, frame, display_frame):
+        """Process idle people detection (restaurant_id != 1)"""
+        # Run YOLO inference with tracking
+        results = self.model.track(frame, persist=True, classes=[PERSON_CLASS_ID], 
+                                  conf=CONFIDENCE_THRESHOLD, verbose=False)
+
+        current_tracked_ids = set()
+        
+        if results and len(results) > 0:
+            result = results[0]
+            
+            if result.boxes is not None and len(result.boxes) > 0:
+                boxes = result.boxes.cpu().numpy()
+                
+                for box in boxes:
+                    # Get bounding box coordinates
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    conf = float(box.conf[0])
+                    
+                    # Check if at least 50% of bounding box is inside ROI
+                    if not self._is_in_roi(x1, y1, x2, y2):
+                        continue  # Skip people whose box overlap < 50%
+                    
+                    # Get ROI overlap percentage for display
+                    overlap_pct = self._get_roi_overlap_percentage(x1, y1, x2, y2)
+                    
+                    # Get track ID if available
+                    track_id = int(box.id[0]) if box.id is not None else None
+                    
+                    if track_id is not None:
+                        current_tracked_ids.add(track_id)
+                        
+                        # Increment frame count for this person
+                        self.person_tracker[track_id] += 1
+                        frame_count = self.person_tracker[track_id]
+                        
+                        # Determine color based on idle status
+                        if frame_count >= IDLE_FRAME_THRESHOLD:
+                            # VIOLATION: Person is idle
+                            color = (0, 0, 255)  # Red
+                            label = f"IDLE! ID:{track_id} Frames:{frame_count}"
+                            
+                            # Check if we should trigger alert (cooldown)
+                            current_time = time.time()
+                            last_alert = self.last_alert_time.get(track_id, 0)
+                            
+                            if current_time - last_alert > ALERT_COOLDOWN_SECONDS:
+                                self._trigger_alert(frame, track_id, frame_count, (x1, y1, x2, y2))
+                                self.last_alert_time[track_id] = current_time
+                        else:
+                            # Normal tracking
+                            color = (0, 255, 0)  # Green
+                            label = f"ID:{track_id} Frames:{frame_count}/{IDLE_FRAME_THRESHOLD}"
+                        
+                        # Add ROI overlap info to label if available
+                        if overlap_pct is not None:
+                            label += f" ROI:{overlap_pct*100:.0f}%"
+                        
+                        # Draw bounding box
+                        cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                        
+                        # Draw label with background
+                        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                        cv2.rectangle(display_frame, (x1, y1 - label_h - 10), 
+                                    (x1 + label_w, y1), color, -1)
+                        cv2.putText(display_frame, label, (x1, y1 - 5), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+        
+        # Clean up tracking for people who left the frame
+        disappeared_ids = set(self.person_tracker.keys()) - current_tracked_ids
+        for track_id in disappeared_ids:
+            del self.person_tracker[track_id]
+            if track_id in self.last_alert_time:
+                del self.last_alert_time[track_id]
+
+        # Add FPS and info overlay
+        cv2.putText(display_frame, f"FPS: {self.current_fps:.1f}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(display_frame, f"Idle Threshold: {IDLE_FRAME_THRESHOLD} frames", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+
+    def _process_phone_detection(self, frame, display_frame):
+        """Process phone usage detection (restaurant_id == 1)"""
+        # Run YOLO inference for phone detection (class 7: using_phone)
+        results = self.model(frame, conf=self.phone_confidence_threshold, verbose=False)
+
+        phone_detected = False
+        phone_count = 0
+        current_time = time.time()
+        
+        if results and len(results) > 0:
+            result = results[0]
+            
+            if result.boxes is not None and len(result.boxes) > 0:
+                boxes = result.boxes.cpu().numpy()
+                
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    
+                    # Only process phone usage (class 7)
+                    if cls_id != self.phone_class_id:
+                        continue
+                    
+                    # Get bounding box coordinates
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    conf = float(box.conf[0])
+                    
+                    # Check if at least 50% of bounding box is inside ROI
+                    if not self._is_in_roi(x1, y1, x2, y2):
+                        continue  # Skip detections outside ROI
+                    
+                    phone_detected = True
+                    phone_count += 1
+                    
+                    # Draw red bounding box for phone usage
+                    color = (0, 0, 255)  # Red
+                    label = f"Phone Usage! ({conf:.2%})"
+                    
+                    # Draw bounding box
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
+                    
+                    # Draw label with background
+                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
+                    cv2.rectangle(display_frame, (x1, y1 - label_h - 10), 
+                                (x1 + label_w, y1), color, -1)
+                    cv2.putText(display_frame, label, (x1, y1 - 5), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                    
+                    # Check if we should trigger alert (cooldown)
+                    current_time = time.time()
+                    last_alert = self.last_alert_time.get('phone_usage', 0)
+                    
+                    if current_time - last_alert > ALERT_COOLDOWN_SECONDS:
+                        self._trigger_phone_alert(frame, (x1, y1, x2, y2), conf)
+                        self.last_alert_time['phone_usage'] = current_time
+
+        # Emit SocketIO update for dashboard every 2 seconds
+        if current_time - self.last_socketio_emit >= 2.0:
+            try:
+                metrics = {
+                    'channel_id': self.channel_id,
+                    'channel_name': self.channel_name,
+                    'violation_count': phone_count,
+                    'violations_detected': ['Phone Usage'] if phone_detected else [],
+                    'timestamp': datetime.now(IST).isoformat()
+                }
+                self.socketio.emit('idle_people_update', metrics, namespace='/')
+                self.last_socketio_emit = current_time
+            except Exception as e:
+                logging.error(f"Idle People: SocketIO emit failed for {self.channel_name}: {e}")
+        
+        # Add FPS and info overlay
+        cv2.putText(display_frame, f"FPS: {self.current_fps:.1f}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        cv2.putText(display_frame, f"Phone Detection Mode (Sangli)", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+        if phone_detected:
+            cv2.putText(display_frame, "PHONE DETECTED!", (10, 90), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
     def run(self):
         """Main processing loop"""
@@ -352,88 +579,13 @@ class IdlePeopleViolationProcessor(threading.Thread):
                     # Draw ROI if configured
                     self._draw_roi(display_frame)
                     
-                    # Run YOLO inference with tracking
-                    results = self.model.track(frame, persist=True, classes=[PERSON_CLASS_ID], 
-                                              conf=CONFIDENCE_THRESHOLD, verbose=False)
-
-                    current_tracked_ids = set()
-                    
-                    if results and len(results) > 0:
-                        result = results[0]
-                        
-                        if result.boxes is not None and len(result.boxes) > 0:
-                            boxes = result.boxes.cpu().numpy()
-                            
-                            for box in boxes:
-                                # Get bounding box coordinates
-                                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                                conf = float(box.conf[0])
-                                
-                                # Check if at least 50% of bounding box is inside ROI
-                                if not self._is_in_roi(x1, y1, x2, y2):
-                                    continue  # Skip people whose box overlap < 50%
-                                
-                                # Get ROI overlap percentage for display
-                                overlap_pct = self._get_roi_overlap_percentage(x1, y1, x2, y2)
-                                
-                                # Get track ID if available
-                                track_id = int(box.id[0]) if box.id is not None else None
-                                
-                                if track_id is not None:
-                                    current_tracked_ids.add(track_id)
-                                    
-                                    # Increment frame count for this person
-                                    self.person_tracker[track_id] += 1
-                                    frame_count = self.person_tracker[track_id]
-                                    
-                                    # Determine color based on idle status
-                                    if frame_count >= IDLE_FRAME_THRESHOLD:
-                                        # VIOLATION: Person is idle
-                                        color = (0, 0, 255)  # Red
-                                        label = f"IDLE! ID:{track_id} Frames:{frame_count}"
-                                        
-                                        # Check if we should trigger alert (cooldown)
-                                        current_time = time.time()
-                                        last_alert = self.last_alert_time.get(track_id, 0)
-                                        
-                                        if current_time - last_alert > ALERT_COOLDOWN_SECONDS:
-                                            self._trigger_alert(frame, track_id, frame_count, (x1, y1, x2, y2))
-                                            self.last_alert_time[track_id] = current_time
-                                    else:
-                                        # Normal tracking
-                                        color = (0, 255, 0)  # Green
-                                        label = f"ID:{track_id} Frames:{frame_count}/{IDLE_FRAME_THRESHOLD}"
-                                    
-                                    # Add ROI overlap info to label if available
-                                    if overlap_pct is not None:
-                                        label += f" ROI:{overlap_pct*100:.0f}%"
-                                    
-                                    # Draw bounding box
-                                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                                    
-                                    # Draw label with background
-                                    (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)
-                                    cv2.rectangle(display_frame, (x1, y1 - label_h - 10), 
-                                                (x1 + label_w, y1), color, -1)
-                                    cv2.putText(display_frame, label, (x1, y1 - 5), 
-                                              cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                    
-                    # Clean up tracking for people who left the frame
-                    disappeared_ids = set(self.person_tracker.keys()) - current_tracked_ids
-                    for track_id in disappeared_ids:
-                        del self.person_tracker[track_id]
-                        if track_id in self.last_alert_time:
-                            del self.last_alert_time[track_id]
-
-                    # Add FPS and info overlay
-                    cv2.putText(display_frame, f"FPS: {self.current_fps:.1f}", (10, 30), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    # cv2.putText(display_frame, f"People Tracked: {len(current_tracked_ids)}", (10, 60), 
-                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                    cv2.putText(display_frame, f"Idle Threshold: {IDLE_FRAME_THRESHOLD} frames", (10, 60), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-                    # cv2.putText(display_frame, f"ROI Overlap Required: 50%+", (10, 90), 
-                    #            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    # Branch based on restaurant_id
+                    if self.restaurant_id == 1:
+                        # Sangli store: Detect phone usage
+                        self._process_phone_detection(frame, display_frame)
+                    else:
+                        # Other stores: Detect idle people
+                        self._process_idle_people_detection(frame, display_frame)
 
                     # Update latest frame for streaming
                     with self.lock:

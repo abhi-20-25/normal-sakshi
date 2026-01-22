@@ -2848,15 +2848,17 @@ def _start_streams_from_data(stream_assignments):
         
         if 'IdlePeopleViolation' in active_app_names:
             # IdlePeopleViolationProcessor loads its own model internally
+            # Pass restaurant_id for store-specific behavior
+            restaurant_id = restaurant.id if restaurant else None
             ipv_processor = IdlePeopleViolationProcessor(
                 link, channel_id, channel_name, SessionLocal, socketio,
-                send_telegram_notification, handle_detection
+                send_telegram_notification, handle_detection, restaurant_id=restaurant_id
             )
             if hasattr(ipv_processor, 'frame_hub'):
                 ipv_processor.frame_hub = hub
             stream_processors[channel_id].append(ipv_processor)
             ipv_processor.start()
-            logging.info(f"Started IdlePeopleViolation for {channel_id} ({channel_name}).")
+            logging.info(f"Started IdlePeopleViolation for {channel_id} ({channel_name}) with restaurant_id={restaurant_id}.")
             atexit.register(ipv_processor.shutdown)
             active_app_names.remove('IdlePeopleViolation')
         
