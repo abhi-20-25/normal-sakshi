@@ -90,6 +90,8 @@ class IdlePeopleViolationProcessor(threading.Thread):
                 
                 self.model = YOLO(self.phone_model_path)
                 self.model.to(self.device)
+                # Phone usage class from 02_01_2026_teatost_best.pt model:
+                # Class 7 = 'Using_phone' (verified from model.names)
                 self.phone_class_id = 7  # Using_phone class from unified model
                 self.phone_confidence_threshold = 0.5  # Higher threshold for phone detection
                 

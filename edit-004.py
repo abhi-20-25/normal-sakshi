@@ -103,10 +103,10 @@ os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'),
 
 # --- App Task Configuration ---
 APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/kitchen_violation_18_01_2026.pt', 'target_class_id': [0, 1, 2, 3, 4, 5, 6, 7, 8], 'confidence': 0.3, 'is_gif': False},
+    'Generic': {'model_path': 'models/02_01_2026_teatost_best.pt', 'target_class_id': [0, 1, 2, 3, 4, 5, 6, 7, 8], 'confidence': 0.3, 'is_gif': False},
     'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
     'QueueMonitor': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'models/kitchen_violation_18_01_2026.pt', 'confidence': 0.3},  # Kitchen violation model (person detection via yolo11n.pt)
+    'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Kitchen violation model
     'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
     'IdlePeopleViolation': {'model_path': 'models/yolo11n.pt', 'confidence': 0.3}
 }
@@ -616,12 +616,13 @@ class MultiModelProcessor(threading.Thread):
         """
         Apply smart validation logic using complementary pairs:
         Compare confidence scores and keep the higher confidence detection.
-        NEW MODEL CLASS IDs:
-        - Cap_present (0) vs Without_cap (1)
-        - With_apron (2) vs Without_apron (3)
-        - With_gloves (4) vs Without_gloves (5)
-        - Uniform (6) vs Without_uniform (7)
-        - Using_phone (8) always triggers as violation
+        ACTUAL MODEL CLASS IDs (from 02_01_2026_teatost_best.pt):
+        - person (0) - not used in validation
+        - Cap_present (1) vs Without_cap (2)
+        - With_apron (3) vs Without_apron (4)
+        - With_gloves (5) vs Without_gloves (6)
+        - Using_phone (7) always triggers as violation
+        - Without_uniform (8) has no positive pair
         """
         if not detections:
             return detections
@@ -645,37 +646,32 @@ class MultiModelProcessor(threading.Thread):
             conf = det['confidence']
             should_keep = True
             
-            # Without_cap (1) vs Cap_present (0) - keep higher confidence
-            if class_id == 1 and 0 in max_conf_by_class:
-                if max_conf_by_class[0] > conf:  # Cap_present has higher confidence
+            # Without_cap (2) vs Cap_present (1) - keep higher confidence
+            if class_id == 2 and 1 in max_conf_by_class:
+                if max_conf_by_class[1] > conf:  # Cap_present has higher confidence
                     should_keep = False
-            elif class_id == 0 and 1 in max_conf_by_class:
-                if max_conf_by_class[1] > conf:  # Without_cap has higher confidence
-                    should_keep = False
-            
-            # Without_apron (3) vs With_apron (2) - keep higher confidence
-            elif class_id == 3 and 2 in max_conf_by_class:
-                if max_conf_by_class[2] > conf:  # With_apron has higher confidence
-                    should_keep = False
-            elif class_id == 2 and 3 in max_conf_by_class:
-                if max_conf_by_class[3] > conf:  # Without_apron has higher confidence
+            elif class_id == 1 and 2 in max_conf_by_class:
+                if max_conf_by_class[2] > conf:  # Without_cap has higher confidence
                     should_keep = False
             
-            # Without_gloves (5) vs With_gloves (4) - keep higher confidence
-            elif class_id == 5 and 4 in max_conf_by_class:
-                if max_conf_by_class[4] > conf:  # With_gloves has higher confidence
+            # Without_apron (4) vs With_apron (3) - keep higher confidence
+            elif class_id == 4 and 3 in max_conf_by_class:
+                if max_conf_by_class[3] > conf:  # With_apron has higher confidence
                     should_keep = False
-            elif class_id == 4 and 5 in max_conf_by_class:
-                if max_conf_by_class[5] > conf:  # Without_gloves has higher confidence
+            elif class_id == 3 and 4 in max_conf_by_class:
+                if max_conf_by_class[4] > conf:  # Without_apron has higher confidence
                     should_keep = False
             
-            # Without_uniform (7) vs Uniform (6) - keep higher confidence
-            elif class_id == 7 and 6 in max_conf_by_class:
-                if max_conf_by_class[6] > conf:  # Uniform has higher confidence
+            # Without_gloves (6) vs With_gloves (5) - keep higher confidence
+            elif class_id == 6 and 5 in max_conf_by_class:
+                if max_conf_by_class[5] > conf:  # With_gloves has higher confidence
                     should_keep = False
-            elif class_id == 6 and 7 in max_conf_by_class:
-                if max_conf_by_class[7] > conf:  # Without_uniform has higher confidence
+            elif class_id == 5 and 6 in max_conf_by_class:
+                if max_conf_by_class[6] > conf:  # Without_gloves has higher confidence
                     should_keep = False
+            
+            # Using_phone (7) - always keep as violation
+            # Without_uniform (8) - always keep as violation (no positive pair)
             
             if should_keep:
                 filtered_detections.append(det)
@@ -835,7 +831,7 @@ class MultiModelProcessor(threading.Thread):
                     PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
                     final_detections = []
                     for det in filtered_detections:
-                        if det['class_id'] == 8:  # Using_phone (class 8 in new model)
+                        if det['class_id'] == 7:  # Using_phone (class 7 in actual model)
                             if det['confidence'] >= PHONE_MIN_CONFIDENCE:
                                 final_detections.append(det)
                             else:
@@ -850,14 +846,15 @@ class MultiModelProcessor(threading.Thread):
                         logging.info(f"🔍 Generic {self.channel_name} Frame {frame_count}: Raw: {detected_classes_debug} | After filtering: {filtered_classes_debug}")
                         
                         # Special alert for phone detection
-                        phone_detections = [det for det in final_detections if det['class_id'] == 8]  # Using_phone is class 8
+                        phone_detections = [det for det in final_detections if det['class_id'] == 7]  # Using_phone is class 7
                         if phone_detections:
                             logging.warning(f"📱 PHONE DETECTED in {self.channel_name}! Confidence: {phone_detections[0]['confidence']:.2f}")
                     
                     # Define class sets and colors
-                    # NEW MODEL: Only "Without_" classes and "Using_phone" are violations
-                    violation_classes = {1, 3, 5, 7, 8}  # Without_cap, Without_apron, Without_gloves, Without_uniform, Using_phone
-                    compliance_classes = {0, 2, 4, 6}  # Cap_present, With_apron, With_gloves, Uniform
+                    # ACTUAL MODEL CLASS IDs: Only "Without_" classes and "Using_phone" are violations
+                    # 0:person, 1:Cap_present, 2:Without_cap, 3:With_apron, 4:Without_apron, 5:With_gloves, 6:Without_gloves, 7:Using_phone, 8:Without_uniform
+                    violation_classes = {2, 4, 6, 7, 8}  # Without_cap, Without_apron, Without_gloves, Using_phone, Without_uniform
+                    compliance_classes = {0, 1, 3, 5}  # person, Cap_present, With_apron, With_gloves
                     COLOR_GREEN = (0, 255, 0)  # Compliance
                     COLOR_RED = (0, 0, 255)    # Violations
                     
