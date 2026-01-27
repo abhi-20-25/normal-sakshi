@@ -32,24 +32,14 @@ from shapely.geometry import Point, Polygon
 import pandas as pd
 from queue import Queue, Empty
 
-# --- CUDA/Backend Tuning ---
-# Enable CUDA auto-detection
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-if DEVICE == 'cuda':
-    torch.backends.cudnn.benchmark = True
-    try:
-        torch.set_float32_matmul_precision('high')
-    except Exception:
-        pass
-    logging.info("✅ CUDA ENABLED - Using GPU for processing")
-else:
-    logging.info("⚠️  CUDA not available - Running in CPU mode")
-
-# --- Frame Downscale Settings ---
-# Reduce resolution early in the pipeline to speed up processing/streaming
-# Set to None to preserve original camera resolution
-TARGET_WIDTH = 640
-TARGET_HEIGHT = 360
+# --- Configuration Import ---
+# All configuration constants moved to config.py for centralized management
+from config import (
+    DEVICE, TARGET_WIDTH, TARGET_HEIGHT, IST, DATABASE_URL,
+    RTSP_LINKS_FILE, STATIC_FOLDER, DETECTIONS_SUBFOLDER,
+    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, LOGIN_USERNAME, LOGIN_PASSWORD,
+    APP_TASKS_CONFIG
+)
 
 # --- Module Imports ---
 from kitchen_compliance_monitor import KitchenComplianceProcessor
@@ -80,36 +70,9 @@ for handler in logging.root.handlers:
 logging.getLogger('ultralytics').setLevel(logging.WARNING)
 logging.getLogger('apscheduler').setLevel(logging.WARNING)
 
-# --- Master Configuration ---
-IST = pytz.timezone('Asia/Kolkata')
-DATABASE_URL = "postgresql://postgres:Tneural01@127.0.0.1:5432/sakshi" 
-
-RTSP_LINKS_FILE = 'data/rtsp_links.txt'
-
+# --- PetPooja Services Initialization ---
 # Initialize PetPooja services (will be used in Flask routes)
 pp_sales_analytics, pp_conversion_analytics, pp_time_based_menu, pp_promotion_effectiveness, pp_staffing_recommendations = create_petpooja_services()
-STATIC_FOLDER = 'static'
-DETECTIONS_SUBFOLDER = 'detections'
-TELEGRAM_BOT_TOKEN = "7843300957:AAGVv866cPiDPVD0Wrk_wwEEHDSD64Pgaqs"
-TELEGRAM_CHAT_ID = "-4835836048"
-
-# --- Authentication Configuration ---
-LOGIN_USERNAME = "user"
-LOGIN_PASSWORD = "Tneural123"
-os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER), exist_ok=True)
-os.makedirs(os.path.join(STATIC_FOLDER, DETECTIONS_SUBFOLDER, 'shutter_videos'), exist_ok=True)
-
-#server
-
-# --- App Task Configuration ---
-APP_TASKS_CONFIG = {
-    'Generic': {'model_path': 'models/02_01_2026_teatost_best.pt', 'target_class_id': [0, 1, 2, 3, 4, 5, 6, 7, 8], 'confidence': 0.3, 'is_gif': False},
-    'PeopleCounter': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
-    'QueueMonitor': {'model_path': 'models/yolo11n.pt' , 'confidence': 0.15},
-    'KitchenCompliance': {'model_path': 'models/02_01_2026_teatost_best.pt', 'confidence': 0.3},  # Kitchen violation model
-    'OccupancyMonitor': {'model_path': 'models/yolo11n.pt', 'confidence': 0.15},
-    'IdlePeopleViolation': {'model_path': 'models/yolo11n.pt', 'confidence': 0.3}
-}
 
 # --- YOLO tracking helper (CPU-only mode) ---
 def safe_track_persons(model, frame, conf=0.25, iou=0.5, processor_name=None):
