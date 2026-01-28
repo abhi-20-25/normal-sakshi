@@ -459,7 +459,7 @@ class IdlePeopleViolationProcessor(threading.Thread):
 
     def _process_phone_detection(self, frame, display_frame):
         """Process phone usage detection (restaurant_id == 1)"""
-        # Run YOLO inference for phone detection (class 7: using_phone)
+        # Run YOLO inference for phone detection (class 8: Using_phone)
         results = self.model(frame, conf=self.phone_confidence_threshold, verbose=False)
 
         phone_detected = False
@@ -475,7 +475,7 @@ class IdlePeopleViolationProcessor(threading.Thread):
                 for box in boxes:
                     cls_id = int(box.cls[0])
                     
-                    # Only process phone usage (class 7)
+                    # Only process phone usage (class 8)
                     if cls_id != self.phone_class_id:
                         continue
                     

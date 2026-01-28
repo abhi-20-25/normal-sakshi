@@ -431,7 +431,7 @@ class KitchenComplianceProcessor(threading.Thread):
                 PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
                 final_detections = []
                 for det in filtered_detections:
-                    if det['class_id'] == 7:  # Using_phone
+                    if det['class_id'] == 8:  # Using_phone (class 8 in kitchen_violation_28_01_2026.pt)
                         if det['confidence'] >= PHONE_MIN_CONFIDENCE:
                             final_detections.append(det)
                         else:
