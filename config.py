@@ -103,11 +103,11 @@ APP_TASKS_CONFIG = {
         'is_gif': False
     },
     'PeopleCounter': {
-        'model_path': 'models/yolo11n.pt',
+        'model_path': 'models/yolo26s.pt',
         'confidence': 0.15
     },
     'QueueMonitor': {
-        'model_path': 'models/yolo11n.pt',
+        'model_path': 'models/yolo26s.pt',
         'confidence': 0.15
     },
     'KitchenCompliance': {
@@ -115,11 +115,11 @@ APP_TASKS_CONFIG = {
         'confidence': 0.3
     },
     'OccupancyMonitor': {
-        'model_path': 'models/yolo11n.pt',
+        'model_path': 'models/yolo26s.pt',
         'confidence': 0.15
     },
     'IdlePeopleViolation': {
-        'model_path': 'models/yolo11n.pt',
+        'model_path': 'models/yolo26s.pt',
         'confidence': 0.3
     }
 }

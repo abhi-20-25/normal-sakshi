@@ -13,15 +13,18 @@ from sqlalchemy import Column, Integer, String, DateTime, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 from concurrent.futures import ThreadPoolExecutor
 from shapely.geometry import Point, Polygon
+import config
 
 # --- Basic Configuration ---
 IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Configuration ---
-MODEL_PATH = 'models/yolo11n.pt'  # YOLO11n - Better for detecting people at all distances
+# Get model paths from config.py
+MODEL_PATH = config.APP_TASKS_CONFIG['IdlePeopleViolation']['model_path']
+PHONE_MODEL_PATH = config.APP_TASKS_CONFIG['Generic']['model_path']  # For phone detection
 PERSON_CLASS_ID = 0  # Person class in COCO dataset
-CONFIDENCE_THRESHOLD = 0.1  # Detection confidence threshold (0.1 = very sensitive, catches distant people too)
+CONFIDENCE_THRESHOLD = config.APP_TASKS_CONFIG['IdlePeopleViolation']['confidence']
 IDLE_FRAME_THRESHOLD = 15  # Number of frames a person must be detected to be considered idle (adjustable)
 FRAME_SKIP_RATE = 1  # Process every frame for maximum accuracy (was 2)
 ALERT_COOLDOWN_SECONDS = 60  # Cooldown between alerts for same person
@@ -79,8 +82,8 @@ class IdlePeopleViolationProcessor(threading.Thread):
             self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
             logging.info(f"Idle People Monitor {self.channel_name} using device: {self.device.upper()}")
             
-            # Store phone usage model path (updated to kitchen_violation_28_01_2026.pt)
-            self.phone_model_path = 'models/kitchen_violation_28_01_2026.pt'
+            # Store phone usage model path from config
+            self.phone_model_path = PHONE_MODEL_PATH
             
             if self.restaurant_id == 1:
                 # Sangli store: Use phone usage detection
