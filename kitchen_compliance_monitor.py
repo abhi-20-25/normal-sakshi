@@ -20,10 +20,11 @@ IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Paths (Unified Model) ---
-UNIFIED_MODEL_PATH = 'models/02_01_2026_teatost_best.pt'  # Single model with person detection
-VIOLATION_CLASSES = [2, 4, 6, 7, 8]  # Classes to detect: without_cap, without_apron, without_gloves, using_phone, without_uniform
-COMPLIANCE_CLASSES = [1, 3, 5]  # Cap_present, With_apron, With_gloves
-PERSON_CLASS = [0]  # Person detection class
+UNIFIED_MODEL_PATH = 'models/kitchen_violation_28_01_2026.pt'  # Updated to kitchen_violation_28_01_2026.pt model
+# kitchen_violation_28_01_2026.pt classes: Uniform(0), Without_uniform(1), Cap_present(2), Without_cap(3), With_apron(4), Without_apron(5), With_gloves(6), Without_gloves(7), Using_phone(8)
+VIOLATION_CLASSES = [1, 3, 5, 7, 8]  # Classes to detect: Without_uniform, Without_cap, Without_apron, Without_gloves, Using_phone
+COMPLIANCE_CLASSES = [0, 2, 4, 6]  # Uniform, Cap_present, With_apron, With_gloves
+PERSON_CLASS = [0]  # Uniform/Person detection class
 
 # --- Detection Configuration ---
 CONFIDENCE_THRESHOLD = 0.3  # Lower threshold for more sensitive detection
@@ -104,12 +105,12 @@ class KitchenComplianceProcessor(threading.Thread):
         """
         Apply smart validation logic using complementary pairs:
         Compare confidence scores and keep the higher confidence detection.
-        - Cap_present (1) vs Without_cap (2)
-        - With_apron (3) vs Without_apron (4)
-        - With_gloves (5) vs Without_gloves (6)
-        - Using_phone (7) always triggers as violation
-        - Without_uniform (8) triggers as violation
-        Note: Person class (0) is now available for enhanced detection
+        Updated for kitchen_violation_28_01_2026.pt model:
+        - Uniform (0) vs Without_uniform (1)
+        - Cap_present (2) vs Without_cap (3)
+        - With_apron (4) vs Without_apron (5)
+        - With_gloves (6) vs Without_gloves (7)
+        - Using_phone (8) always triggers as violation
         """
         if not detections:
             return detections
@@ -126,35 +127,43 @@ class KitchenComplianceProcessor(threading.Thread):
         # Get max confidence for each class
         max_conf_by_class = {cls_id: max(confs) for cls_id, confs in class_confidences.items()}
         
-        # Apply smart logic - compare confidences
+        # Apply smart logic - compare confidences (updated for kitchen_violation_28_01_2026.pt class IDs)
         filtered_detections = []
         for det in detections:
             class_id = int(det['class_id'])
             conf = det['confidence']
             should_keep = True
             
-            # Without_cap (2) vs Cap_present (1) - keep higher confidence
-            if class_id == 2 and 1 in max_conf_by_class:
-                if max_conf_by_class[1] > conf:  # Cap_present has higher confidence
+            # Uniform (0) vs Without_uniform (1) - keep higher confidence
+            if class_id == 1 and 0 in max_conf_by_class:
+                if max_conf_by_class[0] > conf:  # Uniform has higher confidence
                     should_keep = False
-            elif class_id == 1 and 2 in max_conf_by_class:
-                if max_conf_by_class[2] > conf:  # Without_cap has higher confidence
-                    should_keep = False
-            
-            # Without_apron (4) vs With_apron (3) - keep higher confidence
-            elif class_id == 4 and 3 in max_conf_by_class:
-                if max_conf_by_class[3] > conf:  # With_apron has higher confidence
-                    should_keep = False
-            elif class_id == 3 and 4 in max_conf_by_class:
-                if max_conf_by_class[4] > conf:  # Without_apron has higher confidence
+            elif class_id == 0 and 1 in max_conf_by_class:
+                if max_conf_by_class[1] > conf:  # Without_uniform has higher confidence
                     should_keep = False
             
-            # Without_gloves (6) vs With_gloves (5) - keep higher confidence
-            elif class_id == 6 and 5 in max_conf_by_class:
-                if max_conf_by_class[5] > conf:  # With_gloves has higher confidence
+            # Cap_present (2) vs Without_cap (3) - keep higher confidence
+            elif class_id == 3 and 2 in max_conf_by_class:
+                if max_conf_by_class[2] > conf:  # Cap_present has higher confidence
                     should_keep = False
-            elif class_id == 5 and 6 in max_conf_by_class:
-                if max_conf_by_class[6] > conf:  # Without_gloves has higher confidence
+            elif class_id == 2 and 3 in max_conf_by_class:
+                if max_conf_by_class[3] > conf:  # Without_cap has higher confidence
+                    should_keep = False
+            
+            # With_apron (4) vs Without_apron (5) - keep higher confidence
+            elif class_id == 5 and 4 in max_conf_by_class:
+                if max_conf_by_class[4] > conf:  # With_apron has higher confidence
+                    should_keep = False
+            elif class_id == 4 and 5 in max_conf_by_class:
+                if max_conf_by_class[5] > conf:  # Without_apron has higher confidence
+                    should_keep = False
+            
+            # With_gloves (6) vs Without_gloves (7) - keep higher confidence
+            elif class_id == 7 and 6 in max_conf_by_class:
+                if max_conf_by_class[6] > conf:  # With_gloves has higher confidence
+                    should_keep = False
+            elif class_id == 6 and 7 in max_conf_by_class:
+                if max_conf_by_class[7] > conf:  # Without_gloves has higher confidence
                     should_keep = False
             
             if should_keep:

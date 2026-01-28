@@ -97,8 +97,8 @@ LOGIN_PASSWORD = "Tneural123"
 # Each task specifies model path, confidence threshold, and other parameters
 APP_TASKS_CONFIG = {
     'Generic': {
-        'model_path': 'models/02_01_2026_teatost_best.pt',
-        'target_class_id': [0, 1, 2, 3, 4, 5, 6, 7, 8],
+        'model_path': 'models/kitchen_violation_28_01_2026.pt',
+        'target_class_id': [0, 1, 2, 3, 4, 5, 6, 7, 8],  # kitchen_violation_28_01_2026: Uniform(0), Without_uniform(1), Cap_present(2), Without_cap(3), With_apron(4), Without_apron(5), With_gloves(6), Without_gloves(7), Using_phone(8)
         'confidence': 0.3,
         'is_gif': False
     },
@@ -111,7 +111,7 @@ APP_TASKS_CONFIG = {
         'confidence': 0.15
     },
     'KitchenCompliance': {
-        'model_path': 'models/02_01_2026_teatost_best.pt',
+        'model_path': 'models/kitchen_violation_28_01_2026.pt',
         'confidence': 0.3
     },
     'OccupancyMonitor': {
