@@ -93,9 +93,9 @@ class IdlePeopleViolationProcessor(threading.Thread):
                 
                 self.model = YOLO(self.phone_model_path)
                 self.model.to(self.device)
-                # Phone usage class from kitchen_violation_28_01_2026.pt model:
+                # Phone usage class from kitchen_compliance_02_02_2026.pt model:
                 # Class 8 = 'Using_phone'
-                self.phone_class_id = 8  # Using_phone class from kitchen_violation_28_01_2026 model
+                self.phone_class_id = 8  # Using_phone class from kitchen_compliance_02_02_2026 model
                 self.phone_confidence_threshold = 0.5  # Higher threshold for phone detection
                 
                 logging.info(f"✅ Idle People {self.channel_name}: Loaded phone detection model {self.phone_model_path}")

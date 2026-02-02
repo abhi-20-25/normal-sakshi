@@ -20,8 +20,8 @@ IST = pytz.timezone('Asia/Kolkata')
 Base = declarative_base()
 
 # --- Model Paths (Unified Model) ---
-UNIFIED_MODEL_PATH = 'models/kitchen_violation_28_01_2026.pt'  # Updated to kitchen_violation_28_01_2026.pt model
-# kitchen_violation_28_01_2026.pt classes: Uniform(0), Without_uniform(1), Cap_present(2), Without_cap(3), With_apron(4), Without_apron(5), With_gloves(6), Without_gloves(7), Using_phone(8)
+UNIFIED_MODEL_PATH = 'models/kitchen_compliance_02_02_2026.pt'  # Updated to kitchen_compliance_02_02_2026.pt model
+# kitchen_compliance_02_02_2026.pt classes: Uniform(0), Without_uniform(1), Cap_present(2), Without_cap(3), With_apron(4), Without_apron(5), With_gloves(6), Without_gloves(7), Using_phone(8)
 VIOLATION_CLASSES = [1, 3, 5, 7, 8]  # Classes to detect: Without_uniform, Without_cap, Without_apron, Without_gloves, Using_phone
 COMPLIANCE_CLASSES = [0, 2, 4, 6]  # Uniform, Cap_present, With_apron, With_gloves
 PERSON_CLASS = [0]  # Uniform/Person detection class
@@ -105,7 +105,7 @@ class KitchenComplianceProcessor(threading.Thread):
         """
         Apply smart validation logic using complementary pairs:
         Compare confidence scores and keep the higher confidence detection.
-        Updated for kitchen_violation_28_01_2026.pt model:
+        Updated for kitchen_compliance_02_02_2026.pt model:
         - Uniform (0) vs Without_uniform (1)
         - Cap_present (2) vs Without_cap (3)
         - With_apron (4) vs Without_apron (5)
@@ -127,7 +127,7 @@ class KitchenComplianceProcessor(threading.Thread):
         # Get max confidence for each class
         max_conf_by_class = {cls_id: max(confs) for cls_id, confs in class_confidences.items()}
         
-        # Apply smart logic - compare confidences (updated for kitchen_violation_28_01_2026.pt class IDs)
+            # Apply smart logic - compare confidences (updated for kitchen_compliance_02_02_2026.pt class IDs)
         filtered_detections = []
         for det in detections:
             class_id = int(det['class_id'])
@@ -431,7 +431,7 @@ class KitchenComplianceProcessor(threading.Thread):
                 PHONE_MIN_CONFIDENCE = 0.5  # Require 50% confidence for phone to reduce paper/false detections
                 final_detections = []
                 for det in filtered_detections:
-                    if det['class_id'] == 8:  # Using_phone (class 8 in kitchen_violation_28_01_2026.pt)
+                    if det['class_id'] == 8:  # Using_phone (class 8 in kitchen_compliance_02_02_2026.pt)
                         if det['confidence'] >= PHONE_MIN_CONFIDENCE:
                             final_detections.append(det)
                         else:
